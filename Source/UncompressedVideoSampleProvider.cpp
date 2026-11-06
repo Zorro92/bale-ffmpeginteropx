@@ -303,6 +303,11 @@ HRESULT UncompressedVideoSampleProvider::InitializeScalerIfRequired(AVFrame* avF
     // don't use point scaling since format conversions might involve scaling even if resolution is same (chroma subsampling)
     int scaler = avFrame->width < outputWidth ? SWS_BICUBIC : SWS_BILINEAR;
 
+    if (SwsThreads > 1)
+    {
+        return InitializeThreadedScaler(avFrame, scaler);
+    }
+
     // Setup software scaler to convert frame to output pixel type and size
     m_pSwsCtx = sws_getCachedContext(
         m_pSwsCtx,
@@ -323,6 +328,57 @@ HRESULT UncompressedVideoSampleProvider::InitializeScalerIfRequired(AVFrame* avF
     }
 
     return hr;
+}
+
+// Bale: sws_getCachedContext cannot request slice threads, and FFmpeg 8 runs the legacy sws_scale
+// on one slice context only. A context initialized with explicit options (threads > 1) runs
+// sws_scale_frame through the same legacy scaler, split across slice threads.
+HRESULT UncompressedVideoSampleProvider::InitializeThreadedScaler(AVFrame* avFrame, int scaler)
+{
+    if (m_pSwsCtx && m_swsThreaded &&
+        m_swsSrcW == avFrame->width && m_swsSrcH == avFrame->height && m_swsSrcFmt == (AVPixelFormat)avFrame->format &&
+        m_swsDstW == outputWidth && m_swsDstH == outputHeight && m_swsDstFmt == m_OutputPixelFormat && m_swsFlags == scaler)
+    {
+        return S_OK;
+    }
+
+    if (m_pSwsCtx)
+    {
+        sws_freeContext(m_pSwsCtx);
+        m_pSwsCtx = NULL;
+    }
+    m_swsThreaded = false;
+
+    SwsContext* ctx = sws_alloc_context();
+    if (!ctx)
+    {
+        return E_OUTOFMEMORY;
+    }
+
+    if (av_opt_set_int(ctx, "srcw", avFrame->width, 0) < 0 ||
+        av_opt_set_int(ctx, "srch", avFrame->height, 0) < 0 ||
+        av_opt_set_int(ctx, "src_format", avFrame->format, 0) < 0 ||
+        av_opt_set_int(ctx, "dstw", outputWidth, 0) < 0 ||
+        av_opt_set_int(ctx, "dsth", outputHeight, 0) < 0 ||
+        av_opt_set_int(ctx, "dst_format", m_OutputPixelFormat, 0) < 0 ||
+        av_opt_set_int(ctx, "sws_flags", scaler, 0) < 0 ||
+        av_opt_set_int(ctx, "threads", SwsThreads, 0) < 0 ||
+        sws_init_context(ctx, NULL, NULL) < 0)
+    {
+        sws_freeContext(ctx);
+        return E_FAIL;
+    }
+
+    m_pSwsCtx = ctx;
+    m_swsThreaded = true;
+    m_swsSrcW = avFrame->width;
+    m_swsSrcH = avFrame->height;
+    m_swsSrcFmt = (AVPixelFormat)avFrame->format;
+    m_swsDstW = outputWidth;
+    m_swsDstH = outputHeight;
+    m_swsDstFmt = m_OutputPixelFormat;
+    m_swsFlags = scaler;
+    return S_OK;
 }
 
 UncompressedVideoSampleProvider::~UncompressedVideoSampleProvider()
@@ -395,7 +451,35 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
             if (SUCCEEDED(hr))
             {
                 // Convert to output format using FFmpeg software scaler
-                if (sws_scale(m_pSwsCtx, (const UINT8**)(avFrame->data), avFrame->linesize, 0, avFrame->height, data, linesize) > 0)
+                bool converted = false;
+                if (m_swsThreaded)
+                {
+                    // Bale: wrap the pooled target buffer so sws_frame_start does not allocate.
+                    AVFrame* dst = av_frame_alloc();
+                    if (dst)
+                    {
+                        dst->buf[0] = av_buffer_ref(buffer);
+                        if (dst->buf[0])
+                        {
+                            for (int i = 0; i < 4; i++)
+                            {
+                                dst->data[i] = data[i];
+                                dst->linesize[i] = linesize[i];
+                            }
+                            dst->width = outputWidth;
+                            dst->height = outputHeight;
+                            dst->format = m_OutputPixelFormat;
+                            converted = sws_scale_frame(m_pSwsCtx, dst, avFrame) >= 0;
+                        }
+                        av_frame_free(&dst);
+                    }
+                }
+                else
+                {
+                    converted = sws_scale(m_pSwsCtx, (const UINT8**)(avFrame->data), avFrame->linesize, 0, avFrame->height, data, linesize) > 0;
+                }
+
+                if (converted)
                 {
                     *pBuffer = NativeBufferFactory::CreateNativeBuffer(buffer->data, (UINT32)buffer->size, free_buffer, buffer);
                 }

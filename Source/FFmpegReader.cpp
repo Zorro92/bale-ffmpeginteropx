@@ -131,6 +131,7 @@ HRESULT FFmpegReader::Seek(TimeSpan position, TimeSpan& actualPosition, TimeSpan
 {
     Stop();
 
+    std::lock_guard demuxLock(demuxMutex);
     std::lock_guard lock(mutex);
 
     auto hr = S_OK;
@@ -516,6 +517,7 @@ bool FFmpegReader::CheckNeedsSleep(bool wasSleeping)
 // sample provider
 int FFmpegReader::ReadPacket()
 {
+    std::lock_guard demuxLock(demuxMutex);
     AVPacket* avPacket = av_packet_alloc();
 
     if (!avPacket)
@@ -632,6 +634,12 @@ int FFmpegReader::ReadPacketForStream(StreamBuffer* buffer)
                 else if (isEof || !isActive)
                 {
                     break;
+                }
+                else if (forceReadStream != -1 && forceReadStream != buffer->StreamIndex)
+                {
+                    // Bale: another stream is already waiting. Share its event instead of
+                    // replacing it (which would strand that waiter), then re-check.
+                    waitStreamTask = create_task(waitStreamEvent);
                 }
                 else
                 {

@@ -57,6 +57,9 @@ private:
     std::shared_ptr<MediaSampleProvider> fullStream{ nullptr };
 
     std::recursive_mutex mutex;
+    // Bale: serializes av_read_frame and packet queueing. With decode-ahead, the video worker and
+    // the MediaStreamSource thread may both pull packets. Lock order: demuxMutex, then mutex.
+    std::recursive_mutex demuxMutex;
     bool isActive = false;
     bool isSleeping = false;
     bool isEof = false;

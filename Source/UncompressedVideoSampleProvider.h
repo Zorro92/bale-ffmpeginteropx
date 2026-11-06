@@ -70,6 +70,8 @@ public:
     AVPixelFormat GetOutputPixelFormat() { return m_OutputPixelFormat; }
     int TargetWidth = 0;
     int TargetHeight = 0;
+    // Bale: slice threads for the output pixel conversion (1 = upstream single-threaded sws_scale).
+    int SwsThreads = 1;
     BYTE* TargetBuffer = NULL;
 
     virtual void NotifyCreateSource() override
@@ -113,6 +115,11 @@ private:
     int targetBufferPoolSize = 0;
     AVPixelFormat m_OutputPixelFormat = AVPixelFormat::AV_PIX_FMT_NONE;
     SwsContext* m_pSwsCtx = NULL;
+    // Bale: parameters of an explicitly initialized threaded context (m_swsThreaded).
+    bool m_swsThreaded = false;
+    int m_swsSrcW = 0, m_swsSrcH = 0, m_swsDstW = 0, m_swsDstH = 0, m_swsFlags = 0;
+    AVPixelFormat m_swsSrcFmt = AV_PIX_FMT_NONE, m_swsDstFmt = AV_PIX_FMT_NONE;
+    HRESULT InitializeThreadedScaler(AVFrame* avFrame, int scaler);
     bool m_interlaced_frame = 0;
     bool m_top_field_first = 0;
     AVChromaLocation m_chroma_location = AVChromaLocation::AVCHROMA_LOC_UNSPECIFIED;

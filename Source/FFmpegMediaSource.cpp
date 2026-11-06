@@ -1164,7 +1164,14 @@ namespace winrt::FFmpegInteropX::implementation
                     avVideoCodecCtx->thread_type = config->IsFrameGrabber ? FF_THREAD_SLICE : FF_THREAD_FRAME | FF_THREAD_SLICE;
                 }
 
-                hr = avcodec_open2(avVideoCodecCtx, avVideoCodec, NULL);
+                // Bale: optional dav1d frame delay (decoder default is about sqrt(threads)).
+                AVDictionary* codecOptions = NULL;
+                if (baleDav1dMaxFrameDelay > 0 && std::string(avVideoCodec->name) == "libdav1d")
+                {
+                    av_dict_set_int(&codecOptions, "max_frame_delay", baleDav1dMaxFrameDelay, 0);
+                }
+                hr = avcodec_open2(avVideoCodecCtx, avVideoCodec, &codecOptions);
+                av_dict_free(&codecOptions);
             }
 
             if (SUCCEEDED(hr))
@@ -1243,6 +1250,7 @@ namespace winrt::FFmpegInteropX::implementation
         {
             return;
         }
+        AheadPauseScope aheadPause(this, false);
 
         for (auto videoStream : videoStreams)
         {
@@ -1257,6 +1265,7 @@ namespace winrt::FFmpegInteropX::implementation
         {
             return;
         }
+        AheadPauseScope aheadPause(this, false);
 
         for (auto internalvideoStream : videoStreams)
         {
@@ -1306,6 +1315,7 @@ namespace winrt::FFmpegInteropX::implementation
         {
             return;
         }
+        AheadPauseScope aheadPause(this, false);
         for (auto videoStream : videoStreams)
         {
             videoStream->ClearFFmpegFilters();
@@ -1319,6 +1329,7 @@ namespace winrt::FFmpegInteropX::implementation
         {
             return;
         }
+        AheadPauseScope aheadPause(this, false);
 
         for (auto internaVideoStream : videoStreams)
         {
@@ -1427,6 +1438,7 @@ namespace winrt::FFmpegInteropX::implementation
         {
             return FFmpegInteropX::FilterCommandResult(false, L"Closed");
         }
+        AheadPauseScope aheadPause(this, false);
         bool hasResult = false;
         auto result = FFmpegInteropX::FilterCommandResult(false, videoStreams.size() > 0 ? L"No enabled streams" : L"No streams");
         for (int i = 0; i < videoStreams.size(); i++)
@@ -1453,6 +1465,7 @@ namespace winrt::FFmpegInteropX::implementation
         {
             return FFmpegInteropX::FilterCommandResult(false, L"Closed");
         }
+        AheadPauseScope aheadPause(this, false);
         for (int i = 0; i < videoStreams.size(); i++)
         {
             if (videoStreams.at(i)->VideoInfo() == videoStream)
@@ -1871,6 +1884,7 @@ namespace winrt::FFmpegInteropX::implementation
         {
             return;
         }
+        AheadPauseScope aheadPause(this, false);
         for (auto provider : sampleProviders)
         {
             if (provider->StreamInfo() == stream)
@@ -1967,6 +1981,9 @@ namespace winrt::FFmpegInteropX::implementation
             playbackItem.TimedMetadataTracks().PresentationModeChanged(subtitlePresentationModeChangedToken);
             playbackItemWeak = nullptr;
         }
+
+        // Bale: the decode-ahead worker uses the streams and reader cleared below.
+        AheadShutdown();
 
         // Clear our data
         currentAudioStream = nullptr;
@@ -2291,7 +2308,9 @@ namespace winrt::FFmpegInteropX::implementation
             {
                 hardwareDecoderStatus = HardwareDecoderStatus::NotAvailable;
             }
-            videoSampleProvider = std::shared_ptr<MediaSampleProvider>(new UncompressedVideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr));
+            auto uncompressed = new UncompressedVideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr);
+            uncompressed->SwsThreads = baleSwsThreads;
+            videoSampleProvider = std::shared_ptr<MediaSampleProvider>(uncompressed);
         }
 
 #pragma warning (default: 4973)
@@ -2319,7 +2338,14 @@ namespace winrt::FFmpegInteropX::implementation
             {
                 auto key = StringUtils::PlatformStringToUtf8String(options.Current().Key());
                 hstring value = StringUtils::ToString(options.Current().Value());
-                if (!value.empty())
+                if (TryParseBaleOption(key, value, hr))
+                {
+                    if (FAILED(hr))
+                    {
+                        break;
+                    }
+                }
+                else if (!value.empty())
                 {
                     // Add key and value pair entry
                     auto valCstr = StringUtils::PlatformStringToUtf8String(value);
@@ -2336,6 +2362,193 @@ namespace winrt::FFmpegInteropX::implementation
         return hr;
     }
 
+    // Bale: "bale_" keys tune this fork and are never handed to FFmpeg as format options.
+    // Returns false for any other key. Out-of-range or non-numeric values fail with E_INVALIDARG.
+    bool FFmpegMediaSource::TryParseBaleOption(std::string const& key, hstring const& value, HRESULT& hr)
+    {
+        if (key.rfind("bale_", 0) != 0)
+        {
+            return false;
+        }
+
+        int* target = nullptr;
+        int minimum = 0;
+        int maximum = 0;
+        if (key == "bale_decode_ahead_frames") { target = &baleDecodeAheadFrames; minimum = 0; maximum = 64; }
+        else if (key == "bale_sws_threads") { target = &baleSwsThreads; minimum = 1; maximum = 16; }
+        else if (key == "bale_dav1d_max_frame_delay") { target = &baleDav1dMaxFrameDelay; minimum = 0; maximum = 64; }
+        else
+        {
+            hr = E_INVALIDARG;
+            return true;
+        }
+
+        auto text = StringUtils::PlatformStringToUtf8String(value);
+        if (text.empty() || text.size() > 3)
+        {
+            hr = E_INVALIDARG;
+            return true;
+        }
+        int parsed = 0;
+        for (auto c : text)
+        {
+            if (c < '0' || c > '9')
+            {
+                hr = E_INVALIDARG;
+                return true;
+            }
+            parsed = parsed * 10 + (c - '0');
+        }
+        if (parsed < minimum || parsed > maximum)
+        {
+            hr = E_INVALIDARG;
+            return true;
+        }
+
+        *target = parsed;
+        return true;
+    }
+
+    bool FFmpegMediaSource::UseDecodeAhead()
+    {
+        return baleDecodeAheadFrames > 0 && currentVideoStream &&
+            currentVideoStream->Decoder() == DecoderEngine::FFmpegSoftwareDecoder &&
+            !config->IsFrameGrabber;
+    }
+
+    void FFmpegMediaSource::AheadLoop()
+    {
+        bool apartment = false;
+        try
+        {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+            apartment = true;
+        }
+        catch (...)
+        {
+        }
+        {
+            std::unique_lock lock(aheadMutex);
+            while (true)
+            {
+                aheadCv.wait(lock, [this]
+                    {
+                        return aheadStop || (aheadPauses == 0 && aheadStream && !aheadEnd && (int)aheadQueue.size() < baleDecodeAheadFrames);
+                    });
+                if (aheadStop)
+                {
+                    break;
+                }
+
+                auto stream = aheadStream;
+                auto generation = aheadGeneration;
+                aheadBusy = true;
+                lock.unlock();
+
+                MediaStreamSample sample{ nullptr };
+                try
+                {
+                    sample = stream->GetNextSample();
+                }
+                catch (...)
+                {
+                    sample = nullptr;
+                }
+
+                lock.lock();
+                aheadBusy = false;
+                if (generation == aheadGeneration && stream == aheadStream)
+                {
+                    if (sample)
+                    {
+                        aheadQueue.push_back(sample);
+                    }
+                    else
+                    {
+                        aheadEnd = true;
+                    }
+                }
+                aheadCv.notify_all();
+            }
+        }
+        if (apartment)
+        {
+            winrt::uninit_apartment();
+        }
+    }
+
+    // Called with `mutex` held. Stops the worker between samples; clear also drops decoded samples
+    // (their decoder state is about to be discarded by a seek, flush or stream switch).
+    void FFmpegMediaSource::AheadPause(bool clear)
+    {
+        std::unique_lock lock(aheadMutex);
+        aheadPauses++;
+        if (clear)
+        {
+            aheadGeneration++;
+            aheadQueue.clear();
+            aheadEnd = false;
+        }
+        aheadCv.wait(lock, [this] { return !aheadBusy; });
+    }
+
+    void FFmpegMediaSource::AheadResume()
+    {
+        std::lock_guard lock(aheadMutex);
+        aheadPauses--;
+        aheadCv.notify_all();
+    }
+
+    void FFmpegMediaSource::AheadShutdown()
+    {
+        {
+            std::lock_guard lock(aheadMutex);
+            aheadStop = true;
+            aheadCv.notify_all();
+        }
+        if (aheadThread.joinable())
+        {
+            aheadThread.join();
+        }
+        std::lock_guard lock(aheadMutex);
+        aheadQueue.clear();
+        aheadStream = nullptr;
+        aheadEnd = false;
+        aheadGeneration++;
+    }
+
+    // Called with `mutex` held, from OnSampleRequested for the current FFmpeg software video stream.
+    MediaStreamSample FFmpegMediaSource::TakeAheadSample()
+    {
+        std::unique_lock lock(aheadMutex);
+        if (aheadStop)
+        {
+            return nullptr;
+        }
+        if (aheadStream != currentVideoStream)
+        {
+            aheadGeneration++;
+            aheadQueue.clear();
+            aheadEnd = false;
+            aheadCv.wait(lock, [this] { return !aheadBusy; });
+            aheadStream = currentVideoStream;
+        }
+        if (!aheadThread.joinable())
+        {
+            aheadThread = std::thread([this] { AheadLoop(); });
+        }
+        aheadCv.notify_all();
+        aheadCv.wait(lock, [this] { return !aheadQueue.empty() || aheadEnd || aheadStop; });
+        if (aheadQueue.empty())
+        {
+            return nullptr;
+        }
+        auto sample = aheadQueue.front();
+        aheadQueue.pop_front();
+        aheadCv.notify_all();
+        return sample;
+    }
+
     void FFmpegMediaSource::MediaStreamSourceClosed(MediaStreamSource const&, MediaStreamSourceClosedEventArgs const&)
     {
         Close(true);
@@ -2349,6 +2562,7 @@ namespace winrt::FFmpegInteropX::implementation
             return;
         }
         MediaStreamSourceStartingRequest request = args.Request();
+        AheadPauseScope aheadPause(this, false);
 
         try
         {
@@ -2439,7 +2653,7 @@ namespace winrt::FFmpegInteropX::implementation
             else if (currentVideoStream && args.Request().StreamDescriptor() == currentVideoStream->StreamDescriptor())
             {
                 CheckVideoDeviceChanged(sender);
-                auto sample = currentVideoStream->GetNextSample();
+                auto sample = UseDecodeAhead() ? TakeAheadSample() : currentVideoStream->GetNextSample();
                 CheckExtendDuration(sample);
                 args.Request().Sample(sample);
             }
@@ -2569,6 +2783,8 @@ namespace winrt::FFmpegInteropX::implementation
             return;
         }
 
+        AheadPauseScope aheadPause(this, true);
+
         try
         {
             m_pReader->Stop();
@@ -2635,7 +2851,12 @@ namespace winrt::FFmpegInteropX::implementation
         else
         {
             lastSeek = position;
-            return m_pReader->Seek(position, actualPosition, lastPosition, fastSeek, currentVideoStream, currentAudioStream);
+            {
+                // Bale: decoded-ahead samples predate the seek. Callers hold `mutex`; pause clears
+                // the queue and waits for the worker to finish its current sample.
+                AheadPauseScope aheadPause(this, true);
+                return m_pReader->Seek(position, actualPosition, lastPosition, fastSeek, currentVideoStream, currentAudioStream);
+            }
         }
     }
 

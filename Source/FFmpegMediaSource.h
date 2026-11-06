@@ -1,6 +1,8 @@
 #pragma once
 #include "FFmpegMediaSource.g.h"
 #include "pch.h"
+#include <thread>
+#include <condition_variable>
 #include "MediaSampleProvider.h"
 #include "SubtitleProvider.h"
 #include "AttachedFileHelper.h"
@@ -337,6 +339,39 @@ namespace winrt::FFmpegInteropX::implementation
         MediaThumbnailData thumbnailData = nullptr;
 
         std::recursive_mutex mutex;
+
+        // Bale tuning, read from FFmpegOptions keys starting with "bale_" (never passed to FFmpeg).
+        int baleDecodeAheadFrames = 0;
+        int baleSwsThreads = 1;
+        int baleDav1dMaxFrameDelay = 0;
+        bool TryParseBaleOption(std::string const& key, hstring const& value, HRESULT& hr);
+
+        // Bale decode-ahead: a worker decodes FFmpeg software video samples ahead of the
+        // MediaStreamSource requests, so conversion and decode bursts overlap with playback.
+        // The worker never takes `mutex`; every path that changes decoder or reader state pauses it.
+        std::thread aheadThread;
+        std::mutex aheadMutex;
+        std::condition_variable aheadCv;
+        std::deque<MediaStreamSample> aheadQueue;
+        std::shared_ptr<MediaSampleProvider> aheadStream;
+        uint64_t aheadGeneration = 0;
+        int aheadPauses = 0;
+        bool aheadBusy = false;
+        bool aheadEnd = false;
+        bool aheadStop = false;
+        void AheadLoop();
+        void AheadPause(bool clear);
+        void AheadResume();
+        void AheadShutdown();
+        bool UseDecodeAhead();
+        MediaStreamSample TakeAheadSample();
+        struct AheadPauseScope
+        {
+            FFmpegMediaSource* owner;
+            AheadPauseScope(FFmpegMediaSource* owner, bool clear) : owner(owner) { owner->AheadPause(clear); }
+            ~AheadPauseScope() { owner->AheadResume(); }
+        };
+
         winrt::weak_ref<MediaPlaybackSession> sessionWeak = { nullptr };
         winrt::event_token sessionPositionEvent{};
 
