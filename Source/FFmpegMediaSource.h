@@ -345,7 +345,10 @@ namespace winrt::FFmpegInteropX::implementation
         int baleSwsThreads = 1;
         int baleDav1dMaxFrameDelay = 0;
         int baleDecodeThreadPriority = 0;
+        int baleDecoderUseMaxResolution = 0;
+        int baleDecoderMaxDpbCount = 0;
         bool TryParseBaleOption(std::string const& key, hstring const& value, HRESULT& hr);
+        void SetBaleDecoderProperties(Windows::Media::MediaProperties::VideoEncodingProperties const& videoProperties);
 
         // Bale decode-ahead: a worker decodes FFmpeg software video samples ahead of the
         // MediaStreamSource requests, so conversion and decode bursts overlap with playback.
