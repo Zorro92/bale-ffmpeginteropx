@@ -344,6 +344,7 @@ namespace winrt::FFmpegInteropX::implementation
         int baleDecodeAheadFrames = 0;
         int baleSwsThreads = 1;
         int baleDav1dMaxFrameDelay = 0;
+        int baleDecodeThreadPriority = 0;
         bool TryParseBaleOption(std::string const& key, hstring const& value, HRESULT& hr);
 
         // Bale decode-ahead: a worker decodes FFmpeg software video samples ahead of the

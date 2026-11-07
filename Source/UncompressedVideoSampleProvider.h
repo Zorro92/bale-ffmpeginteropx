@@ -72,6 +72,8 @@ public:
     int TargetHeight = 0;
     // Bale: slice threads for the output pixel conversion (1 = upstream single-threaded sws_scale).
     int SwsThreads = 1;
+    // Bale: 0..2, BaleThreadBoost level for the sws slice threads.
+    int SwsThreadPriority = 0;
     BYTE* TargetBuffer = NULL;
 
     virtual void NotifyCreateSource() override

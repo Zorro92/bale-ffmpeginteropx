@@ -18,6 +18,7 @@
 
 #include "pch.h"
 #include "UncompressedVideoSampleProvider.h"
+#include "BaleThreadBoost.h"
 #include "NativeBufferFactory.h"
 #include <mfapi.h>
 #include "VideoFilterFactory.h"
@@ -355,7 +356,11 @@ HRESULT UncompressedVideoSampleProvider::InitializeThreadedScaler(AVFrame* avFra
         return E_OUTOFMEMORY;
     }
 
-    if (av_opt_set_int(ctx, "srcw", avFrame->width, 0) < 0 ||
+    int swsInit;
+    {
+        // Bale: sws creates its slice threads inside sws_init_context.
+        BaleThreadBoost::Window boost(SwsThreadPriority);
+        swsInit = av_opt_set_int(ctx, "srcw", avFrame->width, 0) < 0 ||
         av_opt_set_int(ctx, "srch", avFrame->height, 0) < 0 ||
         av_opt_set_int(ctx, "src_format", avFrame->format, 0) < 0 ||
         av_opt_set_int(ctx, "dstw", outputWidth, 0) < 0 ||
@@ -363,7 +368,9 @@ HRESULT UncompressedVideoSampleProvider::InitializeThreadedScaler(AVFrame* avFra
         av_opt_set_int(ctx, "dst_format", m_OutputPixelFormat, 0) < 0 ||
         av_opt_set_int(ctx, "sws_flags", scaler, 0) < 0 ||
         av_opt_set_int(ctx, "threads", SwsThreads, 0) < 0 ||
-        sws_init_context(ctx, NULL, NULL) < 0)
+        sws_init_context(ctx, NULL, NULL) < 0;
+    }
+    if (swsInit)
     {
         sws_freeContext(ctx);
         return E_FAIL;

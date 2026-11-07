@@ -15,12 +15,23 @@
 #include "SubtitleProviderBitmap.h"
 #include "FFmpegReader.h"
 #include "PlatformInfo.h"
+#include "BaleThreadBoost.h"
 
 #ifdef Win32
 #include <winrt/Microsoft.Graphics.Display.h>
 #endif
 
 void free_buffer(void* lpVoid);
+
+// Bale: thread-attach hook for BaleThreadBoost (no other DllMain exists in this module).
+extern "C" BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
+{
+    if (reason == DLL_THREAD_ATTACH)
+    {
+        BaleThreadBoost::OnThreadAttach();
+    }
+    return TRUE;
+}
 
 namespace winrt::FFmpegInteropX::implementation
 {
@@ -1170,7 +1181,11 @@ namespace winrt::FFmpegInteropX::implementation
                 {
                     av_dict_set_int(&codecOptions, "max_frame_delay", baleDav1dMaxFrameDelay, 0);
                 }
-                hr = avcodec_open2(avVideoCodecCtx, avVideoCodec, &codecOptions);
+                {
+                    // Bale: dav1d spawns its workers inside avcodec_open2.
+                    BaleThreadBoost::Window boost(std::string(avVideoCodec->name) == "libdav1d" ? baleDecodeThreadPriority : 0);
+                    hr = avcodec_open2(avVideoCodecCtx, avVideoCodec, &codecOptions);
+                }
                 av_dict_free(&codecOptions);
             }
 
@@ -2310,6 +2325,7 @@ namespace winrt::FFmpegInteropX::implementation
             }
             auto uncompressed = new UncompressedVideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr);
             uncompressed->SwsThreads = baleSwsThreads;
+            uncompressed->SwsThreadPriority = baleDecodeThreadPriority;
             videoSampleProvider = std::shared_ptr<MediaSampleProvider>(uncompressed);
         }
 
@@ -2377,6 +2393,7 @@ namespace winrt::FFmpegInteropX::implementation
         if (key == "bale_decode_ahead_frames") { target = &baleDecodeAheadFrames; minimum = 0; maximum = 64; }
         else if (key == "bale_sws_threads") { target = &baleSwsThreads; minimum = 1; maximum = 16; }
         else if (key == "bale_dav1d_max_frame_delay") { target = &baleDav1dMaxFrameDelay; minimum = 0; maximum = 64; }
+        else if (key == "bale_decode_thread_priority") { target = &baleDecodeThreadPriority; minimum = 0; maximum = 2; }
         else
         {
             hr = E_INVALIDARG;
@@ -2418,6 +2435,10 @@ namespace winrt::FFmpegInteropX::implementation
 
     void FFmpegMediaSource::AheadLoop()
     {
+        if (baleDecodeThreadPriority > 0)
+        {
+            SetThreadPriority(GetCurrentThread(), BaleThreadBoost::ToWin32(baleDecodeThreadPriority));
+        }
         bool apartment = false;
         try
         {
