@@ -344,6 +344,7 @@ namespace winrt::FFmpegInteropX::implementation
         int baleDecodeAheadFrames = 0;
         int baleSwsThreads = 1;
         int baleDav1dMaxFrameDelay = 0;
+        int baleDav1dExportFilmGrain = 0;
         int baleDecodeThreadPriority = 0;
         int baleDecoderUseMaxResolution = 0;
         int baleDecoderMaxDpbCount = 0;
