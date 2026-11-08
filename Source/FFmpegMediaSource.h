@@ -393,6 +393,7 @@ namespace winrt::FFmpegInteropX::implementation
         // Bale: upload-only manager/handle, never an FFmpeg hardware device context.
         com_ptr<IMFDXGIDeviceManager> uploadDeviceManager;
         HANDLE uploadDeviceHandle = nullptr;
+        unsigned uploadSamplesIssued = 0; // Under mutex; first three texture samples per source only.
         void InitializeUploadDevice(MediaStreamSource const& sender);
         void DisableUploadStreams(HRESULT hr);
         void CloseUploadDevice();

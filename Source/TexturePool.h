@@ -100,10 +100,11 @@ public:
         return hr;
     }
 
-    // Bale: a separate pool instance for software uploads, with no decoder bind flags.
-    HRESULT GetUploadTexture(UINT width, UINT height, DXGI_FORMAT format, winrt::com_ptr<ID3D11Texture2D>& result)
+    // Bale: a separate software-upload pool; flags are selected by bale_d3d11_upload.
+    HRESULT GetUploadTexture(UINT width, UINT height, DXGI_FORMAT format, UINT bindFlags, UINT miscFlags, winrt::com_ptr<ID3D11Texture2D>& result)
     {
-        if (width != desc_shared.Width || height != desc_shared.Height || format != desc_shared.Format)
+        if (width != desc_shared.Width || height != desc_shared.Height || format != desc_shared.Format ||
+            bindFlags != desc_shared.BindFlags || miscFlags != desc_shared.MiscFlags)
         {
             Clear();
             desc_shared.Width = width;
@@ -113,7 +114,10 @@ public:
             desc_shared.Format = format;
             desc_shared.SampleDesc.Count = 1;
             desc_shared.Usage = D3D11_USAGE_DEFAULT;
-            desc_shared.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            desc_shared.BindFlags = bindFlags;
+            desc_shared.MiscFlags = miscFlags;
+            av_log(nullptr, AV_LOG_INFO, "Bale D3D11 upload pool desc: %ux%u format=%u bind=0x%X misc=0x%X.\n",
+                width, height, static_cast<unsigned>(format), bindFlags, miscFlags);
         }
         if (!pool.empty())
         {
@@ -121,7 +125,9 @@ public:
             pool.pop_back();
             return S_OK;
         }
-        return device->CreateTexture2D(&desc_shared, nullptr, result.put());
+        auto hr = device->CreateTexture2D(&desc_shared, nullptr, result.put());
+        if (FAILED(hr)) av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload CreateTexture2D DEFAULT failed (hr=0x%08X).\n", static_cast<unsigned>(hr));
+        return hr;
     }
 
     void ReturnTexture(winrt::com_ptr<ID3D11Texture2D> texture)

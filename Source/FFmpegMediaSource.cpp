@@ -2427,7 +2427,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_sws_threads") { target = &baleSwsThreads; minimum = 1; maximum = 16; }
         else if (key == "bale_dav1d_max_frame_delay") { target = &baleDav1dMaxFrameDelay; minimum = 0; maximum = 64; }
         else if (key == "bale_dav1d_export_film_grain") { target = &baleDav1dExportFilmGrain; minimum = 0; maximum = 1; }
-        else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 1; }
+        else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 5; }
         else if (key == "bale_decode_thread_priority") { target = &baleDecodeThreadPriority; minimum = 0; maximum = 2; }
         else if (key == "bale_decoder_use_max_resolution") { target = &baleDecoderUseMaxResolution; minimum = 0; maximum = 1; }
         else if (key == "bale_decoder_max_dpb_count") { target = &baleDecoderMaxDpbCount; minimum = 0; maximum = 16; }
@@ -2616,7 +2616,8 @@ namespace winrt::FFmpegInteropX::implementation
     {
         if (uploadDeviceHandle && uploadDeviceManager)
         {
-            uploadDeviceManager->CloseDeviceHandle(uploadDeviceHandle);
+            auto hr = uploadDeviceManager->CloseDeviceHandle(uploadDeviceHandle);
+            if (FAILED(hr)) av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload CloseDeviceHandle failed (hr=0x%08X).\n", static_cast<unsigned>(hr));
         }
         uploadDeviceHandle = nullptr;
         uploadDeviceManager = nullptr;
@@ -2654,6 +2655,7 @@ namespace winrt::FFmpegInteropX::implementation
 
         if (FAILED(hr))
         {
+            av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload acquire device failed (hr=0x%08X).\n", static_cast<unsigned>(hr));
             DisableUploadStreams(hr);
             // OpenDeviceHandle can succeed even if GetVideoService fails; always close that handle.
             CloseUploadDevice();
@@ -2666,7 +2668,7 @@ namespace winrt::FFmpegInteropX::implementation
             if (stream->Decoder() == DecoderEngine::FFmpegSoftwareDecoder)
             {
                 auto uncompressed = std::dynamic_pointer_cast<UncompressedVideoSampleProvider>(stream);
-                if (uncompressed && uncompressed->SetUploadDevice(uploadDevice, uploadContext) == S_OK) active = true;
+                if (uncompressed && uncompressed->SetUploadDevice(uploadDevice, uploadContext, baleD3d11Upload) == S_OK) active = true;
             }
         }
         if (!active) CloseUploadDevice();
@@ -2779,6 +2781,23 @@ namespace winrt::FFmpegInteropX::implementation
                 auto sample = UseDecodeAhead() ? TakeAheadSample() : currentVideoStream->GetNextSample();
                 CheckExtendDuration(sample);
                 args.Request().Sample(sample);
+                // Count actual MSS handoffs, not samples merely prepared by decode-ahead.
+                if (baleD3d11Upload > 0 && uploadSamplesIssued < 3 && sample)
+                {
+                    try
+                    {
+                        if (auto surface = sample.Direct3D11Surface())
+                        {
+                            auto desc = surface.Description();
+                            av_log(nullptr, AV_LOG_INFO, "Bale D3D11 upload sample issued index=%u position_ms=%lld texture=%dx%d.\n",
+                                ++uploadSamplesIssued, static_cast<long long>(sample.Timestamp().count() / 10000), desc.Width, desc.Height);
+                        }
+                    }
+                    catch (...)
+                    {
+                        av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload sample diagnostics failed (hr=0x%08X).\n", static_cast<unsigned>(winrt::to_hresult()));
+                    }
+                }
             }
             else
             {
@@ -2787,6 +2806,7 @@ namespace winrt::FFmpegInteropX::implementation
         }
         catch (...)
         {
+            if (baleD3d11Upload > 0) av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload OnSampleRequested failed (hr=0x%08X).\n", static_cast<unsigned>(winrt::to_hresult()));
             DebugMessage(L"Exception in OnSampleRequested()!");
         }
     }

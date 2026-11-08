@@ -30,9 +30,17 @@ public:
         }
     };
 
-    BaleD3D11Upload(winrt::com_ptr<ID3D11Device> device, winrt::com_ptr<ID3D11DeviceContext> context)
+    BaleD3D11Upload(winrt::com_ptr<ID3D11Device> device, winrt::com_ptr<ID3D11DeviceContext> context, int variant)
         : device(device), context(context), texturePool(device, 0)
     {
+        // Keep the staging ring unchanged; only the MF-facing DEFAULT texture varies.
+        switch (variant)
+        {
+        case 2: bindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE; break;
+        case 3: bindFlags = D3D11_BIND_DECODER; break;
+        case 4: bindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE; break;
+        case 5: miscFlags = D3D11_RESOURCE_MISC_SHARED; break;
+        }
     }
 
     ~BaleD3D11Upload() { Flush(); }
@@ -59,48 +67,68 @@ public:
         if (!staging)
         {
             auto hr = device->CreateTexture2D(&stagingDesc, nullptr, staging.put());
-            if (FAILED(hr)) return hr;
+            if (FAILED(hr))
+            {
+                av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload CreateTexture2D STAGING failed (hr=0x%08X).\n", static_cast<unsigned>(hr));
+                return hr;
+            }
         }
         nextStaging = (nextStaging + 1) % stagingTextures.size();
         target.context = context;
         target.texture = staging;
         // WRITE (not DISCARD) on a small staging ring: Map waits if the previous GPU copy still uses it.
-        return context->Map(staging.get(), 0, D3D11_MAP_WRITE, 0, &target.mapped);
+        hr = context->Map(staging.get(), 0, D3D11_MAP_WRITE, 0, &target.mapped);
+        if (FAILED(hr)) av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload Map failed (hr=0x%08X).\n", static_cast<unsigned>(hr));
+        return hr;
     }
 
     MediaStreamSample CreateSample(Mapping& source, TimeSpan position, IDirect3DSurface* surface)
     {
         source.Unmap();
-        winrt::com_ptr<ID3D11Texture2D> texture;
+        const char* operation = "GetUploadTexture";
+        try
         {
-            std::lock_guard lock(samplesMutex);
-            winrt::check_hresult(texturePool.GetUploadTexture(stagingDesc.Width, stagingDesc.Height, stagingDesc.Format, texture));
-        }
-        context->CopyResource(texture.get(), source.texture.get());
-        context->Flush();
-        winrt::check_hresult(device->GetDeviceRemovedReason());
+            winrt::com_ptr<ID3D11Texture2D> texture;
+            {
+                std::lock_guard lock(samplesMutex);
+                winrt::check_hresult(texturePool.GetUploadTexture(stagingDesc.Width, stagingDesc.Height, stagingDesc.Format, bindFlags, miscFlags, texture));
+            }
+            operation = "CopyResource/GetDeviceRemovedReason";
+            // CopyResource and Flush return void; device removal is the available HRESULT check.
+            context->CopyResource(texture.get(), source.texture.get());
+            context->Flush();
+            winrt::check_hresult(device->GetDeviceRemovedReason());
 
-        auto dxgiSurface = texture.as<IDXGISurface>();
-        auto directSurface = DirectXInteropHelper::GetSurface(dxgiSurface);
-        // Create while the decoded AVFrame is still alive, so even a surface/sample failure can
-        // re-run the ordinary CPU output step for this same frame, without retaining/copying it.
-        auto sample = MediaStreamSample::CreateFromDirect3D11Surface(directSurface, position);
-        {
-            std::lock_guard lock(samplesMutex);
-            auto native = sample.as<winrt::Windows::Foundation::IUnknown>();
-            auto token = sample.Processed(weak_handler(this, &BaleD3D11Upload::OnProcessed));
-            try
+            operation = "GetSurface";
+            auto dxgiSurface = texture.as<IDXGISurface>();
+            auto directSurface = DirectXInteropHelper::GetSurface(dxgiSurface);
+            // Create while the decoded AVFrame is still alive, so even a surface/sample failure can
+            // re-run the ordinary CPU output step for this same frame, without retaining/copying it.
+            operation = "CreateFromDirect3D11Surface";
+            auto sample = MediaStreamSample::CreateFromDirect3D11Surface(directSurface, position);
+            operation = "track Processed";
             {
-                trackedSamples.emplace(native, token);
+                std::lock_guard lock(samplesMutex);
+                auto native = sample.as<winrt::Windows::Foundation::IUnknown>();
+                auto token = sample.Processed(weak_handler(this, &BaleD3D11Upload::OnProcessed));
+                try
+                {
+                    trackedSamples.emplace(native, token);
+                }
+                catch (...)
+                {
+                    sample.Processed(token);
+                    throw;
+                }
             }
-            catch (...)
-            {
-                sample.Processed(token);
-                throw;
-            }
+            *surface = directSurface;
+            return sample;
         }
-        *surface = directSurface;
-        return sample;
+        catch (...)
+        {
+            av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload %s failed (hr=0x%08X).\n", operation, static_cast<unsigned>(winrt::to_hresult()));
+            throw;
+        }
     }
 
     void Flush()
@@ -126,6 +154,11 @@ private:
         try
         {
             std::lock_guard lock(samplesMutex);
+            if (processedSamples < 3)
+            {
+                av_log(nullptr, AV_LOG_INFO, "Bale D3D11 upload Processed index=%u position_ms=%lld.\n",
+                    ++processedSamples, static_cast<long long>(sender.Timestamp().count() / 10000));
+            }
             auto native = sender.as<winrt::Windows::Foundation::IUnknown>();
             auto entry = trackedSamples.find(native);
             if (entry != trackedSamples.end())
@@ -141,13 +174,18 @@ private:
         {
             // Discard that texture and let the decode thread log/disable upload on the next frame.
             // Never throw out of an MF event handler.
-            failure.store(winrt::to_hresult());
+            auto hr = winrt::to_hresult();
+            failure.store(hr);
+            av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload OnProcessed failed (hr=0x%08X).\n", static_cast<unsigned>(hr));
         }
     }
 
     winrt::com_ptr<ID3D11Device> device;
     winrt::com_ptr<ID3D11DeviceContext> context;
     TexturePool texturePool;
+    UINT bindFlags = D3D11_BIND_SHADER_RESOURCE;
+    UINT miscFlags = 0;
+    unsigned processedSamples = 0; // Protected by samplesMutex; bounded diagnostics, not per-frame logging.
     std::array<winrt::com_ptr<ID3D11Texture2D>, 3> stagingTextures;
     D3D11_TEXTURE2D_DESC stagingDesc{};
     size_t nextStaging = 0;

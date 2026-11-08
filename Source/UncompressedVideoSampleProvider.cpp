@@ -476,22 +476,25 @@ HRESULT UncompressedVideoSampleProvider::InitializeThreadedScaler(AVFrame* avFra
 }
 
 // Bale: shared renderer context calls must be protected, even on the decode-ahead worker.
-HRESULT UncompressedVideoSampleProvider::SetUploadDevice(winrt::com_ptr<ID3D11Device> newDevice, winrt::com_ptr<ID3D11DeviceContext> newContext)
+HRESULT UncompressedVideoSampleProvider::SetUploadDevice(winrt::com_ptr<ID3D11Device> newDevice, winrt::com_ptr<ID3D11DeviceContext> newContext, int variant)
 {
     if (uploadFailed) return S_FALSE;
     try
     {
-        if (!newDevice || !newContext || (newDevice->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED))
-        {
-            winrt::throw_hresult(E_NOINTERFACE);
-        }
+        if (!newDevice || !newContext) winrt::throw_hresult(E_NOINTERFACE);
+        auto flags = newDevice->GetCreationFlags();
         auto multithread = newDevice.try_as<ID3D10Multithread>();
         if (!multithread) multithread = newContext.try_as<ID3D10Multithread>();
-        if (!multithread) winrt::throw_hresult(E_NOINTERFACE);
         // SetMultithreadProtected returns the PREVIOUS value, not a success/failure BOOL.
-        multithread->SetMultithreadProtected(TRUE);
-        if (!multithread->GetMultithreadProtected()) winrt::throw_hresult(E_FAIL);
-        upload = std::make_shared<BaleD3D11Upload>(newDevice, newContext);
+        if (multithread && !(flags & D3D11_CREATE_DEVICE_SINGLETHREADED)) multithread->SetMultithreadProtected(TRUE);
+        bool protectedContext = multithread && multithread->GetMultithreadProtected();
+        av_log(nullptr, AV_LOG_INFO, "Bale D3D11 upload device acquired: flags=0x%X feature_level=0x%X multithread_protected=%u variant=%d.\n",
+            flags, static_cast<unsigned>(newDevice->GetFeatureLevel()), static_cast<unsigned>(protectedContext), variant);
+        if (!multithread || (flags & D3D11_CREATE_DEVICE_SINGLETHREADED)) winrt::throw_hresult(E_NOINTERFACE);
+        if (!protectedContext) winrt::throw_hresult(E_FAIL);
+        av_log(nullptr, AV_LOG_INFO, "Bale D3D11 upload output declared: %dx%d subtype=%s.\n",
+            outputFrameWidth, outputFrameHeight, winrt::to_string(outputMediaSubtype).c_str());
+        upload = std::make_shared<BaleD3D11Upload>(newDevice, newContext, variant);
         return S_OK;
     }
     catch (...)

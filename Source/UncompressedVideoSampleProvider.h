@@ -80,7 +80,7 @@ public:
     BYTE* TargetBuffer = NULL;
 
     // Bale: independent of SetHardwareDevice/AVHWDeviceContext; never changes the decoder engine.
-    HRESULT SetUploadDevice(winrt::com_ptr<ID3D11Device> newDevice, winrt::com_ptr<ID3D11DeviceContext> newContext);
+    HRESULT SetUploadDevice(winrt::com_ptr<ID3D11Device> newDevice, winrt::com_ptr<ID3D11DeviceContext> newContext, int variant);
     void DisableUpload(HRESULT hr);
     MediaStreamSample CreateSurfaceSample(IDirect3DSurface const& surface, TimeSpan position) override
     {
