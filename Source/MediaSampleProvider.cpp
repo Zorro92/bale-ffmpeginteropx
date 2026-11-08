@@ -241,7 +241,7 @@ MediaStreamSample MediaSampleProvider::GetNextSample()
 
             if (surface)
             {
-                sample = MediaStreamSample::CreateFromDirect3D11Surface(surface, position);
+                sample = CreateSurfaceSample(surface, position);
             }
             else
             {

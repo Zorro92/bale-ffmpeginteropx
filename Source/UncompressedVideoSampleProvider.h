@@ -18,6 +18,7 @@
 
 #pragma once
 #include "UncompressedSampleProvider.h"
+#include "BaleD3D11Upload.h"
 using namespace winrt::Windows::Media::Core;
 
 #pragma region Desktop Family
@@ -52,6 +53,8 @@ public:
     {
         hasFirstInterlacedFrame = false;
         UncompressedSampleProvider::Flush(flushBuffers);
+        uploadSample = nullptr;
+        if (upload) upload->Flush();
     }
 
     UncompressedVideoSampleProvider(
@@ -76,6 +79,20 @@ public:
     int SwsThreadPriority = 0;
     BYTE* TargetBuffer = NULL;
 
+    // Bale: independent of SetHardwareDevice/AVHWDeviceContext; never changes the decoder engine.
+    HRESULT SetUploadDevice(winrt::com_ptr<ID3D11Device> newDevice, winrt::com_ptr<ID3D11DeviceContext> newContext);
+    void DisableUpload(HRESULT hr);
+    MediaStreamSample CreateSurfaceSample(IDirect3DSurface const& surface, TimeSpan position) override
+    {
+        if (uploadSample)
+        {
+            auto sample = uploadSample;
+            uploadSample = nullptr;
+            return sample;
+        }
+        return MediaSampleProvider::CreateSurfaceSample(surface, position);
+    }
+
     virtual void NotifyCreateSource() override
     {
         if (VideoInfo().FramesPerSecondOverride() > 0 && VideoInfo().FramesPerSecond() > 0)
@@ -97,6 +114,12 @@ public:
     }
 
 private:
+    std::shared_ptr<BaleD3D11Upload> upload;
+    MediaStreamSample uploadSample{ nullptr };
+    bool uploadFailed = false;
+    bool uploadLogged = false;
+    HRESULT ScaleFrame(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer);
+    void UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts);
     void SelectOutputFormat();
     HRESULT InitializeScalerIfRequired(AVFrame* avFrame);
     HRESULT FillLinesAndBuffer(int* linesize, BYTE** data, AVBufferRef** buffer, int width, int height, bool isSourceBuffer);

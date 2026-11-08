@@ -21,6 +21,7 @@
 #include "BaleThreadBoost.h"
 #include "NativeBufferFactory.h"
 #include <mfapi.h>
+#include <d3d10.h>
 #include "VideoFilterFactory.h"
 
 extern "C"
@@ -474,6 +475,113 @@ HRESULT UncompressedVideoSampleProvider::InitializeThreadedScaler(AVFrame* avFra
     return S_OK;
 }
 
+// Bale: shared renderer context calls must be protected, even on the decode-ahead worker.
+HRESULT UncompressedVideoSampleProvider::SetUploadDevice(winrt::com_ptr<ID3D11Device> newDevice, winrt::com_ptr<ID3D11DeviceContext> newContext)
+{
+    if (uploadFailed) return S_FALSE;
+    try
+    {
+        if (!newDevice || !newContext || (newDevice->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED))
+        {
+            winrt::throw_hresult(E_NOINTERFACE);
+        }
+        auto multithread = newDevice.try_as<ID3D10Multithread>();
+        if (!multithread) multithread = newContext.try_as<ID3D10Multithread>();
+        if (!multithread) winrt::throw_hresult(E_NOINTERFACE);
+        // SetMultithreadProtected returns the PREVIOUS value, not a success/failure BOOL.
+        multithread->SetMultithreadProtected(TRUE);
+        if (!multithread->GetMultithreadProtected()) winrt::throw_hresult(E_FAIL);
+        upload = std::make_shared<BaleD3D11Upload>(newDevice, newContext);
+        return S_OK;
+    }
+    catch (...)
+    {
+        auto hr = winrt::to_hresult();
+        DisableUpload(hr);
+        return hr;
+    }
+}
+
+void UncompressedVideoSampleProvider::DisableUpload(HRESULT hr)
+{
+    if (!uploadFailed)
+    {
+        uploadFailed = true;
+        av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload disabled (hr=0x%08X); using CPU buffers.\n", static_cast<unsigned>(hr));
+    }
+    uploadSample = nullptr;
+    upload.reset();
+}
+
+HRESULT UncompressedVideoSampleProvider::ScaleFrame(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer)
+{
+    bool converted = false;
+    if (m_swsThreaded)
+    {
+        // Wrap the destination (CPU pool or mapped staging memory) so sws does not allocate.
+        AVFrame* dst = av_frame_alloc();
+        if (dst)
+        {
+            dst->buf[0] = av_buffer_ref(buffer);
+            if (dst->buf[0])
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    dst->data[i] = data[i];
+                    dst->linesize[i] = linesize[i];
+                }
+                dst->width = outputWidth;
+                dst->height = outputHeight;
+                dst->format = m_OutputPixelFormat;
+                converted = sws_scale_frame(m_pSwsCtx, dst, avFrame) >= 0;
+            }
+            av_frame_free(&dst);
+        }
+    }
+    else
+    {
+        converted = sws_scale(m_pSwsCtx, (const UINT8**)(avFrame->data), avFrame->linesize, 0, avFrame->height, data, linesize) > 0;
+    }
+    return converted ? S_OK : E_FAIL;
+}
+
+void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts)
+{
+    auto format = m_OutputPixelFormat == AV_PIX_FMT_NV12 ? DXGI_FORMAT_NV12 : DXGI_FORMAT_P010;
+    BaleD3D11Upload::Mapping target;
+    winrt::check_hresult(upload->Map(outputFrameWidth, outputFrameHeight, format, target));
+    auto pitch = target.mapped.RowPitch;
+    auto rowBytes = static_cast<UINT>(outputFrameWidth) * (format == DXGI_FORMAT_P010 ? 2U : 1U);
+    if (!target.mapped.pData || pitch < rowBytes || pitch > INT_MAX) winrt::throw_hresult(E_FAIL);
+    BYTE* data[4]{ static_cast<BYTE*>(target.mapped.pData), nullptr, nullptr, nullptr };
+    // NV12/P010 are planar staging resources: UV starts after RowPitch * TEXTURE height, not image height.
+    data[1] = data[0] + static_cast<size_t>(pitch) * outputFrameHeight;
+    int linesize[4]{ static_cast<int>(pitch), static_cast<int>(pitch), 0, 0 };
+    if (avFrame->format == m_OutputPixelFormat && avFrame->width == outputWidth && avFrame->height == outputHeight)
+    {
+        av_image_copy(data, linesize, (const UINT8**)avFrame->data, avFrame->linesize, m_OutputPixelFormat, outputWidth, outputHeight);
+    }
+    else
+    {
+        winrt::check_hresult(InitializeScalerIfRequired(avFrame));
+        // sws_scale_frame is synchronous, including its slice workers. This no-op owner is released
+        // before Unmap, and no mapped pointer escapes into a sample or survives this output step.
+        auto size = static_cast<size_t>(pitch) * outputFrameHeight * 3 / 2;
+        auto buffer = av_buffer_create(data[0], size, [](void*, uint8_t*) {}, nullptr, 0);
+        if (!buffer) winrt::throw_hresult(E_OUTOFMEMORY);
+        auto hr = ScaleFrame(avFrame, data, linesize, buffer);
+        av_buffer_unref(&buffer);
+        winrt::check_hresult(hr);
+    }
+    ReadFrameProperties(avFrame, framePts);
+    uploadSample = upload->CreateSample(target, ConvertPosition(framePts), surface);
+    if (!uploadLogged)
+    {
+        uploadLogged = true;
+        av_log(nullptr, AV_LOG_INFO, "Bale D3D11 upload active: %s %dx%d.\n", format == DXGI_FORMAT_NV12 ? "NV12" : "P010", outputFrameWidth, outputFrameHeight);
+    }
+}
+
 UncompressedVideoSampleProvider::~UncompressedVideoSampleProvider()
 {
     if (m_pSwsCtx)
@@ -494,11 +602,25 @@ UncompressedVideoSampleProvider::~UncompressedVideoSampleProvider()
 
 HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer, IDirect3DSurface* surface, AVFrame* avFrame, int64_t& framePts, int64_t& frameDuration)
 {
-    UNREFERENCED_PARAMETER(surface);
     UNREFERENCED_PARAMETER(frameDuration);
 
     HRESULT hr = S_OK;
     CheckFrameSize(avFrame);
+
+    if (upload && (m_OutputPixelFormat == AV_PIX_FMT_NV12 || m_OutputPixelFormat == AV_PIX_FMT_P010LE))
+    {
+        try
+        {
+            UploadFrame(avFrame, surface, framePts);
+            return S_OK;
+        }
+        catch (...)
+        {
+            DisableUpload(winrt::to_hresult());
+            *surface = nullptr;
+            // Retry this very frame through the unchanged CPU path, permanently for this stream.
+        }
+    }
 
     if (outputDirectBuffer)
     {
@@ -544,35 +666,7 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
             if (SUCCEEDED(hr))
             {
                 // Convert to output format using FFmpeg software scaler
-                bool converted = false;
-                if (m_swsThreaded)
-                {
-                    // Bale: wrap the pooled target buffer so sws_frame_start does not allocate.
-                    AVFrame* dst = av_frame_alloc();
-                    if (dst)
-                    {
-                        dst->buf[0] = av_buffer_ref(buffer);
-                        if (dst->buf[0])
-                        {
-                            for (int i = 0; i < 4; i++)
-                            {
-                                dst->data[i] = data[i];
-                                dst->linesize[i] = linesize[i];
-                            }
-                            dst->width = outputWidth;
-                            dst->height = outputHeight;
-                            dst->format = m_OutputPixelFormat;
-                            converted = sws_scale_frame(m_pSwsCtx, dst, avFrame) >= 0;
-                        }
-                        av_frame_free(&dst);
-                    }
-                }
-                else
-                {
-                    converted = sws_scale(m_pSwsCtx, (const UINT8**)(avFrame->data), avFrame->linesize, 0, avFrame->height, data, linesize) > 0;
-                }
-
-                if (converted)
+                if (SUCCEEDED(ScaleFrame(avFrame, data, linesize, buffer)))
                 {
                     *pBuffer = NativeBufferFactory::CreateNativeBuffer(buffer->data, (UINT32)buffer->size, free_buffer, buffer);
                 }

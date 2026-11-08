@@ -100,6 +100,30 @@ public:
         return hr;
     }
 
+    // Bale: a separate pool instance for software uploads, with no decoder bind flags.
+    HRESULT GetUploadTexture(UINT width, UINT height, DXGI_FORMAT format, winrt::com_ptr<ID3D11Texture2D>& result)
+    {
+        if (width != desc_shared.Width || height != desc_shared.Height || format != desc_shared.Format)
+        {
+            Clear();
+            desc_shared.Width = width;
+            desc_shared.Height = height;
+            desc_shared.MipLevels = 1;
+            desc_shared.ArraySize = 1;
+            desc_shared.Format = format;
+            desc_shared.SampleDesc.Count = 1;
+            desc_shared.Usage = D3D11_USAGE_DEFAULT;
+            desc_shared.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        }
+        if (!pool.empty())
+        {
+            result = pool.back();
+            pool.pop_back();
+            return S_OK;
+        }
+        return device->CreateTexture2D(&desc_shared, nullptr, result.put());
+    }
+
     void ReturnTexture(winrt::com_ptr<ID3D11Texture2D> texture)
     {
         D3D11_TEXTURE2D_DESC desc;

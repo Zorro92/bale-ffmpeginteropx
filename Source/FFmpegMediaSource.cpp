@@ -2055,6 +2055,7 @@ namespace winrt::FFmpegInteropX::implementation
         device = nullptr;
         deviceContext = nullptr;
         deviceManager = nullptr;
+        CloseUploadDevice();
 
         PlaybackSession(nullptr);
 
@@ -2426,6 +2427,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_sws_threads") { target = &baleSwsThreads; minimum = 1; maximum = 16; }
         else if (key == "bale_dav1d_max_frame_delay") { target = &baleDav1dMaxFrameDelay; minimum = 0; maximum = 64; }
         else if (key == "bale_dav1d_export_film_grain") { target = &baleDav1dExportFilmGrain; minimum = 0; maximum = 1; }
+        else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 1; }
         else if (key == "bale_decode_thread_priority") { target = &baleDecodeThreadPriority; minimum = 0; maximum = 2; }
         else if (key == "bale_decoder_use_max_resolution") { target = &baleDecoderUseMaxResolution; minimum = 0; maximum = 1; }
         else if (key == "bale_decoder_max_dpb_count") { target = &baleDecoderMaxDpbCount; minimum = 0; maximum = 16; }
@@ -2610,6 +2612,66 @@ namespace winrt::FFmpegInteropX::implementation
         Close(true);
     }
 
+    void FFmpegMediaSource::CloseUploadDevice()
+    {
+        if (uploadDeviceHandle && uploadDeviceManager)
+        {
+            uploadDeviceManager->CloseDeviceHandle(uploadDeviceHandle);
+        }
+        uploadDeviceHandle = nullptr;
+        uploadDeviceManager = nullptr;
+    }
+
+    void FFmpegMediaSource::DisableUploadStreams(HRESULT hr)
+    {
+        for (auto& stream : videoStreams)
+        {
+            if (stream->Decoder() == DecoderEngine::FFmpegSoftwareDecoder)
+            {
+                auto uncompressed = std::dynamic_pointer_cast<UncompressedVideoSampleProvider>(stream);
+                if (uncompressed) uncompressed->DisableUpload(hr);
+            }
+        }
+    }
+
+    void FFmpegMediaSource::InitializeUploadDevice(MediaStreamSource const& sender)
+    {
+        HRESULT hr = S_OK;
+        com_ptr<ID3D11Device> uploadDevice;
+        com_ptr<ID3D11DeviceContext> uploadContext;
+        com_ptr<ID3D11VideoDevice> videoDevice;
+        try
+        {
+            winrt::check_hresult(DirectXInteropHelper::GetDeviceManagerFromStreamSource(sender, uploadDeviceManager));
+            if (!uploadDeviceManager) winrt::throw_hresult(E_NOINTERFACE);
+            winrt::check_hresult(DirectXInteropHelper::GetDeviceFromStreamSource(uploadDeviceManager,
+                uploadDevice, uploadContext, videoDevice, &uploadDeviceHandle));
+        }
+        catch (...)
+        {
+            hr = winrt::to_hresult();
+        }
+
+        if (FAILED(hr))
+        {
+            DisableUploadStreams(hr);
+            // OpenDeviceHandle can succeed even if GetVideoService fails; always close that handle.
+            CloseUploadDevice();
+            return;
+        }
+
+        bool active = false;
+        for (auto& stream : videoStreams)
+        {
+            if (stream->Decoder() == DecoderEngine::FFmpegSoftwareDecoder)
+            {
+                auto uncompressed = std::dynamic_pointer_cast<UncompressedVideoSampleProvider>(stream);
+                if (uncompressed && uncompressed->SetUploadDevice(uploadDevice, uploadContext) == S_OK) active = true;
+            }
+        }
+        if (!active) CloseUploadDevice();
+    }
+
     void FFmpegMediaSource::OnStarting(MediaStreamSource const& sender, MediaStreamSourceStartingEventArgs const& args)
     {
         std::lock_guard lock(mutex);
@@ -2653,6 +2715,11 @@ namespace winrt::FFmpegInteropX::implementation
                     device = nullptr;
                     deviceContext = nullptr;
                 }
+            }
+
+            else if (isFirstSeek && !avHardwareContext && baleD3d11Upload > 0 && !config->IsFrameGrabber)
+            {
+                InitializeUploadDevice(sender);
             }
 
             // Perform seek operation when MediaStreamSource received seek event from MediaElement
@@ -2747,6 +2814,18 @@ namespace winrt::FFmpegInteropX::implementation
 
     void FFmpegMediaSource::CheckVideoDeviceChanged(MediaStreamSource const& mss)
     {
+        if (uploadDeviceManager)
+        {
+            auto uploadHr = uploadDeviceManager->TestDevice(uploadDeviceHandle);
+            if (FAILED(uploadHr))
+            {
+                // Do not deliver queued textures from a removed/reset device. No upload retries.
+                AheadPauseScope aheadPause(this, true);
+                DisableUploadStreams(uploadHr);
+                CloseUploadDevice();
+            }
+        }
+
         bool hasDeviceChanged = false;
         HRESULT hr = S_OK;
         if (deviceManager)

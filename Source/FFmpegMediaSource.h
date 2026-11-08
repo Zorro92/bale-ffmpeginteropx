@@ -345,6 +345,7 @@ namespace winrt::FFmpegInteropX::implementation
         int baleSwsThreads = 1;
         int baleDav1dMaxFrameDelay = 0;
         int baleDav1dExportFilmGrain = 0;
+        int baleD3d11Upload = 0;
         int baleDecodeThreadPriority = 0;
         int baleDecoderUseMaxResolution = 0;
         int baleDecoderMaxDpbCount = 0;
@@ -388,6 +389,13 @@ namespace winrt::FFmpegInteropX::implementation
         com_ptr<ID3D11DeviceContext> deviceContext;
         HANDLE deviceHandle = nullptr;
         com_ptr<IMFDXGIDeviceManager> deviceManager;
+
+        // Bale: upload-only manager/handle, never an FFmpeg hardware device context.
+        com_ptr<IMFDXGIDeviceManager> uploadDeviceManager;
+        HANDLE uploadDeviceHandle = nullptr;
+        void InitializeUploadDevice(MediaStreamSource const& sender);
+        void DisableUploadStreams(HRESULT hr);
+        void CloseUploadDevice();
 
         uint64_t windowId;
         bool useHdr;

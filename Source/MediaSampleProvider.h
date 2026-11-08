@@ -36,6 +36,10 @@ class MediaSampleProvider
 public:
     virtual ~MediaSampleProvider();
     virtual winrt::Windows::Media::Core::MediaStreamSample GetNextSample();
+    virtual MediaStreamSample CreateSurfaceSample(IDirect3DSurface const& surface, TimeSpan position)
+    {
+        return MediaStreamSample::CreateFromDirect3D11Surface(surface, position);
+    }
     virtual void Flush(bool flushBuffers);
 
     winrt::Windows::Media::Core::IMediaStreamDescriptor StreamDescriptor()
