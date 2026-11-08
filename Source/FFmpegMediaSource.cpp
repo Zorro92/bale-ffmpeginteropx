@@ -2349,6 +2349,7 @@ namespace winrt::FFmpegInteropX::implementation
             uncompressed->SwsThreads = baleSwsThreads;
             uncompressed->SwsThreadPriority = baleDecodeThreadPriority;
             uncompressed->FilmGrain.mode = filmGrainMode;
+            uncompressed->FilmGrain.above1080p = avVideoCodecCtx->width > 1920 || avVideoCodecCtx->height > 1080;
             videoSampleProvider = std::shared_ptr<MediaSampleProvider>(uncompressed);
         }
 

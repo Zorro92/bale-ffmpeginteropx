@@ -102,7 +102,8 @@ struct BaleGrainExports
 class BaleFilmGrain
 {
 public:
-    int mode = 0; // 0 dav1d, 1 Rust CPU, 2 GPU; runtime downgrades never reset on seek.
+    int mode = 0; // 0 dav1d at open / no grain after GPU loss, 1 Rust CPU, 2 GPU; never reset on seek.
+    bool above1080p = false; // Initial codec size class; runtime GPU fallback must not overload 4K decode.
 
     static int BitDepth(AVPixelFormat format)
     {
@@ -143,8 +144,9 @@ public:
                 // After patch 0008 only variant 1 has D3D11_BIND_RENDER_TARGET.
                 if (selected == 2 && uploadVariant != 1)
                 {
-                    selected = 1;
-                    reason = "GPU requires render-target upload variant 1";
+                    // Keep dav1d's faster synthesis while export can still be left off.
+                    selected = 0;
+                    reason = "GPU requires render-target upload variant 1; keeping dav1d";
                 }
             }
         }
@@ -156,6 +158,7 @@ public:
 
     bool Prepare(AVFrame* frame, AVPixelFormat output, int width, int height, BaleGrainParams& params)
     {
+        // Runtime mode 0 leaves exported frames ungrained; dav1d cannot resume without reopening.
         if (!mode) return false;
         auto side = av_frame_get_side_data(frame, AV_FRAME_DATA_FILM_GRAIN_PARAMS);
         if (!side) return false; // Grain is per-frame, never reuse the previous frame's parameters.
@@ -201,34 +204,45 @@ public:
 
     void GpuFailed(HRESULT hr, bool creating)
     {
-        mode = 1;
+        if (mode != 2) return;
+        mode = above1080p ? 0 : 1;
         if (!gpuLogged)
         {
             gpuLogged = true;
-            if (creating) av_log(nullptr, AV_LOG_WARNING, "Bale film grain: GPU create failed (hr=0x%08X); using CPU grain.\n", static_cast<unsigned>(hr));
-            else av_log(nullptr, AV_LOG_WARNING, "Bale film grain: GPU apply failed (hr=0x%08X); using CPU grain.\n", static_cast<unsigned>(hr));
+            if (above1080p)
+            {
+                if (creating) av_log(nullptr, AV_LOG_WARNING, "Bale film grain: GPU create failed (hr=0x%08X); showing ungrained frames (above 1080p).\n", static_cast<unsigned>(hr));
+                else av_log(nullptr, AV_LOG_WARNING, "Bale film grain: GPU apply failed (hr=0x%08X); showing ungrained frames (above 1080p).\n", static_cast<unsigned>(hr));
+            }
+            else
+            {
+                if (creating) av_log(nullptr, AV_LOG_WARNING, "Bale film grain: GPU create failed (hr=0x%08X); using CPU grain.\n", static_cast<unsigned>(hr));
+                else av_log(nullptr, AV_LOG_WARNING, "Bale film grain: GPU apply failed (hr=0x%08X); using CPU grain.\n", static_cast<unsigned>(hr));
+            }
         }
     }
 
     void UploadDisabled(HRESULT hr)
     {
         if (mode != 2) return;
-        mode = 1;
+        mode = above1080p ? 0 : 1;
         if (!uploadLogged)
         {
             uploadLogged = true;
-            av_log(nullptr, AV_LOG_WARNING, "Bale film grain: upload disabled (hr=0x%08X); using CPU grain.\n", static_cast<unsigned>(hr));
+            if (above1080p) av_log(nullptr, AV_LOG_WARNING, "Bale film grain: upload disabled (hr=0x%08X); showing ungrained frames (above 1080p).\n", static_cast<unsigned>(hr));
+            else av_log(nullptr, AV_LOG_WARNING, "Bale film grain: upload disabled (hr=0x%08X); using CPU grain.\n", static_cast<unsigned>(hr));
         }
     }
 
     void NoUpload()
     {
         if (mode != 2) return;
-        mode = 1;
+        mode = above1080p ? 0 : 1;
         if (!missingUploadLogged)
         {
             missingUploadLogged = true;
-            av_log(nullptr, AV_LOG_WARNING, "Bale film grain: upload unavailable; using CPU grain.\n");
+            if (above1080p) av_log(nullptr, AV_LOG_WARNING, "Bale film grain: upload unavailable; showing ungrained frames (above 1080p).\n");
+            else av_log(nullptr, AV_LOG_WARNING, "Bale film grain: upload unavailable; using CPU grain.\n");
         }
     }
 

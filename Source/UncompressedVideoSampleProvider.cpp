@@ -625,6 +625,8 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
     }
 
     FilmGrain.NoUpload();
+    // Prepare ran before upload could fail: mode 0 must also skip CPU grain on this very frame.
+    hasGrain = hasGrain && FilmGrain.mode != 0;
     if (outputDirectBuffer && !hasGrain)
     {
         // Never grain a decoder AVFrame: dav1d may retain it as a clean reference frame.
