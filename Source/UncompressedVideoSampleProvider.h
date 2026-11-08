@@ -87,6 +87,8 @@ public:
     int SwsThreads = 1;
     // Bale: 0..2, BaleThreadBoost level for the sws slice threads.
     int SwsThreadPriority = 0;
+    // Bale debug: after this many uploaded frames the next upload fails with E_OUTOFMEMORY (0 = off).
+    int UploadFaultFrames = 0;
     BYTE* TargetBuffer = NULL;
 
     // Bale: independent of SetHardwareDevice/AVHWDeviceContext; never changes the decoder engine.
@@ -128,6 +130,7 @@ private:
     MediaStreamSample uploadSample{ nullptr };
     bool uploadFailed = false;
     bool uploadLogged = false;
+    int uploadedFrames = 0;
     HRESULT ScaleFrame(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer);
     HRESULT CopyFrameToOutput(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer);
     void UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params);

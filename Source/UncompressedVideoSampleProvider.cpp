@@ -573,8 +573,15 @@ void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSur
         // Refill clean output even if a contained Rust panic partially modified staging.
         winrt::check_hresult(CopyFrameToOutput(avFrame, data, linesize, nullptr));
     }
+    if (UploadFaultFrames > 0 && uploadedFrames >= UploadFaultFrames)
+    {
+        // Same point as a real pool CreateTexture2D failure: staging is mapped and filled.
+        av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload fault injected after %d frames.\n", uploadedFrames);
+        winrt::throw_hresult(E_OUTOFMEMORY);
+    }
     ReadFrameProperties(avFrame, framePts);
     uploadSample = upload->CreateSample(target, ConvertPosition(framePts), surface, FilmGrain, params);
+    uploadedFrames++;
     if (!uploadLogged)
     {
         uploadLogged = true;

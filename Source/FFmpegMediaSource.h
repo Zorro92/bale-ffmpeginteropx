@@ -347,6 +347,8 @@ namespace winrt::FFmpegInteropX::implementation
         int baleDav1dExportFilmGrain = 0;
         int baleFilmGrainMode = 0;
         int baleD3d11Upload = 0;
+        // Debug fault injection: fail the GPU upload after this many uploaded frames (0 = off).
+        int baleD3d11UploadFaultFrames = 0;
         int baleDecodeThreadPriority = 0;
         int baleDecoderUseMaxResolution = 0;
         int baleDecoderMaxDpbCount = 0;
