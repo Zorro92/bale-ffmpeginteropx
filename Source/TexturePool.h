@@ -130,6 +130,23 @@ public:
         return hr;
     }
 
+    // Bale: only return matching upload resources; the hardware-decoder pool remains unchanged.
+    void ReturnUploadTexture(winrt::com_ptr<ID3D11Texture2D> texture)
+    {
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        if (desc.Width == desc_shared.Width && desc.Height == desc_shared.Height && desc.Format == desc_shared.Format &&
+            desc.MipLevels == desc_shared.MipLevels && desc.ArraySize == desc_shared.ArraySize &&
+            desc.SampleDesc.Count == desc_shared.SampleDesc.Count && desc.SampleDesc.Quality == desc_shared.SampleDesc.Quality &&
+            desc.Usage == desc_shared.Usage && desc.BindFlags == desc_shared.BindFlags &&
+            desc.CPUAccessFlags == desc_shared.CPUAccessFlags && desc.MiscFlags == desc_shared.MiscFlags)
+        {
+            pool.push_back(std::move(texture));
+        }
+    }
+
+    size_t PooledTextureCount() const { return pool.size(); } // Caller holds its pool mutex.
+
     void ReturnTexture(winrt::com_ptr<ID3D11Texture2D> texture)
     {
         D3D11_TEXTURE2D_DESC desc;
