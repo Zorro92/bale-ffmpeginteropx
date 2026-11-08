@@ -1059,6 +1059,7 @@ namespace winrt::FFmpegInteropX::implementation
         HRESULT hr = S_OK;
         std::shared_ptr<MediaSampleProvider> result = nullptr;
 
+        int filmGrainMode = 0;
         // Find the video stream and its decoder
         auto avVideoCodec = avcodec_find_decoder(avStream->codecpar->codec_id);
 
@@ -1181,9 +1182,16 @@ namespace winrt::FFmpegInteropX::implementation
                 {
                     av_dict_set_int(&codecOptions, "max_frame_delay", baleDav1dMaxFrameDelay, 0);
                 }
-                // Bale: optional film-grain export. libdav1d then skips grain synthesis and attaches
-                // AV_FRAME_DATA_FILM_GRAIN_PARAMS to each frame instead (read at init, so set before open).
-                if (baleDav1dExportFilmGrain > 0 && std::string(avVideoCodec->name) == "libdav1d")
+                // Bale: select before open, since libdav1d reads apply_grain at initialization.
+                auto outputFormat = UncompressedVideoSampleProvider::SelectOutputPixelFormat(avVideoCodecCtx->pix_fmt,
+                    (avVideoCodec->capabilities & AV_CODEC_CAP_DR1) && !avVideoCodecCtx->hw_device_ctx,
+                    config.as<winrt::FFmpegInteropX::MediaSourceConfig>());
+                bool dav1d = std::string(avVideoCodec->name) == "libdav1d";
+                filmGrainMode = BaleFilmGrain::SelectMode(baleFilmGrainMode, baleDav1dExportFilmGrain > 0,
+                    dav1d, avVideoCodecCtx->hw_device_ctx != nullptr, avVideoCodecCtx->pix_fmt, outputFormat, baleD3d11Upload);
+                // Export-only is independent and always wins. Otherwise keep dav1d grain unless
+                // Rust's loader and both input/output formats have passed the pre-open checks.
+                if (dav1d && (baleDav1dExportFilmGrain > 0 || filmGrainMode > 0))
                 {
                     avVideoCodecCtx->export_side_data |= AV_CODEC_EXPORT_DATA_FILM_GRAIN;
                 }
@@ -1198,7 +1206,7 @@ namespace winrt::FFmpegInteropX::implementation
             if (SUCCEEDED(hr))
             {
                 // Detect video format and create video stream descriptor accordingly
-                result = CreateVideoSampleProvider(avStream, avVideoCodecCtx, index);
+                result = CreateVideoSampleProvider(avStream, avVideoCodecCtx, index, filmGrainMode);
             }
 
             // free codec context if failed
@@ -2228,7 +2236,7 @@ namespace winrt::FFmpegInteropX::implementation
         return false;
     }
 
-    std::shared_ptr<MediaSampleProvider> FFmpegMediaSource::CreateVideoSampleProvider(AVStream* avStream, AVCodecContext* avVideoCodecCtx, int index)
+    std::shared_ptr<MediaSampleProvider> FFmpegMediaSource::CreateVideoSampleProvider(AVStream* avStream, AVCodecContext* avVideoCodecCtx, int index, int filmGrainMode)
     {
         UNREFERENCED_PARAMETER(avStream);
 
@@ -2340,6 +2348,7 @@ namespace winrt::FFmpegInteropX::implementation
             auto uncompressed = new UncompressedVideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr);
             uncompressed->SwsThreads = baleSwsThreads;
             uncompressed->SwsThreadPriority = baleDecodeThreadPriority;
+            uncompressed->FilmGrain.mode = filmGrainMode;
             videoSampleProvider = std::shared_ptr<MediaSampleProvider>(uncompressed);
         }
 
@@ -2427,6 +2436,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_sws_threads") { target = &baleSwsThreads; minimum = 1; maximum = 16; }
         else if (key == "bale_dav1d_max_frame_delay") { target = &baleDav1dMaxFrameDelay; minimum = 0; maximum = 64; }
         else if (key == "bale_dav1d_export_film_grain") { target = &baleDav1dExportFilmGrain; minimum = 0; maximum = 1; }
+        else if (key == "bale_film_grain_mode") { target = &baleFilmGrainMode; minimum = 0; maximum = 2; }
         else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 5; }
         else if (key == "bale_decode_thread_priority") { target = &baleDecodeThreadPriority; minimum = 0; maximum = 2; }
         else if (key == "bale_decoder_use_max_resolution") { target = &baleDecoderUseMaxResolution; minimum = 0; maximum = 1; }

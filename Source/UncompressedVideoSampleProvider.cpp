@@ -49,45 +49,27 @@ UncompressedVideoSampleProvider::UncompressedVideoSampleProvider(
     this->applyHdrColorInfo = applyHdrColorInfo;
 }
 
+AVPixelFormat UncompressedVideoSampleProvider::SelectOutputPixelFormat(AVPixelFormat input, bool direct, MediaSourceConfig const& config)
+{
+    if (config.as<implementation::MediaSourceConfig>()->IsFrameGrabber) return AV_PIX_FMT_BGRA;
+    if (config.Video().VideoOutputAllowIyuv() && (input == AV_PIX_FMT_YUV420P || input == AV_PIX_FMT_YUVJ420P) && direct) return input;
+    if (input == AV_PIX_FMT_YUV420P10LE && config.Video().VideoOutputAllow10bit()) return AV_PIX_FMT_P010LE;
+    if (config.Video().VideoOutputAllowNv12()) return AV_PIX_FMT_NV12;
+    if (config.Video().VideoOutputAllowIyuv()) return input == AV_PIX_FMT_YUVJ420P ? AV_PIX_FMT_YUVJ420P : AV_PIX_FMT_YUV420P;
+    if (config.Video().VideoOutputAllowBgra8()) return AV_PIX_FMT_BGRA;
+    return AV_PIX_FMT_NV12; // Upstream fallback when no format is allowed.
+}
+
 void UncompressedVideoSampleProvider::SelectOutputFormat()
 {
-    if (m_config.as<implementation::MediaSourceConfig>()->IsFrameGrabber)
+    m_OutputPixelFormat = SelectOutputPixelFormat(m_pAvCodecCtx->pix_fmt,
+        (m_pAvCodecCtx->codec->capabilities & AV_CODEC_CAP_DR1) && decoder != DecoderEngine::FFmpegD3D11HardwareDecoder, m_config);
+    switch (m_OutputPixelFormat)
     {
-        m_OutputPixelFormat = AV_PIX_FMT_BGRA;
-        outputMediaSubtype = MediaEncodingSubtypes::Bgra8();
-    }
-    else if (m_config.Video().VideoOutputAllowIyuv() && (m_pAvCodecCtx->pix_fmt == AV_PIX_FMT_YUV420P || m_pAvCodecCtx->pix_fmt == AV_PIX_FMT_YUVJ420P)
-        && m_pAvCodecCtx->codec->capabilities & AV_CODEC_CAP_DR1 && decoder != DecoderEngine::FFmpegD3D11HardwareDecoder)
-    {
-        // if format is yuv and yuv is allowed and codec supports direct buffer decoding, use yuv
-        m_OutputPixelFormat = m_pAvCodecCtx->pix_fmt == AV_PIX_FMT_YUVJ420P ? AV_PIX_FMT_YUVJ420P : AV_PIX_FMT_YUV420P;
-        outputMediaSubtype = MediaEncodingSubtypes::Iyuv();
-    }
-    else if (m_pAvCodecCtx->pix_fmt == AV_PIX_FMT_YUV420P10LE && m_config.Video().VideoOutputAllow10bit())
-    {
-        m_OutputPixelFormat = AV_PIX_FMT_P010LE;
-        outputMediaSubtype = winrt::to_hstring(MFVideoFormat_P010);
-    }
-    else if (m_config.Video().VideoOutputAllowNv12())
-    {
-        // NV12 is generally the preferred format
-        m_OutputPixelFormat = AV_PIX_FMT_NV12;
-        outputMediaSubtype = MediaEncodingSubtypes::Nv12();
-    }
-    else if (m_config.Video().VideoOutputAllowIyuv())
-    {
-        m_OutputPixelFormat = m_pAvCodecCtx->pix_fmt == AV_PIX_FMT_YUVJ420P ? AV_PIX_FMT_YUVJ420P : AV_PIX_FMT_YUV420P;
-        outputMediaSubtype = MediaEncodingSubtypes::Iyuv();
-    }
-    else if (m_config.Video().VideoOutputAllowBgra8())
-    {
-        m_OutputPixelFormat = AV_PIX_FMT_BGRA;
-        outputMediaSubtype = MediaEncodingSubtypes::Bgra8();
-    }
-    else // if no format is allowed, we still use NV12
-    {
-        m_OutputPixelFormat = AV_PIX_FMT_NV12;
-        outputMediaSubtype = MediaEncodingSubtypes::Nv12();
+    case AV_PIX_FMT_BGRA: outputMediaSubtype = MediaEncodingSubtypes::Bgra8(); break;
+    case AV_PIX_FMT_P010LE: outputMediaSubtype = winrt::to_hstring(MFVideoFormat_P010); break;
+    case AV_PIX_FMT_NV12: outputMediaSubtype = MediaEncodingSubtypes::Nv12(); break;
+    default: outputMediaSubtype = MediaEncodingSubtypes::Iyuv(); break;
     }
 
     outputWidth = outputFrameWidth = m_pAvCodecCtx->width;
@@ -512,6 +494,7 @@ void UncompressedVideoSampleProvider::DisableUpload(HRESULT hr)
         uploadFailed = true;
         av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload disabled (hr=0x%08X); using CPU buffers.\n", static_cast<unsigned>(hr));
     }
+    FilmGrain.UploadDisabled(hr);
     uploadSample = nullptr;
     upload.reset();
 }
@@ -548,7 +531,31 @@ HRESULT UncompressedVideoSampleProvider::ScaleFrame(AVFrame* avFrame, BYTE** dat
     return converted ? S_OK : E_FAIL;
 }
 
-void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts)
+HRESULT UncompressedVideoSampleProvider::CopyFrameToOutput(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer)
+{
+    if (avFrame->format == m_OutputPixelFormat && avFrame->width == outputWidth && avFrame->height == outputHeight)
+    {
+        av_image_copy(data, linesize, (const UINT8**)avFrame->data, avFrame->linesize, m_OutputPixelFormat, outputWidth, outputHeight);
+        return S_OK;
+    }
+    auto hr = InitializeScalerIfRequired(avFrame);
+    if (FAILED(hr)) return hr;
+    AVBufferRef* mapping = nullptr;
+    if (!buffer)
+    {
+        // Only mapped NV12/P010 staging uses this no-op owner. sws_scale_frame and its
+        // workers finish synchronously before it is released, and before staging is unmapped.
+        auto size = static_cast<size_t>(linesize[0]) * outputFrameHeight * 3 / 2;
+        mapping = av_buffer_create(data[0], size, [](void*, uint8_t*) {}, nullptr, 0);
+        if (!mapping) return E_OUTOFMEMORY;
+        buffer = mapping;
+    }
+    hr = ScaleFrame(avFrame, data, linesize, buffer);
+    av_buffer_unref(&mapping);
+    return hr;
+}
+
+void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params)
 {
     auto format = m_OutputPixelFormat == AV_PIX_FMT_NV12 ? DXGI_FORMAT_NV12 : DXGI_FORMAT_P010;
     BaleD3D11Upload::Mapping target;
@@ -560,24 +567,14 @@ void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSur
     // NV12/P010 are planar staging resources: UV starts after RowPitch * TEXTURE height, not image height.
     data[1] = data[0] + static_cast<size_t>(pitch) * outputFrameHeight;
     int linesize[4]{ static_cast<int>(pitch), static_cast<int>(pitch), 0, 0 };
-    if (avFrame->format == m_OutputPixelFormat && avFrame->width == outputWidth && avFrame->height == outputHeight)
+    winrt::check_hresult(CopyFrameToOutput(avFrame, data, linesize, nullptr));
+    if (params && FilmGrain.mode == 1 && !FilmGrain.ApplyCpu(*params, m_OutputPixelFormat, data, linesize))
     {
-        av_image_copy(data, linesize, (const UINT8**)avFrame->data, avFrame->linesize, m_OutputPixelFormat, outputWidth, outputHeight);
-    }
-    else
-    {
-        winrt::check_hresult(InitializeScalerIfRequired(avFrame));
-        // sws_scale_frame is synchronous, including its slice workers. This no-op owner is released
-        // before Unmap, and no mapped pointer escapes into a sample or survives this output step.
-        auto size = static_cast<size_t>(pitch) * outputFrameHeight * 3 / 2;
-        auto buffer = av_buffer_create(data[0], size, [](void*, uint8_t*) {}, nullptr, 0);
-        if (!buffer) winrt::throw_hresult(E_OUTOFMEMORY);
-        auto hr = ScaleFrame(avFrame, data, linesize, buffer);
-        av_buffer_unref(&buffer);
-        winrt::check_hresult(hr);
+        // Refill clean output even if a contained Rust panic partially modified staging.
+        winrt::check_hresult(CopyFrameToOutput(avFrame, data, linesize, nullptr));
     }
     ReadFrameProperties(avFrame, framePts);
-    uploadSample = upload->CreateSample(target, ConvertPosition(framePts), surface);
+    uploadSample = upload->CreateSample(target, ConvertPosition(framePts), surface, FilmGrain, params);
     if (!uploadLogged)
     {
         uploadLogged = true;
@@ -609,12 +606,14 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
 
     HRESULT hr = S_OK;
     CheckFrameSize(avFrame);
+    BaleGrainParams grainParams{};
+    bool hasGrain = FilmGrain.Prepare(avFrame, m_OutputPixelFormat, outputWidth, outputHeight, grainParams);
 
     if (upload && (m_OutputPixelFormat == AV_PIX_FMT_NV12 || m_OutputPixelFormat == AV_PIX_FMT_P010LE))
     {
         try
         {
-            UploadFrame(avFrame, surface, framePts);
+            UploadFrame(avFrame, surface, framePts, hasGrain ? &grainParams : nullptr);
             return S_OK;
         }
         catch (...)
@@ -625,9 +624,11 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
         }
     }
 
-    if (outputDirectBuffer)
+    FilmGrain.NoUpload();
+    if (outputDirectBuffer && !hasGrain)
     {
-        // Using direct buffer: just create a buffer reference to hand out to MSS pipeline
+        // Never grain a decoder AVFrame: dav1d may retain it as a clean reference frame.
+        // Direct references are safe only when no grain will be applied to this frame.
         auto bufferRef = av_buffer_ref(avFrame->buf[0]);
         if (bufferRef)
         {
@@ -638,47 +639,24 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
             hr = E_FAIL;
         }
     }
-    else if (avFrame->format == m_OutputPixelFormat && avFrame->width == outputWidth && avFrame->height == outputHeight)
+    else
     {
-        // Same format and size but non-contiguous buffer: Copy to contiguous buffer
+        // Copy/repack into a Bale-owned buffer, including upload-off and mid-stream disable.
         int linesize[4];
         UINT8* data[4];
         AVBufferRef* buffer;
-
         hr = FillLinesAndBuffer(linesize, data, &buffer, outputFrameWidth, outputFrameHeight, false);
-
         if (SUCCEEDED(hr))
         {
-            av_image_copy(data, linesize, (const UINT8**)avFrame->data, avFrame->linesize, m_OutputPixelFormat, outputWidth, outputHeight);
-            *pBuffer = NativeBufferFactory::CreateNativeBuffer(buffer->data, (UINT32)buffer->size, free_buffer, buffer);
-        }
-    }
-    else
-    {
-        // Different format or size: Use scaler
-        hr = InitializeScalerIfRequired(avFrame);
-
-        if (SUCCEEDED(hr))
-        {
-            int linesize[4];
-            UINT8* data[4];
-            AVBufferRef* buffer;
-
-            hr = FillLinesAndBuffer(linesize, data, &buffer, outputFrameWidth, outputFrameHeight, false);
-
-            if (SUCCEEDED(hr))
+            hr = CopyFrameToOutput(avFrame, data, linesize, buffer);
+            if (SUCCEEDED(hr) && hasGrain && !FilmGrain.ApplyCpu(grainParams, m_OutputPixelFormat, data, linesize))
             {
-                // Convert to output format using FFmpeg software scaler
-                if (SUCCEEDED(ScaleFrame(avFrame, data, linesize, buffer)))
-                {
-                    *pBuffer = NativeBufferFactory::CreateNativeBuffer(buffer->data, (UINT32)buffer->size, free_buffer, buffer);
-                }
-                else
-                {
-                    free_buffer(buffer);
-                    hr = E_FAIL;
-                }
+                hr = CopyFrameToOutput(avFrame, data, linesize, buffer);
             }
+            if (SUCCEEDED(hr))
+                *pBuffer = NativeBufferFactory::CreateNativeBuffer(buffer->data, (UINT32)buffer->size, free_buffer, buffer);
+            else
+                free_buffer(buffer);
         }
     }
 

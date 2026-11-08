@@ -67,10 +67,20 @@ public:
         bool applyHdrColorInfo);
     winrt::Windows::Media::Core::IMediaStreamDescriptor CreateStreamDescriptor() override;
     virtual HRESULT CreateBufferFromFrame(winrt::Windows::Storage::Streams::IBuffer* pBuffer, winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface* surface, AVFrame* avFrame, int64_t& framePts, int64_t& frameDuration) override;
+    HRESULT CreateNextSampleBuffer(IBuffer* buffer, int64_t& pts, int64_t& duration, IDirect3DSurface* surface) override
+    {
+        auto hr = UncompressedSampleProvider::CreateNextSampleBuffer(buffer, pts, duration, surface);
+        // End-of-stream releases grain resources without dropping MF's outstanding samples.
+        if (hr != S_OK && upload) upload->EndGrain();
+        return hr;
+    }
     virtual HRESULT SetSampleProperties(winrt::Windows::Media::Core::MediaStreamSample  const& sample) override;
     void ReadFrameProperties(AVFrame* avFrame, int64_t& framePts);
     void CheckFrameSize(AVFrame* avFrame);
     AVPixelFormat GetOutputPixelFormat() { return m_OutputPixelFormat; }
+    // Shared with the pre-open grain decision; no duplicate output-format policy.
+    static AVPixelFormat SelectOutputPixelFormat(AVPixelFormat input, bool direct, MediaSourceConfig const& config);
+    BaleFilmGrain FilmGrain;
     int TargetWidth = 0;
     int TargetHeight = 0;
     // Bale: slice threads for the output pixel conversion (1 = upstream single-threaded sws_scale).
@@ -119,7 +129,8 @@ private:
     bool uploadFailed = false;
     bool uploadLogged = false;
     HRESULT ScaleFrame(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer);
-    void UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts);
+    HRESULT CopyFrameToOutput(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer);
+    void UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params);
     void SelectOutputFormat();
     HRESULT InitializeScalerIfRequired(AVFrame* avFrame);
     HRESULT FillLinesAndBuffer(int* linesize, BYTE** data, AVBufferRef** buffer, int width, int height, bool isSourceBuffer);

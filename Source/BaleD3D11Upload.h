@@ -2,6 +2,7 @@
 #include "pch.h"
 #include <atomic>
 #include "TexturePool.h"
+#include "BaleFilmGrain.h"
 #include "DirectXInteropHelper.h"
 
 // Bale: software decode is unchanged; only the final NV12/P010 output lives on the MSS device.
@@ -81,7 +82,8 @@ public:
         return hr;
     }
 
-    MediaStreamSample CreateSample(Mapping& source, TimeSpan position, IDirect3DSurface* surface)
+    MediaStreamSample CreateSample(Mapping& source, TimeSpan position, IDirect3DSurface* surface,
+        BaleFilmGrain& grain, const BaleGrainParams* params)
     {
         source.Unmap();
         const char* operation = "GetUploadTexture";
@@ -93,8 +95,11 @@ public:
                 winrt::check_hresult(texturePool.GetUploadTexture(stagingDesc.Width, stagingDesc.Height, stagingDesc.Format, bindFlags, miscFlags, texture));
             }
             operation = "CopyResource/GetDeviceRemovedReason";
+            // Grain reads clean, unmapped staging and writes only the Bale-owned pooled target.
+            // A failed pass may have partially written it: overwrite with the clean plain copy.
+            if (!params || grain.mode != 2 || !ApplyGrain(grain, *params, source.texture.get(), texture.get()))
+                context->CopyResource(texture.get(), source.texture.get());
             // CopyResource and Flush return void; device removal is the available HRESULT check.
-            context->CopyResource(texture.get(), source.texture.get());
             context->Flush();
             winrt::check_hresult(device->GetDeviceRemovedReason());
 
@@ -137,8 +142,12 @@ public:
         }
     }
 
+    void EndGrain() { DestroyGrain(); }
+
     void Flush()
     {
+        // Serialized with frame production, not tied to the thread that created the handle.
+        DestroyGrain();
         std::lock_guard lock(samplesMutex);
         for (auto& entry : trackedSamples)
         {
@@ -155,6 +164,37 @@ public:
     }
 
 private:
+    void* grainHandle = nullptr; // Only the serialized producer/teardown owner touches this.
+
+    void DestroyGrain()
+    {
+        if (grainHandle)
+        {
+            BaleGrainExports::Get().gpuDestroy(grainHandle);
+            grainHandle = nullptr;
+        }
+    }
+
+    bool ApplyGrain(BaleFilmGrain& grain, const BaleGrainParams& params, ID3D11Texture2D* source, ID3D11Texture2D* target)
+    {
+        const auto& api = BaleGrainExports::Get();
+        if (!grainHandle)
+        {
+            auto hr = api.gpuCreate(device.get(), context.get(), &grainHandle);
+            if (hr != S_OK || !grainHandle)
+            {
+                grain.GpuFailed(hr == S_OK ? E_UNEXPECTED : hr, true);
+                DestroyGrain();
+                return false;
+            }
+        }
+        auto hr = api.gpuApply(grainHandle, &params, source, target);
+        if (hr == S_OK) return true;
+        grain.GpuFailed(hr, false);
+        DestroyGrain();
+        return false;
+    }
+
     struct TrackedSample
     {
         winrt::event_token token;

@@ -251,7 +251,7 @@ namespace winrt::FFmpegInteropX::implementation
         std::shared_ptr<MediaSampleProvider> CreateVideoStream(AVStream* avStream, int index);
         std::shared_ptr<SubtitleProvider> CreateSubtitleSampleProvider(AVStream* avStream, int index);
         std::shared_ptr<MediaSampleProvider> CreateAudioSampleProvider(AVStream* avStream, AVCodecContext* avCodecCtx, int index);
-        std::shared_ptr<MediaSampleProvider> CreateVideoSampleProvider(AVStream* avStream, AVCodecContext* avCodecCtx, int index);
+        std::shared_ptr<MediaSampleProvider> CreateVideoSampleProvider(AVStream* avStream, AVCodecContext* avCodecCtx, int index, int filmGrainMode);
         HRESULT ParseOptions(PropertySet const& ffmpegOptions);
         void MediaStreamSourceClosed(MediaStreamSource const& sender, MediaStreamSourceClosedEventArgs const& args);
         void OnStarting(MediaStreamSource const& sender, MediaStreamSourceStartingEventArgs const& args);
@@ -345,6 +345,7 @@ namespace winrt::FFmpegInteropX::implementation
         int baleSwsThreads = 1;
         int baleDav1dMaxFrameDelay = 0;
         int baleDav1dExportFilmGrain = 0;
+        int baleFilmGrainMode = 0;
         int baleD3d11Upload = 0;
         int baleDecodeThreadPriority = 0;
         int baleDecoderUseMaxResolution = 0;
