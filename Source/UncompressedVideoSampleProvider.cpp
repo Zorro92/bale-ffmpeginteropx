@@ -499,6 +499,16 @@ void UncompressedVideoSampleProvider::DisableUpload(HRESULT hr)
     upload.reset();
 }
 
+void UncompressedVideoSampleProvider::DisableRepack(HRESULT hr)
+{
+    if (!repackFailed)
+    {
+        repackFailed = true;
+        av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 repack disabled (hr=0x%08X); using swscale.\n", static_cast<unsigned>(hr));
+    }
+    if (upload) upload->DestroyRepack();
+}
+
 HRESULT UncompressedVideoSampleProvider::ScaleFrame(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer)
 {
     bool converted = false;
@@ -555,7 +565,35 @@ HRESULT UncompressedVideoSampleProvider::CopyFrameToOutput(AVFrame* avFrame, BYT
     return hr;
 }
 
-void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params)
+bool UncompressedVideoSampleProvider::CanRepack(AVFrame* avFrame, const BaleGrainParams* params) const
+{
+    if (!Repack || repackFailed || !upload || !upload->CanRepack()) return false;
+    // CPU grain runs on the converted NV12/P010 layout in mapped staging.
+    if (params && FilmGrain.mode == 1) return false;
+    // YUVJ is excluded: swscale converts its full range, the repack never changes sample values.
+    auto input = static_cast<AVPixelFormat>(avFrame->format);
+    bool formats = (input == AV_PIX_FMT_YUV420P && m_OutputPixelFormat == AV_PIX_FMT_NV12) ||
+        (input == AV_PIX_FMT_YUV420P10LE && m_OutputPixelFormat == AV_PIX_FMT_P010LE);
+    // Width % 4: the V half of each chroma row must start on a whole two-sample texel.
+    return formats && avFrame->width == outputWidth && avFrame->height == outputHeight &&
+        outputFrameWidth % 4 == 0 && outputFrameHeight % 2 == 0;
+}
+
+// Unconverted samples for the GPU repack: Y rows as decoded; each chroma row holds that row's
+// U samples from byte 0 and its V samples from half the texture row (outputFrameWidth / 2 samples).
+void UncompressedVideoSampleProvider::FillPlanar(AVFrame* avFrame, BYTE** data, UINT pitch)
+{
+    int bytes = m_OutputPixelFormat == AV_PIX_FMT_P010LE ? 2 : 1;
+    int chromaWidth = (outputWidth + 1) / 2;
+    int chromaHeight = (outputHeight + 1) / 2;
+    int linesize = static_cast<int>(pitch);
+    av_image_copy_plane(data[0], linesize, avFrame->data[0], avFrame->linesize[0], outputWidth * bytes, outputHeight);
+    av_image_copy_plane(data[1], linesize, avFrame->data[1], avFrame->linesize[1], chromaWidth * bytes, chromaHeight);
+    av_image_copy_plane(data[1] + static_cast<size_t>(outputFrameWidth / 2) * bytes, linesize,
+        avFrame->data[2], avFrame->linesize[2], chromaWidth * bytes, chromaHeight);
+}
+
+void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params, bool planar)
 {
     auto format = m_OutputPixelFormat == AV_PIX_FMT_NV12 ? DXGI_FORMAT_NV12 : DXGI_FORMAT_P010;
     BaleD3D11Upload::Mapping target;
@@ -567,11 +605,18 @@ void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSur
     // NV12/P010 are planar staging resources: UV starts after RowPitch * TEXTURE height, not image height.
     data[1] = data[0] + static_cast<size_t>(pitch) * outputFrameHeight;
     int linesize[4]{ static_cast<int>(pitch), static_cast<int>(pitch), 0, 0 };
-    winrt::check_hresult(CopyFrameToOutput(avFrame, data, linesize, nullptr));
-    if (params && FilmGrain.mode == 1 && !FilmGrain.ApplyCpu(*params, m_OutputPixelFormat, data, linesize))
+    if (planar)
     {
-        // Refill clean output even if a contained Rust panic partially modified staging.
+        FillPlanar(avFrame, data, pitch);
+    }
+    else
+    {
         winrt::check_hresult(CopyFrameToOutput(avFrame, data, linesize, nullptr));
+        if (params && FilmGrain.mode == 1 && !FilmGrain.ApplyCpu(*params, m_OutputPixelFormat, data, linesize))
+        {
+            // Refill clean output even if a contained Rust panic partially modified staging.
+            winrt::check_hresult(CopyFrameToOutput(avFrame, data, linesize, nullptr));
+        }
     }
     if (UploadFaultFrames > 0 && uploadedFrames >= UploadFaultFrames)
     {
@@ -580,7 +625,7 @@ void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSur
         winrt::throw_hresult(E_OUTOFMEMORY);
     }
     ReadFrameProperties(avFrame, framePts);
-    uploadSample = upload->CreateSample(target, ConvertPosition(framePts), surface, FilmGrain, params);
+    uploadSample = upload->CreateSample(target, ConvertPosition(framePts), surface, FilmGrain, params, planar);
     uploadedFrames++;
     if (!uploadLogged)
     {
@@ -620,7 +665,33 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
     {
         try
         {
-            UploadFrame(avFrame, surface, framePts, hasGrain ? &grainParams : nullptr);
+            auto params = hasGrain ? &grainParams : nullptr;
+            if (CanRepack(avFrame, params))
+            {
+                try
+                {
+                    UploadFrame(avFrame, surface, framePts, params, true);
+                    if (!repackLogged)
+                    {
+                        repackLogged = true;
+                        av_log(nullptr, AV_LOG_INFO, "Bale D3D11 repack active: %dx%d.\n", outputWidth, outputHeight);
+                    }
+                    return S_OK;
+                }
+                catch (...)
+                {
+                    // Permanent for this stream; retry this same frame once through swscale.
+                    DisableRepack(winrt::to_hresult());
+                    *surface = nullptr;
+                }
+            }
+            else if (Repack && !repackLogged && !repackFailed)
+            {
+                repackLogged = true;
+                av_log(nullptr, AV_LOG_INFO, "Bale D3D11 repack not applicable (input format %d, %dx%d to %dx%d); using swscale.\n",
+                    avFrame->format, avFrame->width, avFrame->height, outputWidth, outputHeight);
+            }
+            UploadFrame(avFrame, surface, framePts, params, false);
             return S_OK;
         }
         catch (...)

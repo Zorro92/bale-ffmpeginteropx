@@ -5,6 +5,38 @@
 #include "BaleFilmGrain.h"
 #include "DirectXInteropHelper.h"
 
+// Bale: bale_gpu.dll repack ABI 1 (planar staging to NV12/P010 render target), loaded independently
+// of the grain exports so either can be missing or incompatible without affecting the other.
+struct BaleRepackExports
+{
+    uint32_t (__cdecl* abiVersion)() = nullptr;
+    HRESULT (__cdecl* create)(void*, void*, void**) = nullptr;
+    HRESULT (__cdecl* apply)(void*, void*, void*) = nullptr;
+    void (__cdecl* destroy)(void*) = nullptr;
+
+    static const BaleRepackExports& Get()
+    {
+        // One load attempt per process; a successful module stays loaded for the process lifetime.
+        static const BaleRepackExports exports = []
+        {
+            BaleRepackExports api;
+            auto module = LoadPackagedLibrary(L"bale_gpu.dll", 0);
+            if (!module) return api;
+            api.abiVersion = reinterpret_cast<decltype(api.abiVersion)>(GetProcAddress(module, "bale_repack_abi_version"));
+            api.create = reinterpret_cast<decltype(api.create)>(GetProcAddress(module, "bale_repack_gpu_create"));
+            api.apply = reinterpret_cast<decltype(api.apply)>(GetProcAddress(module, "bale_repack_gpu_apply"));
+            api.destroy = reinterpret_cast<decltype(api.destroy)>(GetProcAddress(module, "bale_repack_gpu_destroy"));
+            if (!api.abiVersion || !api.create || !api.apply || !api.destroy || api.abiVersion() != 1)
+            {
+                FreeLibrary(module);
+                return BaleRepackExports{};
+            }
+            return api;
+        }();
+        return exports;
+    }
+};
+
 // Bale: software decode is unchanged; only the final NV12/P010 output lives on the MSS device.
 // Decode/seek serialize Map/CreateSample/Flush. Processed can arrive on any MF thread.
 class BaleD3D11Upload : public std::enable_shared_from_this<BaleD3D11Upload>
@@ -44,7 +76,24 @@ public:
         }
     }
 
-    ~BaleD3D11Upload() { Flush(); }
+    ~BaleD3D11Upload()
+    {
+        Flush();
+        DestroyRepack();
+    }
+
+    // The repack writes through render-target views: only variant 1 pooled textures qualify.
+    bool CanRepack() const { return (bindFlags & D3D11_BIND_RENDER_TARGET) && BaleRepackExports::Get().create; }
+
+    // Permanent for this uploader. The handle is serialized with frame production like grain.
+    void DestroyRepack()
+    {
+        if (repackHandle)
+        {
+            BaleRepackExports::Get().destroy(repackHandle);
+            repackHandle = nullptr;
+        }
+    }
 
     HRESULT Map(UINT width, UINT height, DXGI_FORMAT format, Mapping& target)
     {
@@ -83,7 +132,7 @@ public:
     }
 
     MediaStreamSample CreateSample(Mapping& source, TimeSpan position, IDirect3DSurface* surface,
-        BaleFilmGrain& grain, const BaleGrainParams* params)
+        BaleFilmGrain& grain, const BaleGrainParams* params, bool planar)
     {
         source.Unmap();
         const char* operation = "GetUploadTexture";
@@ -94,11 +143,28 @@ public:
                 std::lock_guard lock(samplesMutex);
                 winrt::check_hresult(texturePool.GetUploadTexture(stagingDesc.Width, stagingDesc.Height, stagingDesc.Format, bindFlags, miscFlags, texture));
             }
-            operation = "CopyResource/GetDeviceRemovedReason";
-            // Grain reads clean, unmapped staging and writes only the Bale-owned pooled target.
-            // A failed pass may have partially written it: overwrite with the clean plain copy.
-            if (!params || grain.mode != 2 || !ApplyGrain(grain, *params, source.texture.get(), texture.get()))
+            if (planar)
+            {
+                // Planar staging is not displayable: every path must end in a repack draw.
+                operation = "repack";
+                bool grained = false;
+                if (params && grain.mode == 2)
+                {
+                    // GPU grain reads a clean NV12/P010 frame: repack into Bale-owned scratch first.
+                    auto scratch = RepackScratch();
+                    ApplyRepack(source.texture.get(), scratch);
+                    grained = ApplyGrain(grain, *params, scratch, texture.get());
+                }
+                // A failed grain pass may have partially written the target: repack it clean.
+                if (!grained) ApplyRepack(source.texture.get(), texture.get());
+            }
+            else if (!params || grain.mode != 2 || !ApplyGrain(grain, *params, source.texture.get(), texture.get()))
+            {
+                // Grain reads clean, unmapped staging and writes only the Bale-owned pooled target.
+                // A failed pass may have partially written it: overwrite with the clean plain copy.
                 context->CopyResource(texture.get(), source.texture.get());
+            }
+            operation = "CopyResource/GetDeviceRemovedReason";
             // CopyResource and Flush return void; device removal is the available HRESULT check.
             context->Flush();
             winrt::check_hresult(device->GetDeviceRemovedReason());
@@ -158,6 +224,7 @@ public:
         // Drop all old references, never recycle their textures into a new seek/size generation.
         // MF's own surface references keep any in-flight textures alive until it is finished.
         texturePool.Clear();
+        repackScratch = nullptr;
         for (auto& texture : stagingTextures) texture = nullptr;
         stagingDesc = {};
         nextStaging = 0;
@@ -165,6 +232,39 @@ public:
 
 private:
     void* grainHandle = nullptr; // Only the serialized producer/teardown owner touches this.
+    void* repackHandle = nullptr; // Same ownership as grainHandle; survives Flush (create runs a readback self-test).
+    winrt::com_ptr<ID3D11Texture2D> repackScratch; // Clean repacked frame for GPU grain; dropped on Flush.
+
+    void ApplyRepack(ID3D11Texture2D* source, ID3D11Texture2D* target)
+    {
+        const auto& api = BaleRepackExports::Get();
+        if (!api.apply) winrt::throw_hresult(E_NOINTERFACE);
+        if (!repackHandle)
+        {
+            auto hr = api.create(device.get(), context.get(), &repackHandle);
+            if (hr != S_OK || !repackHandle)
+            {
+                repackHandle = nullptr;
+                winrt::throw_hresult(hr == S_OK ? E_UNEXPECTED : hr);
+            }
+            av_log(nullptr, AV_LOG_INFO, "Bale D3D11 repack created (self-test passed).\n");
+        }
+        winrt::check_hresult(api.apply(repackHandle, source, target));
+    }
+
+    ID3D11Texture2D* RepackScratch()
+    {
+        if (!repackScratch)
+        {
+            auto desc = stagingDesc;
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.CPUAccessFlags = 0;
+            desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+            desc.MiscFlags = 0;
+            winrt::check_hresult(device->CreateTexture2D(&desc, nullptr, repackScratch.put()));
+        }
+        return repackScratch.get();
+    }
 
     void DestroyGrain()
     {

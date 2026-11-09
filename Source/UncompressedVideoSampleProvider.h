@@ -89,6 +89,8 @@ public:
     int SwsThreadPriority = 0;
     // Bale debug: after this many uploaded frames the next upload fails with E_OUTOFMEMORY (0 = off).
     int UploadFaultFrames = 0;
+    // Bale debug: 1 = planar staging fill plus bale_gpu repack (needs upload variant 1).
+    int Repack = 0;
     BYTE* TargetBuffer = NULL;
 
     // Bale: independent of SetHardwareDevice/AVHWDeviceContext; never changes the decoder engine.
@@ -131,9 +133,14 @@ private:
     bool uploadFailed = false;
     bool uploadLogged = false;
     int uploadedFrames = 0;
+    bool repackFailed = false;
+    bool repackLogged = false;
+    bool CanRepack(AVFrame* avFrame, const BaleGrainParams* params) const;
+    void FillPlanar(AVFrame* avFrame, BYTE** data, UINT pitch);
+    void DisableRepack(HRESULT hr);
     HRESULT ScaleFrame(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer);
     HRESULT CopyFrameToOutput(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer);
-    void UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params);
+    void UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params, bool planar);
     void SelectOutputFormat();
     HRESULT InitializeScalerIfRequired(AVFrame* avFrame);
     HRESULT FillLinesAndBuffer(int* linesize, BYTE** data, AVBufferRef** buffer, int width, int height, bool isSourceBuffer);

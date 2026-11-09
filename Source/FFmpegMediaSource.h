@@ -349,6 +349,8 @@ namespace winrt::FFmpegInteropX::implementation
         int baleD3d11Upload = 0;
         // Debug fault injection: fail the GPU upload after this many uploaded frames (0 = off).
         int baleD3d11UploadFaultFrames = 0;
+        // Debug: planar copy into staging plus a GPU NV12/P010 repack instead of swscale (0 = off).
+        int baleD3d11Repack = 0;
         int baleDecodeThreadPriority = 0;
         int baleDecoderUseMaxResolution = 0;
         int baleDecoderMaxDpbCount = 0;
