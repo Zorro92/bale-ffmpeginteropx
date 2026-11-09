@@ -188,6 +188,12 @@ public:
         case 3: bindFlags = D3D11_BIND_DECODER; break;
         case 4: bindFlags = D3D11_BIND_SHADER_RESOURCE; break;
         case 5: bindFlags = D3D11_BIND_SHADER_RESOURCE; miscFlags = D3D11_RESOURCE_MISC_SHARED; break;
+        // Debug: variant 1 plus a UAV bind and an NT shared handle, the flags D3D12 needs to open
+        // and write the pooled texture directly. Tests whether MF accepts such samples.
+        case 6:
+            bindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+            miscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED;
+            break;
         }
     }
 
@@ -197,7 +203,7 @@ public:
         DestroyRepack();
     }
 
-    // The repack writes through render-target views: only variant 1 pooled textures qualify.
+    // The repack writes through render-target views: only variant 1 and 6 pooled textures qualify.
     bool CanRepack() const { return (bindFlags & D3D11_BIND_RENDER_TARGET) && BaleRepackExports::Get().create; }
 
     // Permanent for this uploader. The handle is serialized with frame production like grain.

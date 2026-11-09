@@ -2442,7 +2442,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_dav1d_max_frame_delay") { target = &baleDav1dMaxFrameDelay; minimum = 0; maximum = 64; }
         else if (key == "bale_dav1d_export_film_grain") { target = &baleDav1dExportFilmGrain; minimum = 0; maximum = 1; }
         else if (key == "bale_film_grain_mode") { target = &baleFilmGrainMode; minimum = 0; maximum = 2; }
-        else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 5; }
+        else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 6; }
         else if (key == "bale_d3d11_upload_fault_frames") { target = &baleD3d11UploadFaultFrames; minimum = 0; maximum = 999; }
         else if (key == "bale_d3d11_repack") { target = &baleD3d11Repack; minimum = 0; maximum = 1; }
         else if (key == "bale_zero_copy") { target = &baleZeroCopy; minimum = 0; maximum = 1; }

@@ -141,8 +141,8 @@ public:
             else
             {
                 selected = requested;
-                // After patch 0008 only variant 1 has D3D11_BIND_RENDER_TARGET.
-                if (selected == 2 && uploadVariant != 1)
+                // After patch 0008 only variants 1 and 6 (0016) have D3D11_BIND_RENDER_TARGET.
+                if (selected == 2 && uploadVariant != 1 && uploadVariant != 6)
                 {
                     // Keep dav1d's faster synthesis while export can still be left off.
                     selected = 0;
