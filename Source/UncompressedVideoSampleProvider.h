@@ -160,7 +160,9 @@ private:
     bool zeroCopyHooked = false;
     bool zeroCopyLogged = false;
     bool zeroCopyLayoutLogged = false;
+    bool zeroCopyDeclineLogged = false;
     unsigned zeroCopyFrames = 0;
+    unsigned zeroCopyDirectFrames = 0; // Written straight into the pooled texture (no landing copy).
     static int get_zero_copy_buffer(AVCodecContext* avCodecContext, AVFrame* frame, int flags);
     void CreateZeroCopy(winrt::com_ptr<ID3D11Device> const& device, winrt::com_ptr<ID3D11DeviceContext> const& context);
     bool TryZeroCopy(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params);

@@ -39,6 +39,7 @@ struct BaleRepackExports
 
 // Bale: bale_gpu.dll zero-copy ABI 1. dav1d decodes into GPU-visible buffers from bale_zc_alloc and
 // bale_zc_repack turns one into a P010 texture on the MSS device, with no staging map or CPU fill.
+// The optional bale_zc_repack_into writes the pooled texture itself, skipping the landing copy.
 // Layouts mirror the Rust repr(C) structs.
 struct BaleZcFrame
 {
@@ -72,6 +73,8 @@ struct BaleZeroCopyExports
     HRESULT (__cdecl* repack)(void*, void*, const BaleZcFrame*, void**) = nullptr;
     HRESULT (__cdecl* stats)(void*, BaleZcStats*) = nullptr;
     void (__cdecl* destroy)(void*) = nullptr;
+    // Optional (added within ABI 1): null in an older bale_gpu, which then only lands frames.
+    HRESULT (__cdecl* repackInto)(void*, void*, const BaleZcFrame*, const BaleGrainParams*, void*) = nullptr;
 
     static const BaleZeroCopyExports& Get()
     {
@@ -89,6 +92,7 @@ struct BaleZeroCopyExports
             api.repack = reinterpret_cast<decltype(api.repack)>(GetProcAddress(module, "bale_zc_repack"));
             api.stats = reinterpret_cast<decltype(api.stats)>(GetProcAddress(module, "bale_zc_stats"));
             api.destroy = reinterpret_cast<decltype(api.destroy)>(GetProcAddress(module, "bale_zc_destroy"));
+            api.repackInto = reinterpret_cast<decltype(api.repackInto)>(GetProcAddress(module, "bale_zc_repack_into"));
             if (!api.abiVersion || !api.create || !api.alloc || !api.release || !api.repack || !api.stats ||
                 !api.destroy || api.abiVersion() != 1)
             {
@@ -135,7 +139,8 @@ struct BaleUploadTiming
     }
 
     // Called once per uploaded frame, after CreateSample. Logs average/max ms per stage.
-    // path: 0 swscale into staging, 1 planar staging + repack, 2 zero-copy (fill = repack submit).
+    // path: 0 swscale into staging, 1 planar staging + repack, 2 zero-copy landing (fill = repack
+    // submit), 3 zero-copy direct write (gpu = repack submit).
     void EndFrame(int path)
     {
         lastEnd = Now();
@@ -288,6 +293,7 @@ public:
                     // A failed pass may have partially written it: overwrite with the clean plain copy.
                     context->CopyResource(texture, source.texture.get());
                 }
+                return true;
             });
     }
 
@@ -303,7 +309,24 @@ public:
                 {
                     context->CopyResource(texture, landing);
                 }
+                return true;
             });
+    }
+
+    // Zero-copy direct write needs pooled textures that D3D12 can open and write (variant 6).
+    bool CanWriteDirect() const
+    {
+        return (bindFlags & D3D11_BIND_UNORDERED_ACCESS) && (miscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+    }
+
+    // Zero-copy direct write: `write` fills a pooled texture of the SetOutput size itself, or
+    // returns false having left it untouched; the texture then goes back to the pool and the
+    // sample is null. `position` is read only after a successful write, so `write` may set it.
+    // Failures after a write throw, like the other paths.
+    template <typename Write>
+    MediaStreamSample CreateWrittenSample(const TimeSpan& position, IDirect3DSurface* surface, Write&& write)
+    {
+        return Publish(position, surface, "zero-copy direct write", std::forward<Write>(write));
     }
 
     void EndGrain() { DestroyGrain(); }
@@ -333,9 +356,11 @@ public:
 
 private:
     // Fills a pooled texture of the SetOutput size with `draw`, then flushes and wraps it in a
-    // tracked MF sample. Any failure throws (the provider's permanent CPU fallback).
+    // tracked MF sample. Any failure throws (the provider's permanent CPU fallback). A draw that
+    // returns false left the texture untouched: it goes back to the pool and the sample is null.
+    // `position` is read only after `draw` succeeded.
     template <typename Draw>
-    MediaStreamSample Publish(TimeSpan position, IDirect3DSurface* surface, const char* drawOperation, Draw&& draw)
+    MediaStreamSample Publish(const TimeSpan& position, IDirect3DSurface* surface, const char* drawOperation, Draw&& draw)
     {
         auto stageStart = BaleUploadTiming::Now();
         auto stage = [&](BaleUploadTiming::Stage done)
@@ -353,7 +378,12 @@ private:
                 winrt::check_hresult(texturePool.GetUploadTexture(stagingDesc.Width, stagingDesc.Height, stagingDesc.Format, bindFlags, miscFlags, texture));
             }
             operation = drawOperation;
-            draw(texture.get());
+            if (!draw(texture.get()))
+            {
+                std::lock_guard lock(samplesMutex);
+                texturePool.ReturnUploadTexture(std::move(texture));
+                return MediaStreamSample{ nullptr };
+            }
             stage(BaleUploadTiming::Gpu);
             operation = "CopyResource/GetDeviceRemovedReason";
             // CopyResource and Flush return void; device removal is the available HRESULT check.
