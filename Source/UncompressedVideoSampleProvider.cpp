@@ -587,10 +587,25 @@ void UncompressedVideoSampleProvider::FillPlanar(AVFrame* avFrame, BYTE** data, 
     int chromaWidth = (outputWidth + 1) / 2;
     int chromaHeight = (outputHeight + 1) / 2;
     int linesize = static_cast<int>(pitch);
-    av_image_copy_plane(data[0], linesize, avFrame->data[0], avFrame->linesize[0], outputWidth * bytes, outputHeight);
-    av_image_copy_plane(data[1], linesize, avFrame->data[1], avFrame->linesize[1], chromaWidth * bytes, chromaHeight);
-    av_image_copy_plane(data[1] + static_cast<size_t>(outputFrameWidth / 2) * bytes, linesize,
-        avFrame->data[2], avFrame->linesize[2], chromaWidth * bytes, chromaHeight);
+    BYTE* vData = data[1] + static_cast<size_t>(outputFrameWidth / 2) * bytes;
+    // One thread fills a 4K frame in ~25-40 ms on the console (measured with 0013), most of a 24 fps
+    // frame interval. Split rows across the swscale thread count; each slice owns disjoint rows.
+    if (!copyPool) copyPool = std::make_unique<BaleCopyPool>(SwsThreads, BaleThreadBoost::ToWin32(SwsThreadPriority));
+    int slices = copyPool->Threads();
+    copyPool->Run([&](int slice)
+        {
+            auto copyRows = [&](BYTE* dst, const uint8_t* src, int srcLinesize, int rowBytes, int height)
+                {
+                    int begin = height * slice / slices;
+                    int end = height * (slice + 1) / slices;
+                    if (end <= begin) return;
+                    av_image_copy_plane(dst + static_cast<ptrdiff_t>(begin) * linesize, linesize,
+                        src + static_cast<ptrdiff_t>(begin) * srcLinesize, srcLinesize, rowBytes, end - begin);
+                };
+            copyRows(data[0], avFrame->data[0], avFrame->linesize[0], outputWidth * bytes, outputHeight);
+            copyRows(data[1], avFrame->data[1], avFrame->linesize[1], chromaWidth * bytes, chromaHeight);
+            copyRows(vData, avFrame->data[2], avFrame->linesize[2], chromaWidth * bytes, chromaHeight);
+        });
 }
 
 void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params, bool planar)

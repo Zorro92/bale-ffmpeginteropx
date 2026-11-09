@@ -19,6 +19,7 @@
 #pragma once
 #include "UncompressedSampleProvider.h"
 #include "BaleD3D11Upload.h"
+#include "BaleCopyPool.h"
 using namespace winrt::Windows::Media::Core;
 
 #pragma region Desktop Family
@@ -137,6 +138,8 @@ private:
     bool repackLogged = false;
     bool CanRepack(AVFrame* avFrame, const BaleGrainParams* params) const;
     void FillPlanar(AVFrame* avFrame, BYTE** data, UINT pitch);
+    // Bale: FillPlanar row slices; SwsThreads workers, created on the first planar frame.
+    std::unique_ptr<BaleCopyPool> copyPool;
     void DisableRepack(HRESULT hr);
     HRESULT ScaleFrame(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer);
     HRESULT CopyFrameToOutput(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer);
