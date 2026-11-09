@@ -370,6 +370,9 @@ namespace winrt::FFmpegInteropX::implementation
         bool aheadBusy = false;
         bool aheadEnd = false;
         bool aheadStop = false;
+        // Bale debug: QPC ticks summed per 240 produced samples, guarded by aheadMutex.
+        int64_t aheadWorkTicks = 0, aheadWorkPeak = 0, aheadIdleTicks = 0, aheadStarvedTicks = 0, aheadStarvedPeak = 0;
+        unsigned aheadTimedSamples = 0, aheadStarvedCount = 0;
         void AheadLoop();
         void AheadPause(bool clear);
         void AheadResume();

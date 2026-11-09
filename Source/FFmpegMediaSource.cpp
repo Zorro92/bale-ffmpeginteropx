@@ -2504,10 +2504,12 @@ namespace winrt::FFmpegInteropX::implementation
             std::unique_lock lock(aheadMutex);
             while (true)
             {
+                auto idleStart = BaleUploadTiming::Now();
                 aheadCv.wait(lock, [this]
                     {
                         return aheadStop || (aheadPauses == 0 && aheadStream && !aheadEnd && (int)aheadQueue.size() < baleDecodeAheadFrames);
                     });
+                aheadIdleTicks += BaleUploadTiming::Now() - idleStart;
                 if (aheadStop)
                 {
                     break;
@@ -2519,6 +2521,7 @@ namespace winrt::FFmpegInteropX::implementation
                 lock.unlock();
 
                 MediaStreamSample sample{ nullptr };
+                auto workStart = BaleUploadTiming::Now();
                 try
                 {
                     sample = stream->GetNextSample();
@@ -2527,9 +2530,23 @@ namespace winrt::FFmpegInteropX::implementation
                 {
                     sample = nullptr;
                 }
+                auto work = BaleUploadTiming::Now() - workStart;
 
                 lock.lock();
                 aheadBusy = false;
+                aheadWorkTicks += work;
+                if (work > aheadWorkPeak) aheadWorkPeak = work;
+                if (++aheadTimedSamples == 240)
+                {
+                    // Starved = the MF request thread found the queue empty and waited for the worker.
+                    av_log(nullptr, AV_LOG_INFO,
+                        "Bale decode-ahead timing: samples=%u queued=%zu work avg/max ms=%.2f/%.1f idle avg ms=%.2f starved=%u total/max ms=%.1f/%.1f.\n",
+                        aheadTimedSamples, aheadQueue.size(), BaleUploadTiming::Ms(aheadWorkTicks) / aheadTimedSamples,
+                        BaleUploadTiming::Ms(aheadWorkPeak), BaleUploadTiming::Ms(aheadIdleTicks) / aheadTimedSamples,
+                        aheadStarvedCount, BaleUploadTiming::Ms(aheadStarvedTicks), BaleUploadTiming::Ms(aheadStarvedPeak));
+                    aheadWorkTicks = aheadWorkPeak = aheadIdleTicks = aheadStarvedTicks = aheadStarvedPeak = 0;
+                    aheadTimedSamples = aheadStarvedCount = 0;
+                }
                 if (generation == aheadGeneration && stream == aheadStream)
                 {
                     if (sample)
@@ -2611,6 +2628,15 @@ namespace winrt::FFmpegInteropX::implementation
             aheadThread = std::thread([this] { AheadLoop(); });
         }
         aheadCv.notify_all();
+        if (aheadQueue.empty() && !aheadEnd)
+        {
+            auto starvedStart = BaleUploadTiming::Now();
+            aheadCv.wait(lock, [this] { return !aheadQueue.empty() || aheadEnd || aheadStop; });
+            auto starved = BaleUploadTiming::Now() - starvedStart;
+            aheadStarvedCount++;
+            aheadStarvedTicks += starved;
+            if (starved > aheadStarvedPeak) aheadStarvedPeak = starved;
+        }
         aheadCv.wait(lock, [this] { return !aheadQueue.empty() || aheadEnd || aheadStop; });
         if (aheadQueue.empty())
         {

@@ -597,7 +597,10 @@ void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSur
 {
     auto format = m_OutputPixelFormat == AV_PIX_FMT_NV12 ? DXGI_FORMAT_NV12 : DXGI_FORMAT_P010;
     BaleD3D11Upload::Mapping target;
+    auto& timing = upload->timing;
+    if (timing.lastEnd) timing.Add(BaleUploadTiming::Gap, BaleUploadTiming::Now() - timing.lastEnd);
     winrt::check_hresult(upload->Map(outputFrameWidth, outputFrameHeight, format, target));
+    auto fillStart = BaleUploadTiming::Now();
     auto pitch = target.mapped.RowPitch;
     auto rowBytes = static_cast<UINT>(outputFrameWidth) * (format == DXGI_FORMAT_P010 ? 2U : 1U);
     if (!target.mapped.pData || pitch < rowBytes || pitch > INT_MAX) winrt::throw_hresult(E_FAIL);
@@ -625,7 +628,9 @@ void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSur
         winrt::throw_hresult(E_OUTOFMEMORY);
     }
     ReadFrameProperties(avFrame, framePts);
+    timing.Add(BaleUploadTiming::Fill, BaleUploadTiming::Now() - fillStart);
     uploadSample = upload->CreateSample(target, ConvertPosition(framePts), surface, FilmGrain, params, planar);
+    timing.EndFrame(planar);
     uploadedFrames++;
     if (!uploadLogged)
     {

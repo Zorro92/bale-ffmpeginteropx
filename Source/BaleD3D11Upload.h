@@ -37,6 +37,56 @@ struct BaleRepackExports
     }
 };
 
+// Bale debug: wall time per upload stage on the producing thread, summed per 240-frame window.
+struct BaleUploadTiming
+{
+    enum Stage { Gap, Map, Fill, Unmap, Gpu, Flush, Sample, Count };
+    int64_t sum[Count]{};
+    int64_t peak[Count]{};
+    unsigned frames = 0;
+    int64_t lastEnd = 0;
+
+    static int64_t Now()
+    {
+        LARGE_INTEGER t;
+        QueryPerformanceCounter(&t);
+        return t.QuadPart;
+    }
+
+    static double Ms(int64_t ticks)
+    {
+        static const double perMs = []
+        {
+            LARGE_INTEGER f;
+            QueryPerformanceFrequency(&f);
+            return static_cast<double>(f.QuadPart) / 1000.0;
+        }();
+        return static_cast<double>(ticks) / perMs;
+    }
+
+    void Add(Stage stage, int64_t ticks)
+    {
+        sum[stage] += ticks;
+        if (ticks > peak[stage]) peak[stage] = ticks;
+    }
+
+    // Called once per uploaded frame, after CreateSample. Logs average/max ms per stage.
+    void EndFrame(bool planar)
+    {
+        lastEnd = Now();
+        if (++frames < 240) return;
+        auto avg = [&](Stage stage) { return Ms(sum[stage]) / frames; };
+        auto top = [&](Stage stage) { return Ms(peak[stage]); };
+        av_log(nullptr, AV_LOG_INFO,
+            "Bale D3D11 upload timing: frames=%u repack=%d avg/max ms gap=%.2f/%.1f map=%.2f/%.1f fill=%.2f/%.1f "
+            "unmap=%.2f/%.1f gpu=%.2f/%.1f flush=%.2f/%.1f sample=%.2f/%.1f.\n",
+            frames, planar ? 1 : 0, avg(Gap), top(Gap), avg(Map), top(Map), avg(Fill), top(Fill),
+            avg(Unmap), top(Unmap), avg(Gpu), top(Gpu), avg(Flush), top(Flush), avg(Sample), top(Sample));
+        for (int i = 0; i < Count; i++) sum[i] = peak[i] = 0;
+        frames = 0;
+    }
+};
+
 // Bale: software decode is unchanged; only the final NV12/P010 output lives on the MSS device.
 // Decode/seek serialize Map/CreateSample/Flush. Processed can arrive on any MF thread.
 class BaleD3D11Upload : public std::enable_shared_from_this<BaleD3D11Upload>
@@ -126,7 +176,9 @@ public:
         target.context = context;
         target.texture = staging;
         // WRITE (not DISCARD) on a small staging ring: Map waits if the previous GPU copy still uses it.
+        auto mapStart = BaleUploadTiming::Now();
         auto hr = context->Map(staging.get(), 0, D3D11_MAP_WRITE, 0, &target.mapped);
+        timing.Add(BaleUploadTiming::Map, BaleUploadTiming::Now() - mapStart);
         if (FAILED(hr)) av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload Map failed (hr=0x%08X).\n", static_cast<unsigned>(hr));
         return hr;
     }
@@ -134,7 +186,15 @@ public:
     MediaStreamSample CreateSample(Mapping& source, TimeSpan position, IDirect3DSurface* surface,
         BaleFilmGrain& grain, const BaleGrainParams* params, bool planar)
     {
+        auto stageStart = BaleUploadTiming::Now();
+        auto stage = [&](BaleUploadTiming::Stage done)
+        {
+            auto now = BaleUploadTiming::Now();
+            timing.Add(done, now - stageStart);
+            stageStart = now;
+        };
         source.Unmap();
+        stage(BaleUploadTiming::Unmap);
         const char* operation = "GetUploadTexture";
         try
         {
@@ -164,10 +224,12 @@ public:
                 // A failed pass may have partially written it: overwrite with the clean plain copy.
                 context->CopyResource(texture.get(), source.texture.get());
             }
+            stage(BaleUploadTiming::Gpu);
             operation = "CopyResource/GetDeviceRemovedReason";
             // CopyResource and Flush return void; device removal is the available HRESULT check.
             context->Flush();
             winrt::check_hresult(device->GetDeviceRemovedReason());
+            stage(BaleUploadTiming::Flush);
 
             operation = "GetSurface";
             auto dxgiSurface = texture.as<IDXGISurface>();
@@ -198,6 +260,7 @@ public:
                         issuedSamples, processedSamples, texturePool.PooledTextureCount());
                 }
             }
+            stage(BaleUploadTiming::Sample);
             *surface = directSurface;
             return sample;
         }
@@ -209,6 +272,9 @@ public:
     }
 
     void EndGrain() { DestroyGrain(); }
+
+    // Producer-thread only (same serialization as Map/CreateSample).
+    BaleUploadTiming timing;
 
     void Flush()
     {
