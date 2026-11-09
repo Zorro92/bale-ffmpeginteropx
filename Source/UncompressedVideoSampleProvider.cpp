@@ -89,6 +89,17 @@ void UncompressedVideoSampleProvider::SelectOutputFormat()
         m_pAvCodecCtx->get_buffer2 = get_buffer2;
         m_pAvCodecCtx->opaque = (void*)this;
     }
+    else if (ZeroCopy && decoder == DecoderEngine::FFmpegSoftwareDecoder &&
+        std::string(m_pAvCodecCtx->codec->name) == "libdav1d" &&
+        m_pAvCodecCtx->pix_fmt == AV_PIX_FMT_YUV420P10LE && m_OutputPixelFormat == AV_PIX_FMT_P010LE)
+    {
+        // Bale zero-copy: the patched libdav1d (native p1) asks a replaced get_buffer2 for each
+        // picture, per picture, so installing it before the first decode is enough. Until
+        // SetUploadDevice creates the handle the hook declines and dav1d uses its own pool.
+        m_pAvCodecCtx->get_buffer2 = get_zero_copy_buffer;
+        m_pAvCodecCtx->opaque = (void*)this;
+        zeroCopyHooked = true;
+    }
 }
 
 IMediaStreamDescriptor UncompressedVideoSampleProvider::CreateStreamDescriptor()
@@ -477,6 +488,7 @@ HRESULT UncompressedVideoSampleProvider::SetUploadDevice(winrt::com_ptr<ID3D11De
         av_log(nullptr, AV_LOG_INFO, "Bale D3D11 upload output declared: %dx%d subtype=%s.\n",
             outputFrameWidth, outputFrameHeight, winrt::to_string(outputMediaSubtype).c_str());
         upload = std::make_shared<BaleD3D11Upload>(newDevice, newContext, variant);
+        CreateZeroCopy(newDevice, newContext);
         return S_OK;
     }
     catch (...)
@@ -496,6 +508,8 @@ void UncompressedVideoSampleProvider::DisableUpload(HRESULT hr)
     }
     FilmGrain.UploadDisabled(hr);
     uploadSample = nullptr;
+    // Zero-copy only feeds the upload: before the uploader (and its D3D11 context use) goes away.
+    DisableZeroCopy(hr);
     upload.reset();
 }
 
@@ -645,7 +659,7 @@ void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSur
     ReadFrameProperties(avFrame, framePts);
     timing.Add(BaleUploadTiming::Fill, BaleUploadTiming::Now() - fillStart);
     uploadSample = upload->CreateSample(target, ConvertPosition(framePts), surface, FilmGrain, params, planar);
-    timing.EndFrame(planar);
+    timing.EndFrame(planar ? 1 : 0);
     uploadedFrames++;
     if (!uploadLogged)
     {
@@ -656,6 +670,15 @@ void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSur
 
 UncompressedVideoSampleProvider::~UncompressedVideoSampleProvider()
 {
+    // The base destructor frees the codec later: stop the hook from seeing this provider, then
+    // destroy the handle. Pictures dav1d still holds are released into the closed pool.
+    if (zeroCopyHooked && m_pAvCodecCtx && m_pAvCodecCtx->get_buffer2 == get_zero_copy_buffer)
+    {
+        m_pAvCodecCtx->get_buffer2 = avcodec_default_get_buffer2;
+        m_pAvCodecCtx->opaque = nullptr;
+    }
+    DisableZeroCopy(S_OK);
+
     if (m_pSwsCtx)
     {
         sws_freeContext(m_pSwsCtx);
@@ -686,6 +709,7 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
         try
         {
             auto params = hasGrain ? &grainParams : nullptr;
+            if (TryZeroCopy(avFrame, surface, framePts, params)) return S_OK;
             if (CanRepack(avFrame, params))
             {
                 try
@@ -1032,6 +1056,179 @@ int UncompressedVideoSampleProvider::get_buffer2(AVCodecContext* avCodecContext,
     {
         return provider->FillLinesAndBuffer(frame->linesize, frame->data, frame->buf, frame->width, frame->height, true);
     }
+}
+
+// Bale zero-copy: only the native p1 libdav1d allocator calls this (stock libdav1d never calls
+// get_buffer2), on the thread inside avcodec_receive_frame. One bale_zc buffer holds the three
+// planes with 64-byte aligned starts/strides and 64 bytes of padding after each plane (dav1d's
+// allocator contract). Any refusal (< 0) makes dav1d use its own pool for that picture.
+int UncompressedVideoSampleProvider::get_zero_copy_buffer(AVCodecContext* avCodecContext, AVFrame* frame, int flags)
+{
+    UNREFERENCED_PARAMETER(flags);
+    auto provider = reinterpret_cast<UncompressedVideoSampleProvider*>(avCodecContext->opaque);
+    auto handle = provider->zeroCopy.load(std::memory_order_acquire);
+    if (!handle || frame->format != AV_PIX_FMT_YUV420P10LE) return AVERROR(ENOSYS);
+    if (frame->width <= 0 || frame->height <= 0 || frame->width > 16384 || frame->height > 16384) return AVERROR(EINVAL);
+
+    static constexpr size_t align = 64;
+    auto alignUp = [](size_t value) { return (value + align - 1) / align * align; };
+    size_t width = static_cast<size_t>(frame->width);
+    size_t height = static_cast<size_t>(frame->height);
+    size_t lumaStride = alignUp(width * 2);
+    size_t chromaStride = alignUp((width + 1) / 2 * 2);
+    size_t lumaSize = lumaStride * height;
+    size_t chromaSize = chromaStride * ((height + 1) / 2);
+    size_t offsetU = alignUp(lumaSize + align);
+    size_t offsetV = alignUp(offsetU + chromaSize + align);
+    size_t bytes = offsetV + chromaSize + align;
+
+    const auto& api = BaleZeroCopyExports::Get();
+    uint8_t* data = nullptr;
+    void* id = nullptr;
+    // Bounded: a full pool waits briefly, then fails and this picture uses dav1d's pool.
+    if (api.alloc(handle, bytes, &data, &id) != S_OK || !data || !id) return AVERROR(ENOMEM);
+    if (reinterpret_cast<uintptr_t>(data) % align)
+    {
+        api.release(id);
+        return AVERROR(EINVAL);
+    }
+    // The buffer's opaque is the bale_zc id; TryZeroCopy hands it to bale_zc_repack. Unref (from any
+    // thread, also after the handle is destroyed) returns the memory to its pool.
+    frame->buf[0] = av_buffer_create(data, bytes,
+        [](void* opaque, uint8_t*) { BaleZeroCopyExports::Get().release(opaque); }, id, 0);
+    if (!frame->buf[0])
+    {
+        api.release(id);
+        return AVERROR(ENOMEM);
+    }
+    frame->data[0] = data;
+    frame->data[1] = data + offsetU;
+    frame->data[2] = data + offsetV;
+    frame->linesize[0] = static_cast<int>(lumaStride);
+    frame->linesize[1] = static_cast<int>(chromaStride);
+    frame->linesize[2] = static_cast<int>(chromaStride);
+    return 0;
+}
+
+// Runs once, from SetUploadDevice. Failure only logs: every frame keeps the staging path.
+void UncompressedVideoSampleProvider::CreateZeroCopy(winrt::com_ptr<ID3D11Device> const& device, winrt::com_ptr<ID3D11DeviceContext> const& context)
+{
+    if (!zeroCopyHooked || zeroCopy.load()) return;
+    const auto& api = BaleZeroCopyExports::Get();
+    if (!api.create)
+    {
+        av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy unavailable (bale_gpu zero-copy ABI 1 not found); using staging upload.\n");
+        return;
+    }
+    void* handle = nullptr;
+    auto hr = api.create(device.get(), context.get(), &handle);
+    if (hr != S_OK || !handle)
+    {
+        av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy create failed (hr=0x%08X); using staging upload.\n",
+            static_cast<unsigned>(hr == S_OK ? E_UNEXPECTED : hr));
+        return;
+    }
+    zeroCopy.store(handle, std::memory_order_release);
+    av_log(nullptr, AV_LOG_INFO, "Bale zero-copy created (self-test passed).\n");
+}
+
+void UncompressedVideoSampleProvider::LogZeroCopyStats(void* handle, const char* when)
+{
+    BaleZcStats stats{};
+    if (BaleZeroCopyExports::Get().stats(handle, &stats) != S_OK) return;
+    av_log(nullptr, AV_LOG_INFO, "Bale zero-copy stats (%s): frames=%u repacked=%llu buffers created=%llu live=%llu peak=%llu "
+        "pooled=%llu alloc_failures=%llu alloc_waits=%llu landing_copies=%llu.\n", when, zeroCopyFrames,
+        static_cast<unsigned long long>(stats.framesRepacked), static_cast<unsigned long long>(stats.buffersCreated),
+        static_cast<unsigned long long>(stats.buffersLive), static_cast<unsigned long long>(stats.buffersPeak),
+        static_cast<unsigned long long>(stats.buffersPooled), static_cast<unsigned long long>(stats.allocFailures),
+        static_cast<unsigned long long>(stats.allocWaits), static_cast<unsigned long long>(stats.landingCopies));
+}
+
+// Permanent for this stream. Callers are serialized with decoding (see zeroCopy). Buffers dav1d
+// still holds stay valid and are released into the closed pool later.
+void UncompressedVideoSampleProvider::DisableZeroCopy(HRESULT hr)
+{
+    auto handle = zeroCopy.exchange(nullptr);
+    if (!handle) return;
+    LogZeroCopyStats(handle, FAILED(hr) ? "disabled" : "closed");
+    if (FAILED(hr))
+    {
+        av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy disabled (hr=0x%08X); using staging upload.\n", static_cast<unsigned>(hr));
+    }
+    BaleZeroCopyExports::Get().destroy(handle);
+}
+
+// True when this frame went out as a zero-copy sample. False leaves the frame to the staging paths:
+// not a zero-copy picture (dav1d's own pool), a layout the repack refuses, or a disabled handle.
+// Upload failures after a successful repack throw, like the staging paths.
+bool UncompressedVideoSampleProvider::TryZeroCopy(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params)
+{
+    auto handle = zeroCopy.load(std::memory_order_acquire);
+    // CPU grain needs the converted frame in mapped staging.
+    if (!handle || (params && FilmGrain.mode == 1)) return false;
+    if (avFrame->format != AV_PIX_FMT_YUV420P10LE || m_OutputPixelFormat != AV_PIX_FMT_P010LE ||
+        avFrame->width != outputWidth || avFrame->height != outputHeight) return false;
+    auto buffer = avFrame->buf[0];
+    if (!buffer || avFrame->buf[1] || avFrame->linesize[0] <= 0 || avFrame->linesize[1] <= 0 ||
+        avFrame->linesize[1] != avFrame->linesize[2]) return false;
+    // Whole 4-aligned texture rows: the repack reads the decoder's row padding past the picture,
+    // and dav1d's pictures are 128-aligned, so those rows are inside the buffer (fits() checks).
+    BaleZcFrame frame{};
+    frame.width = static_cast<uint32_t>(outputFrameWidth);
+    frame.height = static_cast<uint32_t>(outputFrameHeight);
+    frame.lumaStride = static_cast<uint32_t>(avFrame->linesize[0]);
+    frame.chromaStride = static_cast<uint32_t>(avFrame->linesize[1]);
+    for (int i = 0; i < 3; i++)
+    {
+        if (!avFrame->data[i] || avFrame->data[i] < buffer->data) return false;
+        frame.offsets[i] = static_cast<uint64_t>(avFrame->data[i] - buffer->data);
+    }
+
+    const auto& api = BaleZeroCopyExports::Get();
+    auto& timing = upload->timing;
+    auto repackStart = BaleUploadTiming::Now();
+    void* landing = nullptr;
+    auto hr = api.repack(handle, av_buffer_get_opaque(buffer), &frame, &landing);
+    if (hr == S_FALSE) return false;
+    if (hr == E_INVALIDARG)
+    {
+        if (!zeroCopyLayoutLogged)
+        {
+            zeroCopyLayoutLogged = true;
+            av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy layout refused (%dx%d, strides %d/%d); using staging upload for such frames.\n",
+                outputFrameWidth, outputFrameHeight, avFrame->linesize[0], avFrame->linesize[1]);
+        }
+        return false;
+    }
+    if (hr != S_OK || !landing)
+    {
+        DisableZeroCopy(hr == S_OK ? E_UNEXPECTED : hr);
+        return false;
+    }
+    auto repackEnd = BaleUploadTiming::Now();
+    if (timing.lastEnd) timing.Add(BaleUploadTiming::Gap, repackStart - timing.lastEnd);
+    timing.Add(BaleUploadTiming::Fill, repackEnd - repackStart);
+
+    // Borrowed from the handle: hold a reference while MF/D3D11 calls run below.
+    winrt::com_ptr<ID3D11Texture2D> texture;
+    texture.copy_from(static_cast<ID3D11Texture2D*>(landing));
+    upload->SetOutput(outputFrameWidth, outputFrameHeight, DXGI_FORMAT_P010);
+    if (UploadFaultFrames > 0 && uploadedFrames >= UploadFaultFrames)
+    {
+        av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload fault injected after %d frames.\n", uploadedFrames);
+        winrt::throw_hresult(E_OUTOFMEMORY);
+    }
+    ReadFrameProperties(avFrame, framePts);
+    uploadSample = upload->CreateLandedSample(texture.get(), ConvertPosition(framePts), surface, FilmGrain, params);
+    timing.EndFrame(2);
+    uploadedFrames++;
+    if (++zeroCopyFrames == 240) LogZeroCopyStats(handle, "steady");
+    if (!zeroCopyLogged)
+    {
+        zeroCopyLogged = true;
+        av_log(nullptr, AV_LOG_INFO, "Bale zero-copy active: P010 %dx%d.\n", outputFrameWidth, outputFrameHeight);
+    }
+    return true;
 }
 
 

@@ -92,6 +92,10 @@ public:
     int UploadFaultFrames = 0;
     // Bale debug: 1 = planar staging fill plus bale_gpu repack (needs upload variant 1).
     int Repack = 0;
+    // Bale: 1 = libdav1d 10-bit pictures decode into bale_gpu zero-copy buffers (FFmpeg native patch
+    // p1), repacked on the GPU straight into the upload texture. Needs the D3D11 upload; the app
+    // registers d3d12.dll with bale_gpu first. Any frame it cannot take uses the staging path.
+    int ZeroCopy = 0;
     BYTE* TargetBuffer = NULL;
 
     // Bale: independent of SetHardwareDevice/AVHWDeviceContext; never changes the decoder engine.
@@ -149,6 +153,19 @@ private:
     HRESULT FillLinesAndBuffer(int* linesize, BYTE** data, AVBufferRef** buffer, int width, int height, bool isSourceBuffer);
     AVBufferRef* AllocateBuffer(int requestedSize, AVBufferPool** bufferPool, int* bufferPoolSize);
     static int get_buffer2(AVCodecContext* avCodecContext, AVFrame* frame, int flags);
+    // Bale zero-copy. The handle is created by SetUploadDevice and destroyed (exchanged to null) by
+    // DisableZeroCopy, which runs only where decoding is paused or serialized: the hook below runs
+    // inside avcodec_receive_frame, on the same serialized producer as CreateBufferFromFrame.
+    std::atomic<void*> zeroCopy{ nullptr };
+    bool zeroCopyHooked = false;
+    bool zeroCopyLogged = false;
+    bool zeroCopyLayoutLogged = false;
+    unsigned zeroCopyFrames = 0;
+    static int get_zero_copy_buffer(AVCodecContext* avCodecContext, AVFrame* frame, int flags);
+    void CreateZeroCopy(winrt::com_ptr<ID3D11Device> const& device, winrt::com_ptr<ID3D11DeviceContext> const& context);
+    bool TryZeroCopy(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params);
+    void LogZeroCopyStats(void* handle, const char* when);
+    void DisableZeroCopy(HRESULT hr);
 
     winrt::hstring outputMediaSubtype{};
     int outputWidth = 0;

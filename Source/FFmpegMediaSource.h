@@ -351,6 +351,8 @@ namespace winrt::FFmpegInteropX::implementation
         int baleD3d11UploadFaultFrames = 0;
         // Debug: planar copy into staging plus a GPU NV12/P010 repack instead of swscale (0 = off).
         int baleD3d11Repack = 0;
+        // 1 = libdav1d 10-bit pictures decode into bale_gpu zero-copy buffers (needs the D3D11 upload).
+        int baleZeroCopy = 0;
         int baleDecodeThreadPriority = 0;
         int baleDecoderUseMaxResolution = 0;
         int baleDecoderMaxDpbCount = 0;

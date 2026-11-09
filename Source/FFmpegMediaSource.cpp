@@ -2349,6 +2349,8 @@ namespace winrt::FFmpegInteropX::implementation
             uncompressed->SwsThreads = baleSwsThreads;
             uncompressed->UploadFaultFrames = baleD3d11UploadFaultFrames;
             uncompressed->Repack = baleD3d11Repack;
+            // The hook needs the D3D11 upload; frame grabbers never get an upload device.
+            uncompressed->ZeroCopy = baleD3d11Upload > 0 && !config->IsFrameGrabber ? baleZeroCopy : 0;
             uncompressed->SwsThreadPriority = baleDecodeThreadPriority;
             uncompressed->FilmGrain.mode = filmGrainMode;
             uncompressed->FilmGrain.above1080p = avVideoCodecCtx->width > 1920 || avVideoCodecCtx->height > 1080;
@@ -2443,6 +2445,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 5; }
         else if (key == "bale_d3d11_upload_fault_frames") { target = &baleD3d11UploadFaultFrames; minimum = 0; maximum = 999; }
         else if (key == "bale_d3d11_repack") { target = &baleD3d11Repack; minimum = 0; maximum = 1; }
+        else if (key == "bale_zero_copy") { target = &baleZeroCopy; minimum = 0; maximum = 1; }
         else if (key == "bale_decode_thread_priority") { target = &baleDecodeThreadPriority; minimum = 0; maximum = 2; }
         else if (key == "bale_decoder_use_max_resolution") { target = &baleDecoderUseMaxResolution; minimum = 0; maximum = 1; }
         else if (key == "bale_decoder_max_dpb_count") { target = &baleDecoderMaxDpbCount; minimum = 0; maximum = 16; }
