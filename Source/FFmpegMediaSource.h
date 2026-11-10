@@ -353,6 +353,8 @@ namespace winrt::FFmpegInteropX::implementation
         int baleDecodeThreadPriority = 0;
         int baleDecoderUseMaxResolution = 0;
         int baleDecoderMaxDpbCount = 0;
+        // 1 = AC-3/E-AC-3 packets go undecoded to the system Dolby decoder (keeps E-AC-3 JOC/Atmos).
+        int baleSystemDecoderDolby = 0;
         bool TryParseBaleOption(std::string const& key, hstring const& value, HRESULT& hr);
         void SetBaleDecoderProperties(Windows::Media::MediaProperties::VideoEncodingProperties const& videoProperties);
 
