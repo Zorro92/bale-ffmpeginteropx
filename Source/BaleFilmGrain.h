@@ -104,6 +104,9 @@ class BaleFilmGrain
 public:
     int mode = 0; // 0 dav1d at open / no grain after GPU loss, 1 Rust CPU, 2 GPU; never reset on seek.
     bool above1080p = false; // Initial codec size class; runtime GPU fallback must not overload 4K decode.
+    // 8-bit pictures written into P010 by the zero-copy direct write (EightBitZeroCopy); only that
+    // write applies their grain, so Compatible stays strict for every staging path.
+    bool eightInP010 = false;
 
     static int BitDepth(AVPixelFormat format)
     {
@@ -124,10 +127,16 @@ public:
             (BitDepth(input) == 10 && output == AV_PIX_FMT_P010LE);
     }
 
+    static bool EightInP010(AVPixelFormat input, AVPixelFormat output)
+    {
+        return input == AV_PIX_FMT_YUV420P && output == AV_PIX_FMT_P010LE;
+    }
+
     // Must run before avcodec_open2: libdav1d reads apply_grain only during initialization.
     static int SelectMode(int requested, bool exportOnly, bool dav1d, bool hardware,
-        AVPixelFormat input, AVPixelFormat output, int uploadVariant)
+        AVPixelFormat input, AVPixelFormat output, int uploadVariant, bool eightInP010 = false)
     {
+        bool eight = eightInP010 && EightInP010(input, output);
         int selected = 0;
         const char* reason = nullptr;
         if (exportOnly)
@@ -136,7 +145,7 @@ public:
         {
             if (!dav1d || hardware) reason = "decoder is not software libdav1d";
             else if (!BitDepth(input)) reason = "input is not 4:2:0 8/10-bit";
-            else if (!Compatible(input, output)) reason = "output is not matching NV12/P010";
+            else if (!Compatible(input, output) && !eight) reason = "output is not matching NV12/P010";
             else if (!BaleGrainExports::Get().validate) reason = "grain DLL unavailable or incompatible";
             else
             {
@@ -147,6 +156,11 @@ public:
                     // Keep dav1d's faster synthesis while export can still be left off.
                     selected = 0;
                     reason = "GPU requires render-target upload variant 1; keeping dav1d";
+                }
+                else if (selected == 1 && eight)
+                {
+                    selected = 0;
+                    reason = "CPU grain cannot write 8-bit into P010; keeping dav1d";
                 }
             }
         }
@@ -175,7 +189,8 @@ public:
             }
             return false;
         }
-        if (!Compatible(static_cast<AVPixelFormat>(frame->format), output))
+        auto input = static_cast<AVPixelFormat>(frame->format);
+        if (!Compatible(input, output) && !(eightInP010 && EightInP010(input, output)))
         {
             if (!formatLogged)
             {

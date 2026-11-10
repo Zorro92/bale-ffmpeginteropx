@@ -39,7 +39,8 @@ struct BaleRepackExports
 
 // Bale: bale_gpu.dll zero-copy ABI 1. dav1d decodes into GPU-visible buffers from bale_zc_alloc and
 // bale_zc_repack turns one into a P010 texture on the MSS device, with no staging map or CPU fill.
-// The optional bale_zc_repack_into writes the pooled texture itself, skipping the landing copy.
+// The optional bale_zc_repack_into writes the pooled texture itself, skipping the landing copy;
+// the optional bale_zc_repack_into_bits does the same for 8-bit pictures (P010 samples << 8).
 // Layouts mirror the Rust repr(C) structs.
 struct BaleZcFrame
 {
@@ -75,6 +76,7 @@ struct BaleZeroCopyExports
     void (__cdecl* destroy)(void*) = nullptr;
     // Optional (added within ABI 1): null in an older bale_gpu, which then only lands frames.
     HRESULT (__cdecl* repackInto)(void*, void*, const BaleZcFrame*, const BaleGrainParams*, void*) = nullptr;
+    HRESULT (__cdecl* repackIntoBits)(void*, void*, const BaleZcFrame*, uint32_t, const BaleGrainParams*, void*) = nullptr;
 
     static const BaleZeroCopyExports& Get()
     {
@@ -93,6 +95,7 @@ struct BaleZeroCopyExports
             api.stats = reinterpret_cast<decltype(api.stats)>(GetProcAddress(module, "bale_zc_stats"));
             api.destroy = reinterpret_cast<decltype(api.destroy)>(GetProcAddress(module, "bale_zc_destroy"));
             api.repackInto = reinterpret_cast<decltype(api.repackInto)>(GetProcAddress(module, "bale_zc_repack_into"));
+            api.repackIntoBits = reinterpret_cast<decltype(api.repackIntoBits)>(GetProcAddress(module, "bale_zc_repack_into_bits"));
             if (!api.abiVersion || !api.create || !api.alloc || !api.release || !api.repack || !api.stats ||
                 !api.destroy || api.abiVersion() != 1)
             {

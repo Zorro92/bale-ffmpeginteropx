@@ -1060,6 +1060,7 @@ namespace winrt::FFmpegInteropX::implementation
         std::shared_ptr<MediaSampleProvider> result = nullptr;
 
         int filmGrainMode = 0;
+        bool eightBitZeroCopy = false;
         // Find the video stream and its decoder
         auto avVideoCodec = avcodec_find_decoder(avStream->codecpar->codec_id);
 
@@ -1183,12 +1184,17 @@ namespace winrt::FFmpegInteropX::implementation
                     av_dict_set_int(&codecOptions, "max_frame_delay", baleDav1dMaxFrameDelay, 0);
                 }
                 // Bale: select before open, since libdav1d reads apply_grain at initialization.
+                bool dav1d = std::string(avVideoCodec->name) == "libdav1d";
+                // Same inputs as the provider's ZeroCopy (set in CreateVideoSampleProvider).
+                eightBitZeroCopy = UncompressedVideoSampleProvider::EightBitZeroCopy(avVideoCodecCtx->pix_fmt, dav1d,
+                    avVideoCodecCtx->hw_device_ctx != nullptr, baleD3d11Upload > 0 ? baleZeroCopy : 0, baleD3d11Upload,
+                    config.as<winrt::FFmpegInteropX::MediaSourceConfig>());
                 auto outputFormat = UncompressedVideoSampleProvider::SelectOutputPixelFormat(avVideoCodecCtx->pix_fmt,
                     (avVideoCodec->capabilities & AV_CODEC_CAP_DR1) && !avVideoCodecCtx->hw_device_ctx,
-                    config.as<winrt::FFmpegInteropX::MediaSourceConfig>());
-                bool dav1d = std::string(avVideoCodec->name) == "libdav1d";
+                    config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), eightBitZeroCopy);
                 filmGrainMode = BaleFilmGrain::SelectMode(baleFilmGrainMode, baleDav1dExportFilmGrain > 0,
-                    dav1d, avVideoCodecCtx->hw_device_ctx != nullptr, avVideoCodecCtx->pix_fmt, outputFormat, baleD3d11Upload);
+                    dav1d, avVideoCodecCtx->hw_device_ctx != nullptr, avVideoCodecCtx->pix_fmt, outputFormat, baleD3d11Upload,
+                    eightBitZeroCopy);
                 // Export-only is independent and always wins. Otherwise keep dav1d grain unless
                 // Rust's loader and both input/output formats have passed the pre-open checks.
                 if (dav1d && (baleDav1dExportFilmGrain > 0 || filmGrainMode > 0))
@@ -1206,7 +1212,7 @@ namespace winrt::FFmpegInteropX::implementation
             if (SUCCEEDED(hr))
             {
                 // Detect video format and create video stream descriptor accordingly
-                result = CreateVideoSampleProvider(avStream, avVideoCodecCtx, index, filmGrainMode);
+                result = CreateVideoSampleProvider(avStream, avVideoCodecCtx, index, filmGrainMode, eightBitZeroCopy);
             }
 
             // free codec context if failed
@@ -2236,7 +2242,7 @@ namespace winrt::FFmpegInteropX::implementation
         return false;
     }
 
-    std::shared_ptr<MediaSampleProvider> FFmpegMediaSource::CreateVideoSampleProvider(AVStream* avStream, AVCodecContext* avVideoCodecCtx, int index, int filmGrainMode)
+    std::shared_ptr<MediaSampleProvider> FFmpegMediaSource::CreateVideoSampleProvider(AVStream* avStream, AVCodecContext* avVideoCodecCtx, int index, int filmGrainMode, bool eightBitZeroCopy)
     {
         UNREFERENCED_PARAMETER(avStream);
 
@@ -2351,6 +2357,9 @@ namespace winrt::FFmpegInteropX::implementation
             uncompressed->Repack = baleD3d11Repack;
             // The hook needs the D3D11 upload; frame grabbers never get an upload device.
             uncompressed->ZeroCopy = baleD3d11Upload > 0 && !config->IsFrameGrabber ? baleZeroCopy : 0;
+            // The pre-open format and grain decisions already assumed it; never enable it here alone.
+            uncompressed->ZeroCopyEightBit = eightBitZeroCopy && uncompressed->ZeroCopy > 0;
+            uncompressed->FilmGrain.eightInP010 = uncompressed->ZeroCopyEightBit;
             uncompressed->SwsThreadPriority = baleDecodeThreadPriority;
             uncompressed->FilmGrain.mode = filmGrainMode;
             uncompressed->FilmGrain.above1080p = avVideoCodecCtx->width > 1920 || avVideoCodecCtx->height > 1080;

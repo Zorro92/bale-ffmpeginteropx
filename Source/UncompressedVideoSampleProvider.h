@@ -80,7 +80,11 @@ public:
     void CheckFrameSize(AVFrame* avFrame);
     AVPixelFormat GetOutputPixelFormat() { return m_OutputPixelFormat; }
     // Shared with the pre-open grain decision; no duplicate output-format policy.
-    static AVPixelFormat SelectOutputPixelFormat(AVPixelFormat input, bool direct, MediaSourceConfig const& config);
+    // eightBitZeroCopy (EightBitZeroCopy below) sends 8-bit 4:2:0 to P010 for the zero-copy direct write.
+    static AVPixelFormat SelectOutputPixelFormat(AVPixelFormat input, bool direct, MediaSourceConfig const& config, bool eightBitZeroCopy = false);
+    // Bale: 8-bit libdav1d pictures take zero-copy only as a direct write (upload variant 6 and
+    // bale_zc_repack_into_bits). They then output P010 (samples << 8); otherwise NV12 as before.
+    static bool EightBitZeroCopy(AVPixelFormat input, bool dav1d, bool hardware, int zeroCopy, int uploadVariant, MediaSourceConfig const& config);
     BaleFilmGrain FilmGrain;
     int TargetWidth = 0;
     int TargetHeight = 0;
@@ -96,6 +100,8 @@ public:
     // p1), repacked on the GPU straight into the upload texture. Needs the D3D11 upload; the app
     // registers d3d12.dll with bale_gpu first. Any frame it cannot take uses the staging path.
     int ZeroCopy = 0;
+    // Bale: EightBitZeroCopy's pre-open result for this stream; SelectOutputFormat must agree with it.
+    bool ZeroCopyEightBit = false;
     BYTE* TargetBuffer = NULL;
 
     // Bale: independent of SetHardwareDevice/AVHWDeviceContext; never changes the decoder engine.
@@ -162,13 +168,17 @@ private:
     bool zeroCopyLayoutLogged = false;
     bool zeroCopyDeclineLogged = false;
     bool zeroCopyGrainDeclineLogged = false;
+    bool zeroCopyEightDeclineLogged = false;
+    bool zeroCopyGrainSkipLogged = false;
     unsigned zeroCopyFrames = 0;
     unsigned zeroCopyDirectFrames = 0; // Written straight into the pooled texture (no landing copy).
     unsigned zeroCopyDirectGrainFrames = 0; // Of those, with GPU grain fused into the D3D12 write.
+    unsigned zeroCopyEightBitFrames = 0; // Of those, 8-bit pictures written as P010.
     static int get_zero_copy_buffer(AVCodecContext* avCodecContext, AVFrame* frame, int flags);
     void CreateZeroCopy(winrt::com_ptr<ID3D11Device> const& device, winrt::com_ptr<ID3D11DeviceContext> const& context);
     bool TryZeroCopy(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params);
     void LogZeroCopyStats(void* handle, const char* when);
+    void LogZeroCopyGrainSkipped();
     void DisableZeroCopy(HRESULT hr);
 
     winrt::hstring outputMediaSubtype{};
