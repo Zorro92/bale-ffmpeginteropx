@@ -1137,11 +1137,12 @@ void UncompressedVideoSampleProvider::LogZeroCopyStats(void* handle, const char*
     BaleZcStats stats{};
     if (BaleZeroCopyExports::Get().stats(handle, &stats) != S_OK) return;
     av_log(nullptr, AV_LOG_INFO, "Bale zero-copy stats (%s): frames=%u repacked=%llu buffers created=%llu live=%llu peak=%llu "
-        "pooled=%llu alloc_failures=%llu alloc_waits=%llu landing_copies=%llu direct=%u.\n", when, zeroCopyFrames,
+        "pooled=%llu alloc_failures=%llu alloc_waits=%llu landing_copies=%llu direct=%u direct_grain=%u.\n", when, zeroCopyFrames,
         static_cast<unsigned long long>(stats.framesRepacked), static_cast<unsigned long long>(stats.buffersCreated),
         static_cast<unsigned long long>(stats.buffersLive), static_cast<unsigned long long>(stats.buffersPeak),
         static_cast<unsigned long long>(stats.buffersPooled), static_cast<unsigned long long>(stats.allocFailures),
-        static_cast<unsigned long long>(stats.allocWaits), static_cast<unsigned long long>(stats.landingCopies), zeroCopyDirectFrames);
+        static_cast<unsigned long long>(stats.allocWaits), static_cast<unsigned long long>(stats.landingCopies), zeroCopyDirectFrames,
+        zeroCopyDirectGrainFrames);
 }
 
 // Permanent for this stream. Callers are serialized with decoding (see zeroCopy). Buffers dav1d
@@ -1197,14 +1198,16 @@ bool UncompressedVideoSampleProvider::TryZeroCopy(AVFrame* avFrame, IDirect3DSur
     auto picture = av_buffer_get_opaque(buffer);
     HRESULT hr = S_FALSE;
 
-    // Direct write into the pooled texture: no landing texture, no D3D11 copy. GPU grain still
-    // needs the clean landing frame as its input.
-    if (api.repackInto && upload->CanWriteDirect() && !(params && FilmGrain.mode == 2))
+    // Direct write into the pooled texture: no landing texture, no D3D11 copy. GPU grain is
+    // applied in the same D3D12 dispatch; a bale_gpu that cannot (older, or its grain self-test
+    // failed) declines, and the frame lands with the D3D11 grain pass instead.
+    auto directGrain = params && FilmGrain.mode == 2 ? params : nullptr;
+    if (api.repackInto && upload->CanWriteDirect())
     {
         TimeSpan position{};
         uploadSample = upload->CreateWrittenSample(position, surface, [&](ID3D11Texture2D* texture)
             {
-                hr = api.repackInto(handle, picture, &frame, nullptr, texture);
+                hr = api.repackInto(handle, picture, &frame, directGrain, texture);
                 if (hr != S_OK) return false;
                 // Once per frame (frame-grabber state), and only for a frame that goes out here.
                 ReadFrameProperties(avFrame, framePts);
@@ -1216,6 +1219,7 @@ bool UncompressedVideoSampleProvider::TryZeroCopy(AVFrame* avFrame, IDirect3DSur
             timing.EndFrame(3);
             uploadedFrames++;
             zeroCopyDirectFrames++;
+            if (directGrain) zeroCopyDirectGrainFrames++;
             if (++zeroCopyFrames == 240) LogZeroCopyStats(handle, "steady");
             if (!zeroCopyLogged)
             {
@@ -1224,10 +1228,12 @@ bool UncompressedVideoSampleProvider::TryZeroCopy(AVFrame* avFrame, IDirect3DSur
             }
             return true;
         }
-        if (hr == S_FALSE && !zeroCopyDeclineLogged)
+        auto& declineLogged = directGrain ? zeroCopyGrainDeclineLogged : zeroCopyDeclineLogged;
+        if (hr == S_FALSE && !declineLogged)
         {
-            zeroCopyDeclineLogged = true;
-            av_log(nullptr, AV_LOG_INFO, "Bale zero-copy direct write declined; landing frames instead.\n");
+            declineLogged = true;
+            av_log(nullptr, AV_LOG_INFO, "Bale zero-copy direct write declined%s; landing frames instead.\n",
+                directGrain ? " with grain" : "");
         }
     }
 
