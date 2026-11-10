@@ -16,6 +16,8 @@
 #include "FFmpegReader.h"
 #include "PlatformInfo.h"
 #include "BaleThreadBoost.h"
+// Bale: Media Foundation error codes for streams zero-copy refuses at open.
+#include <mferror.h>
 
 #ifdef Win32
 #include <winrt/Microsoft.Graphics.Display.h>
@@ -615,6 +617,7 @@ namespace winrt::FFmpegInteropX::implementation
             }
         }
 
+        bool zeroCopyRefused = false;
         for (int index = 0; index < (int)avFormatCtx->nb_streams; index++)
         {
             auto avStream = avFormatCtx->streams[index];
@@ -648,6 +651,12 @@ namespace winrt::FFmpegInteropX::implementation
             else if (avStream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && !config->IsExternalSubtitleParser)
             {
                 stream = CreateVideoStream(avStream, index);
+                // Bale: a refused default video stream fails the open, so the app replans.
+                if (!stream && baleZeroCopyRefused)
+                {
+                    zeroCopyRefused = true;
+                    if (index == videoStreamIndex) hr = MF_E_UNSUPPORTED_FORMAT;
+                }
                 if (stream)
                 {
                     if (index == videoStreamIndex)
@@ -699,6 +708,11 @@ namespace winrt::FFmpegInteropX::implementation
         if (!currentVideoStream && videoStreams.size() > 0)
         {
             currentVideoStream = videoStreams[0];
+        }
+        // Bale: never open audio-only because zero-copy refused every video stream.
+        if (zeroCopyRefused && videoStreams.empty() && SUCCEEDED(hr))
+        {
+            hr = MF_E_UNSUPPORTED_FORMAT;
         }
 
         if (currentVideoStream)
@@ -1061,6 +1075,8 @@ namespace winrt::FFmpegInteropX::implementation
 
         int filmGrainMode = 0;
         bool eightBitZeroCopy = false;
+        bool zeroCopyStream = false;
+        baleZeroCopyRefused = false;
         // Find the video stream and its decoder
         auto avVideoCodec = avcodec_find_decoder(avStream->codecpar->codec_id);
 
@@ -1185,22 +1201,43 @@ namespace winrt::FFmpegInteropX::implementation
                 }
                 // Bale: select before open, since libdav1d reads apply_grain at initialization.
                 bool dav1d = std::string(avVideoCodec->name) == "libdav1d";
+                bool hardware = avVideoCodecCtx->hw_device_ctx != nullptr;
+                // Software libdav1d with the D3D11 upload and zero-copy requested: zero-copy only, no
+                // CPU output path. Frame grabbers and upload-off keep the upstream path.
+                bool zeroCopyRoute = dav1d && !hardware && baleD3d11Upload > 0 && baleZeroCopy > 0 && !config->IsFrameGrabber;
                 // Same inputs as the provider's ZeroCopy (set in CreateVideoSampleProvider).
                 eightBitZeroCopy = UncompressedVideoSampleProvider::EightBitZeroCopy(avVideoCodecCtx->pix_fmt, dav1d,
-                    avVideoCodecCtx->hw_device_ctx != nullptr, baleD3d11Upload > 0 ? baleZeroCopy : 0, baleD3d11Upload,
-                    config.as<winrt::FFmpegInteropX::MediaSourceConfig>());
+                    hardware, zeroCopyRoute ? 1 : 0, config.as<winrt::FFmpegInteropX::MediaSourceConfig>());
                 auto outputFormat = UncompressedVideoSampleProvider::SelectOutputPixelFormat(avVideoCodecCtx->pix_fmt,
-                    (avVideoCodec->capabilities & AV_CODEC_CAP_DR1) && !avVideoCodecCtx->hw_device_ctx,
+                    (avVideoCodec->capabilities & AV_CODEC_CAP_DR1) && !hardware,
                     config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), eightBitZeroCopy);
+                zeroCopyStream = zeroCopyRoute &&
+                    UncompressedVideoSampleProvider::ZeroCopyEligible(avVideoCodecCtx->pix_fmt, outputFormat, eightBitZeroCopy);
                 filmGrainMode = BaleFilmGrain::SelectMode(baleFilmGrainMode, baleDav1dExportFilmGrain > 0,
-                    dav1d, avVideoCodecCtx->hw_device_ctx != nullptr, avVideoCodecCtx->pix_fmt, outputFormat, baleD3d11Upload,
-                    eightBitZeroCopy);
+                    dav1d, hardware, avVideoCodecCtx->pix_fmt, outputFormat, zeroCopyStream, eightBitZeroCopy);
+                // Bale: refuse the stream at open (no provider, so the app replans to a server
+                // transcode) when zero-copy cannot take it or requested GPU grain is unavailable.
+                if (zeroCopyRoute)
+                {
+                    const char* refusal = nullptr;
+                    if (!BaleZeroCopyExports::Get().create) refusal = "bale_gpu zero-copy ABI 1 not found";
+                    else if (!zeroCopyStream) refusal = "pixel format not zero-copy eligible";
+                    else if (baleFilmGrainMode > 0 && baleDav1dExportFilmGrain == 0 && filmGrainMode != 2) refusal = "GPU film grain unavailable";
+                    if (refusal)
+                    {
+                        av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy: refusing video stream (%s, format %d).\n",
+                            refusal, static_cast<int>(avVideoCodecCtx->pix_fmt));
+                        baleZeroCopyRefused = true;
+                        hr = E_FAIL;
+                    }
+                }
                 // Export-only is independent and always wins. Otherwise keep dav1d grain unless
                 // Rust's loader and both input/output formats have passed the pre-open checks.
-                if (dav1d && (baleDav1dExportFilmGrain > 0 || filmGrainMode > 0))
+                if (SUCCEEDED(hr) && dav1d && (baleDav1dExportFilmGrain > 0 || filmGrainMode > 0))
                 {
                     avVideoCodecCtx->export_side_data |= AV_CODEC_EXPORT_DATA_FILM_GRAIN;
                 }
+                if (SUCCEEDED(hr))
                 {
                     // Bale: dav1d spawns its workers inside avcodec_open2.
                     BaleThreadBoost::Window boost(std::string(avVideoCodec->name) == "libdav1d" ? baleDecodeThreadPriority : 0);
@@ -1212,7 +1249,7 @@ namespace winrt::FFmpegInteropX::implementation
             if (SUCCEEDED(hr))
             {
                 // Detect video format and create video stream descriptor accordingly
-                result = CreateVideoSampleProvider(avStream, avVideoCodecCtx, index, filmGrainMode, eightBitZeroCopy);
+                result = CreateVideoSampleProvider(avStream, avVideoCodecCtx, index, filmGrainMode, eightBitZeroCopy, zeroCopyStream);
             }
 
             // free codec context if failed
@@ -2242,7 +2279,7 @@ namespace winrt::FFmpegInteropX::implementation
         return false;
     }
 
-    std::shared_ptr<MediaSampleProvider> FFmpegMediaSource::CreateVideoSampleProvider(AVStream* avStream, AVCodecContext* avVideoCodecCtx, int index, int filmGrainMode, bool eightBitZeroCopy)
+    std::shared_ptr<MediaSampleProvider> FFmpegMediaSource::CreateVideoSampleProvider(AVStream* avStream, AVCodecContext* avVideoCodecCtx, int index, int filmGrainMode, bool eightBitZeroCopy, bool zeroCopyStream)
     {
         UNREFERENCED_PARAMETER(avStream);
 
@@ -2352,17 +2389,12 @@ namespace winrt::FFmpegInteropX::implementation
                 hardwareDecoderStatus = HardwareDecoderStatus::NotAvailable;
             }
             auto uncompressed = new UncompressedVideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr);
-            uncompressed->SwsThreads = baleSwsThreads;
-            uncompressed->UploadFaultFrames = baleD3d11UploadFaultFrames;
-            uncompressed->Repack = baleD3d11Repack;
-            // The hook needs the D3D11 upload; frame grabbers never get an upload device.
-            uncompressed->ZeroCopy = baleD3d11Upload > 0 && !config->IsFrameGrabber ? baleZeroCopy : 0;
-            // The pre-open format and grain decisions already assumed it; never enable it here alone.
-            uncompressed->ZeroCopyEightBit = eightBitZeroCopy && uncompressed->ZeroCopy > 0;
+            // Bale: the pre-open decision (CreateVideoStream); never enable zero-copy here alone.
+            // Frame grabbers and upload-off never get it.
+            uncompressed->ZeroCopy = zeroCopyStream ? 1 : 0;
+            uncompressed->ZeroCopyEightBit = eightBitZeroCopy && zeroCopyStream;
             uncompressed->FilmGrain.eightInP010 = uncompressed->ZeroCopyEightBit;
-            uncompressed->SwsThreadPriority = baleDecodeThreadPriority;
             uncompressed->FilmGrain.mode = filmGrainMode;
-            uncompressed->FilmGrain.above1080p = avVideoCodecCtx->width > 1920 || avVideoCodecCtx->height > 1080;
             videoSampleProvider = std::shared_ptr<MediaSampleProvider>(uncompressed);
         }
 
@@ -2447,13 +2479,10 @@ namespace winrt::FFmpegInteropX::implementation
         int minimum = 0;
         int maximum = 0;
         if (key == "bale_decode_ahead_frames") { target = &baleDecodeAheadFrames; minimum = 0; maximum = 64; }
-        else if (key == "bale_sws_threads") { target = &baleSwsThreads; minimum = 1; maximum = 16; }
         else if (key == "bale_dav1d_max_frame_delay") { target = &baleDav1dMaxFrameDelay; minimum = 0; maximum = 64; }
         else if (key == "bale_dav1d_export_film_grain") { target = &baleDav1dExportFilmGrain; minimum = 0; maximum = 1; }
         else if (key == "bale_film_grain_mode") { target = &baleFilmGrainMode; minimum = 0; maximum = 2; }
         else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 6; }
-        else if (key == "bale_d3d11_upload_fault_frames") { target = &baleD3d11UploadFaultFrames; minimum = 0; maximum = 999; }
-        else if (key == "bale_d3d11_repack") { target = &baleD3d11Repack; minimum = 0; maximum = 1; }
         else if (key == "bale_zero_copy") { target = &baleZeroCopy; minimum = 0; maximum = 1; }
         else if (key == "bale_decode_thread_priority") { target = &baleDecodeThreadPriority; minimum = 0; maximum = 2; }
         else if (key == "bale_decoder_use_max_resolution") { target = &baleDecoderUseMaxResolution; minimum = 0; maximum = 1; }
@@ -2688,6 +2717,45 @@ namespace winrt::FFmpegInteropX::implementation
         }
     }
 
+    bool FFmpegMediaSource::HasZeroCopyStream()
+    {
+        for (auto& stream : videoStreams)
+        {
+            if (stream->Decoder() == DecoderEngine::FFmpegSoftwareDecoder)
+            {
+                auto uncompressed = std::dynamic_pointer_cast<UncompressedVideoSampleProvider>(stream);
+                if (uncompressed && uncompressed->ZeroCopy > 0) return true;
+            }
+        }
+        return false;
+    }
+
+    // Called with `mutex` held. Raises the current video stream's latched zero-copy failure once.
+    // Returns true when that stream has failed; the caller then delivers no sample.
+    bool FFmpegMediaSource::RaiseBaleFatal(MediaStreamSource const& sender)
+    {
+        if (baleFatalRaised) return true;
+        if (baleD3d11Upload <= 0 || baleZeroCopy <= 0 || !currentVideoStream) return false;
+        auto uncompressed = std::dynamic_pointer_cast<UncompressedVideoSampleProvider>(currentVideoStream);
+        if (!uncompressed) return false;
+        HRESULT hr = uncompressed->FatalError();
+        if (SUCCEEDED(hr)) return false;
+
+        baleFatalRaised = true;
+        av_log(nullptr, AV_LOG_ERROR, "Bale zero-copy: video stream failed (hr=0x%08X); raising MediaStreamSource error.\n", static_cast<unsigned>(hr));
+        try
+        {
+            sender.NotifyError(hr == E_INVALIDARG || hr == UncompressedVideoSampleProvider::ZeroCopyMissed
+                ? MediaStreamSourceErrorStatus::UnsupportedMediaFormat
+                : MediaStreamSourceErrorStatus::DecodeError);
+        }
+        catch (...)
+        {
+            av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy: NotifyError failed (hr=0x%08X).\n", static_cast<unsigned>(winrt::to_hresult()));
+        }
+        return true;
+    }
+
     void FFmpegMediaSource::InitializeUploadDevice(MediaStreamSource const& sender)
     {
         HRESULT hr = S_OK;
@@ -2772,7 +2840,9 @@ namespace winrt::FFmpegInteropX::implementation
                 }
             }
 
-            else if (isFirstSeek && !avHardwareContext && baleD3d11Upload > 0 && !config->IsFrameGrabber)
+            // Bale: zero-copy streams need their upload device and bale_zc handle before any decode,
+            // including when another stream opened a hardware context.
+            if (isFirstSeek && baleD3d11Upload > 0 && !config->IsFrameGrabber && HasZeroCopyStream())
             {
                 InitializeUploadDevice(sender);
             }
@@ -2809,7 +2879,6 @@ namespace winrt::FFmpegInteropX::implementation
 
     void FFmpegMediaSource::OnSampleRequested(winrt::Windows::Media::Core::MediaStreamSource const& sender, winrt::Windows::Media::Core::MediaStreamSourceSampleRequestedEventArgs const& args)
     {
-        UNREFERENCED_PARAMETER(sender);
         std::lock_guard lock(mutex);
         if (isClosed)
         {
@@ -2818,6 +2887,11 @@ namespace winrt::FFmpegInteropX::implementation
 
         try
         {
+            // Bale: after a zero-copy failure the source is in error; decode and deliver nothing.
+            if (RaiseBaleFatal(sender))
+            {
+                return;
+            }
             if (config->General().ReadAheadBufferEnabled())
             {
                 m_pReader->Start();
@@ -2831,7 +2905,15 @@ namespace winrt::FFmpegInteropX::implementation
             else if (currentVideoStream && args.Request().StreamDescriptor() == currentVideoStream->StreamDescriptor())
             {
                 CheckVideoDeviceChanged(sender);
+                if (RaiseBaleFatal(sender))
+                {
+                    return;
+                }
                 auto sample = UseDecodeAhead() ? TakeAheadSample() : currentVideoStream->GetNextSample();
+                if (!sample && RaiseBaleFatal(sender))
+                {
+                    return;
+                }
                 CheckExtendDuration(sample);
                 args.Request().Sample(sample);
                 // Count actual MSS handoffs, not samples merely prepared by decode-ahead.

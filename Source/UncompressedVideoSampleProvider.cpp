@@ -18,10 +18,10 @@
 
 #include "pch.h"
 #include "UncompressedVideoSampleProvider.h"
-#include "BaleThreadBoost.h"
 #include "NativeBufferFactory.h"
 #include <mfapi.h>
 #include <d3d10.h>
+#include <unordered_set>
 #include "VideoFilterFactory.h"
 
 extern "C"
@@ -34,6 +34,57 @@ using namespace NativeBuffer;
 using namespace winrt::Windows::Media::MediaProperties;
 using namespace winrt::Windows::Foundation;
 using namespace winrt::Windows::Media::Core;
+
+namespace
+{
+    // Bale zero-copy: ids of the live bale_zc buffers get_zero_copy_buffer handed to dav1d. A
+    // decoded picture whose buffer id is missing came from dav1d's own pool (alloc timeout, seek
+    // burst, I400) and is dropped, never passed to bale_zc. Process-global and never destroyed:
+    // buffer releases run on any thread, also after every provider is gone. Ids are never reused.
+    class BaleZcLiveIds
+    {
+    public:
+        bool Add(void* id) noexcept
+        {
+            AcquireSRWLockExclusive(&lock);
+            bool added = false;
+            try
+            {
+                added = ids.insert(id).second;
+            }
+            catch (...)
+            {
+            }
+            ReleaseSRWLockExclusive(&lock);
+            return added;
+        }
+
+        void Remove(void* id) noexcept
+        {
+            AcquireSRWLockExclusive(&lock);
+            ids.erase(id);
+            ReleaseSRWLockExclusive(&lock);
+        }
+
+        bool Contains(void* id) noexcept
+        {
+            AcquireSRWLockShared(&lock);
+            bool found = ids.find(id) != ids.end();
+            ReleaseSRWLockShared(&lock);
+            return found;
+        }
+
+    private:
+        SRWLOCK lock = SRWLOCK_INIT;
+        std::unordered_set<void*> ids;
+    };
+
+    BaleZcLiveIds& LiveZeroCopyIds()
+    {
+        static BaleZcLiveIds* ids = new BaleZcLiveIds();
+        return *ids;
+    }
+}
 
 UncompressedVideoSampleProvider::UncompressedVideoSampleProvider(
     std::shared_ptr<FFmpegReader> reader,
@@ -61,12 +112,18 @@ AVPixelFormat UncompressedVideoSampleProvider::SelectOutputPixelFormat(AVPixelFo
     return AV_PIX_FMT_NV12; // Upstream fallback when no format is allowed.
 }
 
-bool UncompressedVideoSampleProvider::EightBitZeroCopy(AVPixelFormat input, bool dav1d, bool hardware, int zeroCopy, int uploadVariant, MediaSourceConfig const& config)
+bool UncompressedVideoSampleProvider::EightBitZeroCopy(AVPixelFormat input, bool dav1d, bool hardware, int zeroCopy, MediaSourceConfig const& config)
 {
-    // YUVJ stays on swscale like the repack: the shift keeps sample values, it never converts range.
-    return input == AV_PIX_FMT_YUV420P && dav1d && !hardware && zeroCopy > 0 && uploadVariant == 6 &&
+    // YUVJ is not taken: the shift keeps sample values, it never converts range.
+    return input == AV_PIX_FMT_YUV420P && dav1d && !hardware && zeroCopy > 0 &&
         !config.as<implementation::MediaSourceConfig>()->IsFrameGrabber && config.Video().VideoOutputAllow10bit() &&
         BaleZeroCopyExports::Get().repackIntoBits != nullptr;
+}
+
+bool UncompressedVideoSampleProvider::ZeroCopyEligible(AVPixelFormat input, AVPixelFormat output, bool eightBitZeroCopy)
+{
+    return output == AV_PIX_FMT_P010LE &&
+        (input == AV_PIX_FMT_YUV420P10LE || (eightBitZeroCopy && input == AV_PIX_FMT_YUV420P));
 }
 
 void UncompressedVideoSampleProvider::SelectOutputFormat()
@@ -101,12 +158,11 @@ void UncompressedVideoSampleProvider::SelectOutputFormat()
     }
     else if (ZeroCopy && decoder == DecoderEngine::FFmpegSoftwareDecoder &&
         std::string(m_pAvCodecCtx->codec->name) == "libdav1d" &&
-        (m_pAvCodecCtx->pix_fmt == AV_PIX_FMT_YUV420P10LE || (ZeroCopyEightBit && m_pAvCodecCtx->pix_fmt == AV_PIX_FMT_YUV420P)) &&
-        m_OutputPixelFormat == AV_PIX_FMT_P010LE)
+        ZeroCopyEligible(m_pAvCodecCtx->pix_fmt, m_OutputPixelFormat, ZeroCopyEightBit))
     {
         // Bale zero-copy: the patched libdav1d (native p1) asks a replaced get_buffer2 for each
-        // picture, per picture, so installing it before the first decode is enough. Until
-        // SetUploadDevice creates the handle the hook declines and dav1d uses its own pool.
+        // picture, per picture, so installing it before the first decode is enough. SetUploadDevice
+        // creates the handle in OnStarting, before the first decode; without it the hook declines.
         m_pAvCodecCtx->get_buffer2 = get_zero_copy_buffer;
         m_pAvCodecCtx->opaque = (void*)this;
         zeroCopyHooked = true;
@@ -395,11 +451,6 @@ HRESULT UncompressedVideoSampleProvider::InitializeScalerIfRequired(AVFrame* avF
     // don't use point scaling since format conversions might involve scaling even if resolution is same (chroma subsampling)
     int scaler = avFrame->width < outputWidth ? SWS_BICUBIC : SWS_BILINEAR;
 
-    if (SwsThreads > 1)
-    {
-        return InitializeThreadedScaler(avFrame, scaler);
-    }
-
     // Setup software scaler to convert frame to output pixel type and size
     m_pSwsCtx = sws_getCachedContext(
         m_pSwsCtx,
@@ -422,67 +473,13 @@ HRESULT UncompressedVideoSampleProvider::InitializeScalerIfRequired(AVFrame* avF
     return hr;
 }
 
-// Bale: sws_getCachedContext cannot request slice threads, and FFmpeg 8 runs the legacy sws_scale
-// on one slice context only. A context initialized with explicit options (threads > 1) runs
-// sws_scale_frame through the same legacy scaler, split across slice threads.
-HRESULT UncompressedVideoSampleProvider::InitializeThreadedScaler(AVFrame* avFrame, int scaler)
-{
-    if (m_pSwsCtx && m_swsThreaded &&
-        m_swsSrcW == avFrame->width && m_swsSrcH == avFrame->height && m_swsSrcFmt == (AVPixelFormat)avFrame->format &&
-        m_swsDstW == outputWidth && m_swsDstH == outputHeight && m_swsDstFmt == m_OutputPixelFormat && m_swsFlags == scaler)
-    {
-        return S_OK;
-    }
-
-    if (m_pSwsCtx)
-    {
-        sws_freeContext(m_pSwsCtx);
-        m_pSwsCtx = NULL;
-    }
-    m_swsThreaded = false;
-
-    SwsContext* ctx = sws_alloc_context();
-    if (!ctx)
-    {
-        return E_OUTOFMEMORY;
-    }
-
-    int swsInit;
-    {
-        // Bale: sws creates its slice threads inside sws_init_context.
-        BaleThreadBoost::Window boost(SwsThreadPriority);
-        swsInit = av_opt_set_int(ctx, "srcw", avFrame->width, 0) < 0 ||
-        av_opt_set_int(ctx, "srch", avFrame->height, 0) < 0 ||
-        av_opt_set_int(ctx, "src_format", avFrame->format, 0) < 0 ||
-        av_opt_set_int(ctx, "dstw", outputWidth, 0) < 0 ||
-        av_opt_set_int(ctx, "dsth", outputHeight, 0) < 0 ||
-        av_opt_set_int(ctx, "dst_format", m_OutputPixelFormat, 0) < 0 ||
-        av_opt_set_int(ctx, "sws_flags", scaler, 0) < 0 ||
-        av_opt_set_int(ctx, "threads", SwsThreads, 0) < 0 ||
-        sws_init_context(ctx, NULL, NULL) < 0;
-    }
-    if (swsInit)
-    {
-        sws_freeContext(ctx);
-        return E_FAIL;
-    }
-
-    m_pSwsCtx = ctx;
-    m_swsThreaded = true;
-    m_swsSrcW = avFrame->width;
-    m_swsSrcH = avFrame->height;
-    m_swsSrcFmt = (AVPixelFormat)avFrame->format;
-    m_swsDstW = outputWidth;
-    m_swsDstH = outputHeight;
-    m_swsDstFmt = m_OutputPixelFormat;
-    m_swsFlags = scaler;
-    return S_OK;
-}
-
 // Bale: shared renderer context calls must be protected, even on the decode-ahead worker.
+// Only zero-copy streams get an uploader; any setup failure fails the stream.
 HRESULT UncompressedVideoSampleProvider::SetUploadDevice(winrt::com_ptr<ID3D11Device> newDevice, winrt::com_ptr<ID3D11DeviceContext> newContext, int variant)
 {
-    if (uploadFailed) return S_FALSE;
+    if (!ZeroCopy) return S_FALSE;
+    auto fatalHr = FatalError();
+    if (FAILED(fatalHr)) return fatalHr;
     try
     {
         if (!newDevice || !newContext) winrt::throw_hresult(E_NOINTERFACE);
@@ -499,184 +496,38 @@ HRESULT UncompressedVideoSampleProvider::SetUploadDevice(winrt::com_ptr<ID3D11De
         av_log(nullptr, AV_LOG_INFO, "Bale D3D11 upload output declared: %dx%d subtype=%s.\n",
             outputFrameWidth, outputFrameHeight, winrt::to_string(outputMediaSubtype).c_str());
         upload = std::make_shared<BaleD3D11Upload>(newDevice, newContext, variant);
-        CreateZeroCopy(newDevice, newContext);
+        winrt::check_hresult(CreateZeroCopy(newDevice, newContext));
         return S_OK;
     }
     catch (...)
     {
-        auto hr = winrt::to_hresult();
-        DisableUpload(hr);
-        return hr;
+        return Fail(winrt::to_hresult(), "upload device or zero-copy setup failed");
     }
 }
 
 void UncompressedVideoSampleProvider::DisableUpload(HRESULT hr)
 {
-    if (!uploadFailed)
+    // Zero-copy has no CPU output path: losing the upload device fails the stream. Other streams
+    // never get an uploader.
+    if (ZeroCopy) Fail(hr, "upload device lost or unavailable");
+}
+
+// Bale: latches the first failure. Afterwards CreateBufferFromFrame/CreateNextSampleBuffer return
+// it without decoding, and FFmpegMediaSource raises the MediaStreamSource error once.
+HRESULT UncompressedVideoSampleProvider::Fail(HRESULT hr, const char* reason)
+{
+    if (SUCCEEDED(hr)) hr = E_UNEXPECTED;
+    HRESULT expected = S_OK;
+    if (fatal.compare_exchange_strong(expected, hr))
     {
-        uploadFailed = true;
-        av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload disabled (hr=0x%08X); using CPU buffers.\n", static_cast<unsigned>(hr));
+        av_log(nullptr, AV_LOG_ERROR, "Bale zero-copy failed: %s (hr=0x%08X); stopping the stream.\n",
+            reason, static_cast<unsigned>(hr));
     }
-    FilmGrain.UploadDisabled(hr);
     uploadSample = nullptr;
-    // Zero-copy only feeds the upload: before the uploader (and its D3D11 context use) goes away.
+    // Before the uploader (and its D3D11 context use) goes away.
     DisableZeroCopy(hr);
     upload.reset();
-}
-
-void UncompressedVideoSampleProvider::DisableRepack(HRESULT hr)
-{
-    if (!repackFailed)
-    {
-        repackFailed = true;
-        av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 repack disabled (hr=0x%08X); using swscale.\n", static_cast<unsigned>(hr));
-    }
-    if (upload) upload->DestroyRepack();
-}
-
-HRESULT UncompressedVideoSampleProvider::ScaleFrame(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer)
-{
-    bool converted = false;
-    if (m_swsThreaded)
-    {
-        // Wrap the destination (CPU pool or mapped staging memory) so sws does not allocate.
-        AVFrame* dst = av_frame_alloc();
-        if (dst)
-        {
-            dst->buf[0] = av_buffer_ref(buffer);
-            if (dst->buf[0])
-            {
-                for (int i = 0; i < 4; i++)
-                {
-                    dst->data[i] = data[i];
-                    dst->linesize[i] = linesize[i];
-                }
-                dst->width = outputWidth;
-                dst->height = outputHeight;
-                dst->format = m_OutputPixelFormat;
-                converted = sws_scale_frame(m_pSwsCtx, dst, avFrame) >= 0;
-            }
-            av_frame_free(&dst);
-        }
-    }
-    else
-    {
-        converted = sws_scale(m_pSwsCtx, (const UINT8**)(avFrame->data), avFrame->linesize, 0, avFrame->height, data, linesize) > 0;
-    }
-    return converted ? S_OK : E_FAIL;
-}
-
-HRESULT UncompressedVideoSampleProvider::CopyFrameToOutput(AVFrame* avFrame, BYTE** data, int* linesize, AVBufferRef* buffer)
-{
-    if (avFrame->format == m_OutputPixelFormat && avFrame->width == outputWidth && avFrame->height == outputHeight)
-    {
-        av_image_copy(data, linesize, (const UINT8**)avFrame->data, avFrame->linesize, m_OutputPixelFormat, outputWidth, outputHeight);
-        return S_OK;
-    }
-    auto hr = InitializeScalerIfRequired(avFrame);
-    if (FAILED(hr)) return hr;
-    AVBufferRef* mapping = nullptr;
-    if (!buffer)
-    {
-        // Only mapped NV12/P010 staging uses this no-op owner. sws_scale_frame and its
-        // workers finish synchronously before it is released, and before staging is unmapped.
-        auto size = static_cast<size_t>(linesize[0]) * outputFrameHeight * 3 / 2;
-        mapping = av_buffer_create(data[0], size, [](void*, uint8_t*) {}, nullptr, 0);
-        if (!mapping) return E_OUTOFMEMORY;
-        buffer = mapping;
-    }
-    hr = ScaleFrame(avFrame, data, linesize, buffer);
-    av_buffer_unref(&mapping);
-    return hr;
-}
-
-bool UncompressedVideoSampleProvider::CanRepack(AVFrame* avFrame, const BaleGrainParams* params) const
-{
-    if (!Repack || repackFailed || !upload || !upload->CanRepack()) return false;
-    // CPU grain runs on the converted NV12/P010 layout in mapped staging.
-    if (params && FilmGrain.mode == 1) return false;
-    // YUVJ is excluded: swscale converts its full range, the repack never changes sample values.
-    auto input = static_cast<AVPixelFormat>(avFrame->format);
-    bool formats = (input == AV_PIX_FMT_YUV420P && m_OutputPixelFormat == AV_PIX_FMT_NV12) ||
-        (input == AV_PIX_FMT_YUV420P10LE && m_OutputPixelFormat == AV_PIX_FMT_P010LE);
-    // Width % 4: the V half of each chroma row must start on a whole two-sample texel.
-    return formats && avFrame->width == outputWidth && avFrame->height == outputHeight &&
-        outputFrameWidth % 4 == 0 && outputFrameHeight % 2 == 0;
-}
-
-// Unconverted samples for the GPU repack: Y rows as decoded; each chroma row holds that row's
-// U samples from byte 0 and its V samples from half the texture row (outputFrameWidth / 2 samples).
-void UncompressedVideoSampleProvider::FillPlanar(AVFrame* avFrame, BYTE** data, UINT pitch)
-{
-    int bytes = m_OutputPixelFormat == AV_PIX_FMT_P010LE ? 2 : 1;
-    int chromaWidth = (outputWidth + 1) / 2;
-    int chromaHeight = (outputHeight + 1) / 2;
-    int linesize = static_cast<int>(pitch);
-    BYTE* vData = data[1] + static_cast<size_t>(outputFrameWidth / 2) * bytes;
-    // One thread fills a 4K frame in ~25-40 ms on the console (measured with 0013), most of a 24 fps
-    // frame interval. Split rows across the swscale thread count; each slice owns disjoint rows.
-    if (!copyPool) copyPool = std::make_unique<BaleCopyPool>(SwsThreads, BaleThreadBoost::ToWin32(SwsThreadPriority));
-    int slices = copyPool->Threads();
-    copyPool->Run([&](int slice)
-        {
-            auto copyRows = [&](BYTE* dst, const uint8_t* src, int srcLinesize, int rowBytes, int height)
-                {
-                    int begin = height * slice / slices;
-                    int end = height * (slice + 1) / slices;
-                    if (end <= begin) return;
-                    av_image_copy_plane(dst + static_cast<ptrdiff_t>(begin) * linesize, linesize,
-                        src + static_cast<ptrdiff_t>(begin) * srcLinesize, srcLinesize, rowBytes, end - begin);
-                };
-            copyRows(data[0], avFrame->data[0], avFrame->linesize[0], outputWidth * bytes, outputHeight);
-            copyRows(data[1], avFrame->data[1], avFrame->linesize[1], chromaWidth * bytes, chromaHeight);
-            copyRows(vData, avFrame->data[2], avFrame->linesize[2], chromaWidth * bytes, chromaHeight);
-        });
-}
-
-void UncompressedVideoSampleProvider::UploadFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params, bool planar)
-{
-    auto format = m_OutputPixelFormat == AV_PIX_FMT_NV12 ? DXGI_FORMAT_NV12 : DXGI_FORMAT_P010;
-    BaleD3D11Upload::Mapping target;
-    auto& timing = upload->timing;
-    if (timing.lastEnd) timing.Add(BaleUploadTiming::Gap, BaleUploadTiming::Now() - timing.lastEnd);
-    winrt::check_hresult(upload->Map(outputFrameWidth, outputFrameHeight, format, target));
-    auto fillStart = BaleUploadTiming::Now();
-    auto pitch = target.mapped.RowPitch;
-    auto rowBytes = static_cast<UINT>(outputFrameWidth) * (format == DXGI_FORMAT_P010 ? 2U : 1U);
-    if (!target.mapped.pData || pitch < rowBytes || pitch > INT_MAX) winrt::throw_hresult(E_FAIL);
-    BYTE* data[4]{ static_cast<BYTE*>(target.mapped.pData), nullptr, nullptr, nullptr };
-    // NV12/P010 are planar staging resources: UV starts after RowPitch * TEXTURE height, not image height.
-    data[1] = data[0] + static_cast<size_t>(pitch) * outputFrameHeight;
-    int linesize[4]{ static_cast<int>(pitch), static_cast<int>(pitch), 0, 0 };
-    if (planar)
-    {
-        FillPlanar(avFrame, data, pitch);
-    }
-    else
-    {
-        winrt::check_hresult(CopyFrameToOutput(avFrame, data, linesize, nullptr));
-        if (params && FilmGrain.mode == 1 && !FilmGrain.ApplyCpu(*params, m_OutputPixelFormat, data, linesize))
-        {
-            // Refill clean output even if a contained Rust panic partially modified staging.
-            winrt::check_hresult(CopyFrameToOutput(avFrame, data, linesize, nullptr));
-        }
-    }
-    if (UploadFaultFrames > 0 && uploadedFrames >= UploadFaultFrames)
-    {
-        // Same point as a real pool CreateTexture2D failure: staging is mapped and filled.
-        av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload fault injected after %d frames.\n", uploadedFrames);
-        winrt::throw_hresult(E_OUTOFMEMORY);
-    }
-    ReadFrameProperties(avFrame, framePts);
-    timing.Add(BaleUploadTiming::Fill, BaleUploadTiming::Now() - fillStart);
-    uploadSample = upload->CreateSample(target, ConvertPosition(framePts), surface, FilmGrain, params, planar);
-    timing.EndFrame(planar ? 1 : 0);
-    uploadedFrames++;
-    if (!uploadLogged)
-    {
-        uploadLogged = true;
-        av_log(nullptr, AV_LOG_INFO, "Bale D3D11 upload active: %s %dx%d.\n", format == DXGI_FORMAT_NV12 ? "NV12" : "P010", outputFrameWidth, outputFrameHeight);
-    }
+    return fatal.load();
 }
 
 UncompressedVideoSampleProvider::~UncompressedVideoSampleProvider()
@@ -710,72 +561,19 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
 {
     UNREFERENCED_PARAMETER(frameDuration);
 
+    // Bale: a failed zero-copy stream decodes nothing more.
+    auto fatalHr = FatalError();
+    if (FAILED(fatalHr)) return fatalHr;
+
     HRESULT hr = S_OK;
     CheckFrameSize(avFrame);
-    BaleGrainParams grainParams{};
-    bool hasGrain = FilmGrain.Prepare(avFrame, m_OutputPixelFormat, outputWidth, outputHeight, grainParams);
-    // 8-bit grain prepared for P010 output: only the zero-copy direct write applies it.
-    bool zeroCopyGrainOnly = hasGrain && !BaleFilmGrain::Compatible(static_cast<AVPixelFormat>(avFrame->format), m_OutputPixelFormat);
 
-    if (upload && (m_OutputPixelFormat == AV_PIX_FMT_NV12 || m_OutputPixelFormat == AV_PIX_FMT_P010LE))
-    {
-        try
-        {
-            auto params = hasGrain ? &grainParams : nullptr;
-            if (TryZeroCopy(avFrame, surface, framePts, params)) return S_OK;
-            if (zeroCopyGrainOnly)
-            {
-                params = nullptr;
-                LogZeroCopyGrainSkipped();
-            }
-            if (CanRepack(avFrame, params))
-            {
-                try
-                {
-                    UploadFrame(avFrame, surface, framePts, params, true);
-                    if (!repackLogged)
-                    {
-                        repackLogged = true;
-                        av_log(nullptr, AV_LOG_INFO, "Bale D3D11 repack active: %dx%d.\n", outputWidth, outputHeight);
-                    }
-                    return S_OK;
-                }
-                catch (...)
-                {
-                    // Permanent for this stream; retry this same frame once through swscale.
-                    DisableRepack(winrt::to_hresult());
-                    *surface = nullptr;
-                }
-            }
-            else if (Repack && !repackLogged && !repackFailed)
-            {
-                repackLogged = true;
-                av_log(nullptr, AV_LOG_INFO, "Bale D3D11 repack not applicable (input format %d, %dx%d to %dx%d); using swscale.\n",
-                    avFrame->format, avFrame->width, avFrame->height, outputWidth, outputHeight);
-            }
-            UploadFrame(avFrame, surface, framePts, params, false);
-            return S_OK;
-        }
-        catch (...)
-        {
-            DisableUpload(winrt::to_hresult());
-            *surface = nullptr;
-            // Retry this very frame through the unchanged CPU path, permanently for this stream.
-        }
-    }
+    // Bale: zero-copy streams have no CPU output path; every other stream is upstream.
+    if (ZeroCopy) return ZeroCopyFrame(avFrame, surface, framePts);
 
-    FilmGrain.NoUpload();
-    // Prepare ran before upload could fail: mode 0 must also skip CPU grain on this very frame.
-    hasGrain = hasGrain && FilmGrain.mode != 0;
-    if (hasGrain && zeroCopyGrainOnly)
+    if (outputDirectBuffer)
     {
-        hasGrain = false;
-        LogZeroCopyGrainSkipped();
-    }
-    if (outputDirectBuffer && !hasGrain)
-    {
-        // Never grain a decoder AVFrame: dav1d may retain it as a clean reference frame.
-        // Direct references are safe only when no grain will be applied to this frame.
+        // Using direct buffer: just create a buffer reference to hand out to MSS pipeline
         auto bufferRef = av_buffer_ref(avFrame->buf[0]);
         if (bufferRef)
         {
@@ -786,24 +584,47 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
             hr = E_FAIL;
         }
     }
-    else
+    else if (avFrame->format == m_OutputPixelFormat && avFrame->width == outputWidth && avFrame->height == outputHeight)
     {
-        // Copy/repack into a Bale-owned buffer, including upload-off and mid-stream disable.
+        // Same format and size but non-contiguous buffer: Copy to contiguous buffer
         int linesize[4];
         UINT8* data[4];
         AVBufferRef* buffer;
+
         hr = FillLinesAndBuffer(linesize, data, &buffer, outputFrameWidth, outputFrameHeight, false);
+
         if (SUCCEEDED(hr))
         {
-            hr = CopyFrameToOutput(avFrame, data, linesize, buffer);
-            if (SUCCEEDED(hr) && hasGrain && !FilmGrain.ApplyCpu(grainParams, m_OutputPixelFormat, data, linesize))
-            {
-                hr = CopyFrameToOutput(avFrame, data, linesize, buffer);
-            }
+            av_image_copy(data, linesize, (const UINT8**)avFrame->data, avFrame->linesize, m_OutputPixelFormat, outputWidth, outputHeight);
+            *pBuffer = NativeBufferFactory::CreateNativeBuffer(buffer->data, (UINT32)buffer->size, free_buffer, buffer);
+        }
+    }
+    else
+    {
+        // Different format or size: Use scaler
+        hr = InitializeScalerIfRequired(avFrame);
+
+        if (SUCCEEDED(hr))
+        {
+            int linesize[4];
+            UINT8* data[4];
+            AVBufferRef* buffer;
+
+            hr = FillLinesAndBuffer(linesize, data, &buffer, outputFrameWidth, outputFrameHeight, false);
+
             if (SUCCEEDED(hr))
-                *pBuffer = NativeBufferFactory::CreateNativeBuffer(buffer->data, (UINT32)buffer->size, free_buffer, buffer);
-            else
-                free_buffer(buffer);
+            {
+                // Convert to output format using FFmpeg software scaler
+                if (sws_scale(m_pSwsCtx, (const UINT8**)(avFrame->data), avFrame->linesize, 0, avFrame->height, data, linesize) > 0)
+                {
+                    *pBuffer = NativeBufferFactory::CreateNativeBuffer(buffer->data, (UINT32)buffer->size, free_buffer, buffer);
+                }
+                else
+                {
+                    free_buffer(buffer);
+                    hr = E_FAIL;
+                }
+            }
         }
     }
 
@@ -814,6 +635,53 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
     }
 
     return hr;
+}
+
+// Bale: every zero-copy frame goes out as a GPU sample, is dropped (not a zero-copy picture), or
+// fails the stream. There is no CPU, staging or ungrained fallback.
+HRESULT UncompressedVideoSampleProvider::ZeroCopyFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts)
+{
+    if (!upload || !zeroCopy.load(std::memory_order_acquire))
+    {
+        *surface = nullptr;
+        return Fail(E_UNEXPECTED, "frame decoded without the zero-copy handle");
+    }
+    BaleGrainParams grainParams{};
+    bool hasGrain = FilmGrain.Prepare(avFrame, m_OutputPixelFormat, outputWidth, outputHeight, grainParams);
+    HRESULT hr = S_OK;
+    try
+    {
+        hr = TryZeroCopy(avFrame, surface, framePts, hasGrain ? &grainParams : nullptr);
+    }
+    catch (...)
+    {
+        hr = winrt::to_hresult();
+        if (SUCCEEDED(hr)) hr = E_UNEXPECTED;
+    }
+    if (hr == BaleFrameDropped) return DropFrame(avFrame);
+    if (FAILED(hr))
+    {
+        *surface = nullptr;
+        return Fail(hr, hr == ZeroCopyDeclined ? "zero-copy write declined" :
+            hr == E_INVALIDARG ? "layout refused" : "GPU write or sample failed");
+    }
+    zeroCopyMissRun = 0;
+    return S_OK;
+}
+
+// Bale: a picture outside the zero-copy buffers is never staged. It yields no sample; more than
+// 8 in a row fail the stream.
+HRESULT UncompressedVideoSampleProvider::DropFrame(AVFrame* avFrame)
+{
+    zeroCopyDropped++;
+    if (!zeroCopyDropLogged)
+    {
+        zeroCopyDropLogged = true;
+        av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy: dropped a frame outside zero-copy buffers (format %d, %dx%d).\n",
+            avFrame->format, avFrame->width, avFrame->height);
+    }
+    if (++zeroCopyMissRun > 8) return Fail(ZeroCopyMissed, "more than 8 consecutive frames outside zero-copy buffers");
+    return BaleFrameDropped;
 }
 
 
@@ -1084,7 +952,8 @@ int UncompressedVideoSampleProvider::get_buffer2(AVCodecContext* avCodecContext,
 // Bale zero-copy: only the native p1 libdav1d allocator calls this (stock libdav1d never calls
 // get_buffer2), on the thread inside avcodec_receive_frame. One bale_zc buffer holds the three
 // planes with 64-byte aligned starts/strides and 64 bytes of padding after each plane (dav1d's
-// allocator contract). Any refusal (< 0) makes dav1d use its own pool for that picture.
+// allocator contract). Any refusal (< 0) makes dav1d use its own pool for that picture, which
+// CreateBufferFromFrame then drops (DropFrame).
 int UncompressedVideoSampleProvider::get_zero_copy_buffer(AVCodecContext* avCodecContext, AVFrame* frame, int flags)
 {
     UNREFERENCED_PARAMETER(flags);
@@ -1110,7 +979,7 @@ int UncompressedVideoSampleProvider::get_zero_copy_buffer(AVCodecContext* avCode
     const auto& api = BaleZeroCopyExports::Get();
     uint8_t* data = nullptr;
     void* id = nullptr;
-    // Bounded: a full pool waits briefly, then fails and this picture uses dav1d's pool.
+    // Bounded: a full pool waits briefly, then fails and this picture uses dav1d's pool (dropped).
     if (api.alloc(handle, bytes, &data, &id) != S_OK || !data || !id) return AVERROR(ENOMEM);
     if (reinterpret_cast<uintptr_t>(data) % align)
     {
@@ -1119,10 +988,21 @@ int UncompressedVideoSampleProvider::get_zero_copy_buffer(AVCodecContext* avCode
     }
     // The buffer's opaque is the bale_zc id; TryZeroCopy hands it to bale_zc_repack. Unref (from any
     // thread, also after the handle is destroyed) returns the memory to its pool.
+    auto& live = LiveZeroCopyIds();
+    if (!live.Add(id))
+    {
+        api.release(id);
+        return AVERROR(ENOMEM);
+    }
     frame->buf[0] = av_buffer_create(data, bytes,
-        [](void* opaque, uint8_t*) { BaleZeroCopyExports::Get().release(opaque); }, id, 0);
+        [](void* opaque, uint8_t*)
+        {
+            LiveZeroCopyIds().Remove(opaque);
+            BaleZeroCopyExports::Get().release(opaque);
+        }, id, 0);
     if (!frame->buf[0])
     {
+        live.Remove(id);
         api.release(id);
         return AVERROR(ENOMEM);
     }
@@ -1135,26 +1015,32 @@ int UncompressedVideoSampleProvider::get_zero_copy_buffer(AVCodecContext* avCode
     return 0;
 }
 
-// Runs once, from SetUploadDevice. Failure only logs: every frame keeps the staging path.
-void UncompressedVideoSampleProvider::CreateZeroCopy(winrt::com_ptr<ID3D11Device> const& device, winrt::com_ptr<ID3D11DeviceContext> const& context)
+// Runs from SetUploadDevice. Any failure fails the stream (there is no staging upload).
+HRESULT UncompressedVideoSampleProvider::CreateZeroCopy(winrt::com_ptr<ID3D11Device> const& device, winrt::com_ptr<ID3D11DeviceContext> const& context)
 {
-    if (!zeroCopyHooked || zeroCopy.load()) return;
+    if (zeroCopy.load()) return S_OK;
+    if (!zeroCopyHooked)
+    {
+        av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy unavailable (decoder buffer hook not installed).\n");
+        return E_UNEXPECTED;
+    }
     const auto& api = BaleZeroCopyExports::Get();
     if (!api.create)
     {
-        av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy unavailable (bale_gpu zero-copy ABI 1 not found); using staging upload.\n");
-        return;
+        av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy unavailable (bale_gpu zero-copy ABI 1 not found).\n");
+        return E_NOINTERFACE;
     }
     void* handle = nullptr;
     auto hr = api.create(device.get(), context.get(), &handle);
     if (hr != S_OK || !handle)
     {
-        av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy create failed (hr=0x%08X); using staging upload.\n",
-            static_cast<unsigned>(hr == S_OK ? E_UNEXPECTED : hr));
-        return;
+        hr = FAILED(hr) ? hr : E_UNEXPECTED;
+        av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy create failed (hr=0x%08X).\n", static_cast<unsigned>(hr));
+        return hr;
     }
     zeroCopy.store(handle, std::memory_order_release);
     av_log(nullptr, AV_LOG_INFO, "Bale zero-copy created (self-test passed).\n");
+    return S_OK;
 }
 
 void UncompressedVideoSampleProvider::LogZeroCopyStats(void* handle, const char* when)
@@ -1162,50 +1048,47 @@ void UncompressedVideoSampleProvider::LogZeroCopyStats(void* handle, const char*
     BaleZcStats stats{};
     if (BaleZeroCopyExports::Get().stats(handle, &stats) != S_OK) return;
     av_log(nullptr, AV_LOG_INFO, "Bale zero-copy stats (%s): frames=%u repacked=%llu buffers created=%llu live=%llu peak=%llu "
-        "pooled=%llu alloc_failures=%llu alloc_waits=%llu landing_copies=%llu direct=%u direct_grain=%u eight_bit=%u.\n", when, zeroCopyFrames,
+        "pooled=%llu alloc_failures=%llu alloc_waits=%llu landing_copies=%llu direct=%u direct_grain=%u eight_bit=%u dropped=%u.\n", when, zeroCopyFrames,
         static_cast<unsigned long long>(stats.framesRepacked), static_cast<unsigned long long>(stats.buffersCreated),
         static_cast<unsigned long long>(stats.buffersLive), static_cast<unsigned long long>(stats.buffersPeak),
         static_cast<unsigned long long>(stats.buffersPooled), static_cast<unsigned long long>(stats.allocFailures),
         static_cast<unsigned long long>(stats.allocWaits), static_cast<unsigned long long>(stats.landingCopies), zeroCopyDirectFrames,
-        zeroCopyDirectGrainFrames, zeroCopyEightBitFrames);
+        zeroCopyDirectGrainFrames, zeroCopyEightBitFrames, zeroCopyDropped);
 }
 
-void UncompressedVideoSampleProvider::LogZeroCopyGrainSkipped()
-{
-    if (zeroCopyGrainSkipLogged) return;
-    zeroCopyGrainSkipLogged = true;
-    av_log(nullptr, AV_LOG_WARNING, "Bale film grain: 8-bit frame missed the zero-copy write; showing it ungrained.\n");
-}
-
-// Permanent for this stream. Callers are serialized with decoding (see zeroCopy). Buffers dav1d
-// still holds stay valid and are released into the closed pool later.
+// Permanent for this stream: from Fail (failure) or the destructor (S_OK). Callers are serialized
+// with decoding (see zeroCopy). Buffers dav1d still holds stay valid and are released into the
+// closed pool later.
 void UncompressedVideoSampleProvider::DisableZeroCopy(HRESULT hr)
 {
     auto handle = zeroCopy.exchange(nullptr);
     if (!handle) return;
     LogZeroCopyStats(handle, FAILED(hr) ? "disabled" : "closed");
-    if (FAILED(hr))
-    {
-        av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy disabled (hr=0x%08X); using staging upload.\n", static_cast<unsigned>(hr));
-    }
     BaleZeroCopyExports::Get().destroy(handle);
 }
 
-// True when this frame went out as a zero-copy sample. False leaves the frame to the staging paths:
-// not a zero-copy picture (dav1d's own pool), a layout the repack refuses, or a disabled handle.
-// Upload failures after a successful repack throw, like the staging paths.
-bool UncompressedVideoSampleProvider::TryZeroCopy(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params)
+// S_OK: the frame went out as a zero-copy sample. BaleFrameDropped: not a zero-copy picture
+// (dav1d's own pool). Any failure fails the stream: a declined write (ZeroCopyDeclined), a refused
+// layout (E_INVALIDARG) or a bale_zc error; D3D11/MF failures after a write throw.
+HRESULT UncompressedVideoSampleProvider::TryZeroCopy(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params)
 {
     auto handle = zeroCopy.load(std::memory_order_acquire);
-    // CPU grain needs the converted frame in mapped staging.
-    if (!handle || (params && FilmGrain.mode == 1)) return false;
+    if (!handle) return E_UNEXPECTED;
+    auto buffer = avFrame->buf[0];
+    if (!buffer || !LiveZeroCopyIds().Contains(av_buffer_get_opaque(buffer))) return BaleFrameDropped;
+    auto refused = [&]
+    {
+        av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy layout refused (format %d, %dx%d to %dx%d, strides %d/%d).\n",
+            avFrame->format, avFrame->width, avFrame->height, outputFrameWidth, outputFrameHeight,
+            avFrame->linesize[0], avFrame->linesize[1]);
+        return E_INVALIDARG;
+    };
     // 8-bit pictures are written as P010 (samples << 8) by the direct write only; never landed.
     bool eightBit = avFrame->format == AV_PIX_FMT_YUV420P && ZeroCopyEightBit;
     if ((avFrame->format != AV_PIX_FMT_YUV420P10LE && !eightBit) || m_OutputPixelFormat != AV_PIX_FMT_P010LE ||
-        avFrame->width != outputWidth || avFrame->height != outputHeight) return false;
-    auto buffer = avFrame->buf[0];
-    if (!buffer || avFrame->buf[1] || avFrame->linesize[0] <= 0 || avFrame->linesize[1] <= 0 ||
-        avFrame->linesize[1] != avFrame->linesize[2]) return false;
+        avFrame->width != outputWidth || avFrame->height != outputHeight) return refused();
+    if (avFrame->buf[1] || avFrame->linesize[0] <= 0 || avFrame->linesize[1] <= 0 ||
+        avFrame->linesize[1] != avFrame->linesize[2]) return refused();
     // Whole 4-aligned texture rows: the repack reads the decoder's row padding past the picture,
     // and dav1d's pictures are 128-aligned, so those rows are inside the buffer (fits() checks).
     BaleZcFrame frame{};
@@ -1215,18 +1098,13 @@ bool UncompressedVideoSampleProvider::TryZeroCopy(AVFrame* avFrame, IDirect3DSur
     frame.chromaStride = static_cast<uint32_t>(avFrame->linesize[1]);
     for (int i = 0; i < 3; i++)
     {
-        if (!avFrame->data[i] || avFrame->data[i] < buffer->data) return false;
+        if (!avFrame->data[i] || avFrame->data[i] < buffer->data) return refused();
         frame.offsets[i] = static_cast<uint64_t>(avFrame->data[i] - buffer->data);
     }
 
     const auto& api = BaleZeroCopyExports::Get();
     auto& timing = upload->timing;
     upload->SetOutput(outputFrameWidth, outputFrameHeight, DXGI_FORMAT_P010);
-    if (UploadFaultFrames > 0 && uploadedFrames >= UploadFaultFrames)
-    {
-        av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload fault injected after %d frames.\n", uploadedFrames);
-        winrt::throw_hresult(E_OUTOFMEMORY);
-    }
     auto repackStart = BaleUploadTiming::Now();
     if (timing.lastEnd) timing.Add(BaleUploadTiming::Gap, repackStart - timing.lastEnd);
     auto picture = av_buffer_get_opaque(buffer);
@@ -1234,16 +1112,15 @@ bool UncompressedVideoSampleProvider::TryZeroCopy(AVFrame* avFrame, IDirect3DSur
 
     // Direct write into the pooled texture: no landing texture, no D3D11 copy. GPU grain is
     // applied in the same D3D12 dispatch; a bale_gpu that cannot (older, or its grain self-test
-    // failed) declines, and the frame lands with the D3D11 grain pass instead. 8-bit pictures use
-    // bale_zc_repack_into_bits and never land.
-    auto directGrain = params && FilmGrain.mode == 2 ? params : nullptr;
-    if ((eightBit ? api.repackIntoBits != nullptr : api.repackInto != nullptr) && upload->CanWriteDirect())
+    // failed) declines, and a 10-bit frame lands with the D3D11 grain pass instead. 8-bit pictures
+    // use bale_zc_repack_into_bits and never land.
+    if (eightBit ? api.repackIntoBits != nullptr : api.repackInto != nullptr)
     {
         TimeSpan position{};
         uploadSample = upload->CreateWrittenSample(position, surface, [&](ID3D11Texture2D* texture)
             {
-                hr = eightBit ? api.repackIntoBits(handle, picture, &frame, 8, directGrain, texture)
-                    : api.repackInto(handle, picture, &frame, directGrain, texture);
+                hr = eightBit ? api.repackIntoBits(handle, picture, &frame, 8, params, texture)
+                    : api.repackInto(handle, picture, &frame, params, texture);
                 if (hr != S_OK) return false;
                 // Once per frame (frame-grabber state), and only for a frame that goes out here.
                 ReadFrameProperties(avFrame, framePts);
@@ -1253,9 +1130,8 @@ bool UncompressedVideoSampleProvider::TryZeroCopy(AVFrame* avFrame, IDirect3DSur
         if (hr == S_OK)
         {
             timing.EndFrame(3);
-            uploadedFrames++;
             zeroCopyDirectFrames++;
-            if (directGrain) zeroCopyDirectGrainFrames++;
+            if (params) zeroCopyDirectGrainFrames++;
             if (eightBit) zeroCopyEightBitFrames++;
             if (++zeroCopyFrames == 240) LogZeroCopyStats(handle, "steady");
             if (!zeroCopyLogged)
@@ -1264,38 +1140,27 @@ bool UncompressedVideoSampleProvider::TryZeroCopy(AVFrame* avFrame, IDirect3DSur
                 av_log(nullptr, AV_LOG_INFO, "Bale zero-copy active (direct write%s): P010 %dx%d.\n", eightBit ? ", 8-bit" : "",
                     outputFrameWidth, outputFrameHeight);
             }
-            return true;
+            return S_OK;
         }
-        // Once per kind: a declined 10-bit frame lands below, a declined 8-bit frame uses staging.
-        auto& declineLogged = eightBit ? zeroCopyEightDeclineLogged : directGrain ? zeroCopyGrainDeclineLogged : zeroCopyDeclineLogged;
-        if (hr == S_FALSE && !declineLogged)
+        // Once per kind: a declined 10-bit frame lands below.
+        auto& declineLogged = params ? zeroCopyGrainDeclineLogged : zeroCopyDeclineLogged;
+        if (hr == S_FALSE && !eightBit && !declineLogged)
         {
             declineLogged = true;
-            av_log(nullptr, AV_LOG_INFO, "Bale zero-copy %sdirect write declined%s; %s instead.\n", eightBit ? "8-bit " : "",
-                directGrain ? " with grain" : "", eightBit ? "using staging upload" : "landing frames");
+            av_log(nullptr, AV_LOG_INFO, "Bale zero-copy direct write declined%s; landing frames instead.\n",
+                params ? " with grain" : "");
         }
     }
 
-    // bale_zc_repack lands 10-bit pictures only: a declined (or unavailable) 8-bit write uses staging.
-    if (eightBit && hr == S_FALSE) return false;
+    // bale_zc_repack lands 10-bit pictures only: a declined (or unavailable) 8-bit write fails.
+    if (eightBit && hr == S_FALSE) return ZeroCopyDeclined;
     void* landing = nullptr;
     if (hr == S_FALSE) hr = api.repack(handle, picture, &frame, &landing);
-    if (hr == S_FALSE) return false;
-    if (hr == E_INVALIDARG)
-    {
-        if (!zeroCopyLayoutLogged)
-        {
-            zeroCopyLayoutLogged = true;
-            av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy layout refused (%dx%d, strides %d/%d); using staging upload for such frames.\n",
-                outputFrameWidth, outputFrameHeight, avFrame->linesize[0], avFrame->linesize[1]);
-        }
-        return false;
-    }
-    if (hr != S_OK || !landing)
-    {
-        DisableZeroCopy(hr == S_OK ? E_UNEXPECTED : hr);
-        return false;
-    }
+    // The buffer is live (checked above), so a declined landing fails too.
+    if (hr == S_FALSE) return ZeroCopyDeclined;
+    if (hr == E_INVALIDARG) return refused();
+    if (FAILED(hr)) return hr;
+    if (hr != S_OK || !landing) return E_UNEXPECTED;
     timing.Add(BaleUploadTiming::Fill, BaleUploadTiming::Now() - repackStart);
 
     // Borrowed from the handle: hold a reference while MF/D3D11 calls run below.
@@ -1304,16 +1169,14 @@ bool UncompressedVideoSampleProvider::TryZeroCopy(AVFrame* avFrame, IDirect3DSur
     ReadFrameProperties(avFrame, framePts);
     uploadSample = upload->CreateLandedSample(texture.get(), ConvertPosition(framePts), surface, FilmGrain, params);
     timing.EndFrame(2);
-    uploadedFrames++;
     if (++zeroCopyFrames == 240) LogZeroCopyStats(handle, "steady");
     if (!zeroCopyLogged)
     {
         zeroCopyLogged = true;
         av_log(nullptr, AV_LOG_INFO, "Bale zero-copy active: P010 %dx%d.\n", outputFrameWidth, outputFrameHeight);
     }
-    return true;
+    return S_OK;
 }
-
 
 void UncompressedVideoSampleProvider::CheckFrameSize(AVFrame* avFrame)
 {

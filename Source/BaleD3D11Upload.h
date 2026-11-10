@@ -5,38 +5,6 @@
 #include "BaleFilmGrain.h"
 #include "DirectXInteropHelper.h"
 
-// Bale: bale_gpu.dll repack ABI 1 (planar staging to NV12/P010 render target), loaded independently
-// of the grain exports so either can be missing or incompatible without affecting the other.
-struct BaleRepackExports
-{
-    uint32_t (__cdecl* abiVersion)() = nullptr;
-    HRESULT (__cdecl* create)(void*, void*, void**) = nullptr;
-    HRESULT (__cdecl* apply)(void*, void*, void*) = nullptr;
-    void (__cdecl* destroy)(void*) = nullptr;
-
-    static const BaleRepackExports& Get()
-    {
-        // One load attempt per process; a successful module stays loaded for the process lifetime.
-        static const BaleRepackExports exports = []
-        {
-            BaleRepackExports api;
-            auto module = LoadPackagedLibrary(L"bale_gpu.dll", 0);
-            if (!module) return api;
-            api.abiVersion = reinterpret_cast<decltype(api.abiVersion)>(GetProcAddress(module, "bale_repack_abi_version"));
-            api.create = reinterpret_cast<decltype(api.create)>(GetProcAddress(module, "bale_repack_gpu_create"));
-            api.apply = reinterpret_cast<decltype(api.apply)>(GetProcAddress(module, "bale_repack_gpu_apply"));
-            api.destroy = reinterpret_cast<decltype(api.destroy)>(GetProcAddress(module, "bale_repack_gpu_destroy"));
-            if (!api.abiVersion || !api.create || !api.apply || !api.destroy || api.abiVersion() != 1)
-            {
-                FreeLibrary(module);
-                return BaleRepackExports{};
-            }
-            return api;
-        }();
-        return exports;
-    }
-};
-
 // Bale: bale_gpu.dll zero-copy ABI 1. dav1d decodes into GPU-visible buffers from bale_zc_alloc and
 // bale_zc_repack turns one into a P010 texture on the MSS device, with no staging map or CPU fill.
 // The optional bale_zc_repack_into writes the pooled texture itself, skipping the landing copy;
@@ -141,9 +109,9 @@ struct BaleUploadTiming
         if (ticks > peak[stage]) peak[stage] = ticks;
     }
 
-    // Called once per uploaded frame, after CreateSample. Logs average/max ms per stage.
-    // path: 0 swscale into staging, 1 planar staging + repack, 2 zero-copy landing (fill = repack
-    // submit), 3 zero-copy direct write (gpu = repack submit).
+    // Called once per zero-copy frame, after its sample. Logs average/max ms per stage.
+    // path: 2 zero-copy landing (fill = repack submit), 3 zero-copy direct write (gpu = repack
+    // submit). Decode-ahead also uses Now/Ms for its own timing.
     void EndFrame(int path)
     {
         lastEnd = Now();
@@ -160,144 +128,36 @@ struct BaleUploadTiming
     }
 };
 
-// Bale: software decode is unchanged; only the final NV12/P010 output lives on the MSS device.
-// Decode/seek serialize Map/CreateSample/Flush. Processed can arrive on any MF thread.
+// Bale: zero-copy software AV1 output on the MSS device. bale_gpu writes (or lands) each dav1d
+// picture into pooled P010 textures that D3D12 can open (UAV + NT shared handle).
+// Decode/seek serialize SetOutput/Create*Sample/Flush. Processed can arrive on any MF thread.
 class BaleD3D11Upload : public std::enable_shared_from_this<BaleD3D11Upload>
 {
 public:
-    struct Mapping
-    {
-        winrt::com_ptr<ID3D11DeviceContext> context;
-        winrt::com_ptr<ID3D11Texture2D> texture;
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-
-        Mapping() = default;
-        Mapping(const Mapping&) = delete;
-        Mapping& operator=(const Mapping&) = delete;
-        ~Mapping() { Unmap(); }
-
-        void Unmap()
-        {
-            if (mapped.pData)
-            {
-                context->Unmap(texture.get(), 0);
-                mapped.pData = nullptr;
-            }
-        }
-    };
-
     BaleD3D11Upload(winrt::com_ptr<ID3D11Device> device, winrt::com_ptr<ID3D11DeviceContext> context, int variant)
         : device(device), context(context), texturePool(device, 0)
     {
-        // Keep the staging ring unchanged; only the MF-facing DEFAULT texture varies.
-        switch (variant)
-        {
-        case 2: bindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE; break;
-        case 3: bindFlags = D3D11_BIND_DECODER; break;
-        case 4: bindFlags = D3D11_BIND_SHADER_RESOURCE; break;
-        case 5: bindFlags = D3D11_BIND_SHADER_RESOURCE; miscFlags = D3D11_RESOURCE_MISC_SHARED; break;
-        // Debug: variant 1 plus a UAV bind and an NT shared handle, the flags D3D12 needs to open
-        // and write the pooled texture directly. Tests whether MF accepts such samples.
-        case 6:
-            bindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-            miscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED;
-            break;
-        }
+        // Only the D3D12-writable pool texture (former variant 6) remains; any nonzero
+        // bale_d3d11_upload selects it, so `variant` is unused.
+        UNREFERENCED_PARAMETER(variant);
     }
 
     ~BaleD3D11Upload()
     {
         Flush();
-        DestroyRepack();
-    }
-
-    // The repack writes through render-target views: only variant 1 and 6 pooled textures qualify.
-    bool CanRepack() const { return (bindFlags & D3D11_BIND_RENDER_TARGET) && BaleRepackExports::Get().create; }
-
-    // Permanent for this uploader. The handle is serialized with frame production like grain.
-    void DestroyRepack()
-    {
-        if (repackHandle)
-        {
-            BaleRepackExports::Get().destroy(repackHandle);
-            repackHandle = nullptr;
-        }
     }
 
     // Output size/format for the next sample; a change starts a new generation (Flush).
     void SetOutput(UINT width, UINT height, DXGI_FORMAT format)
     {
-        if (width != stagingDesc.Width || height != stagingDesc.Height || format != stagingDesc.Format)
+        if (width != outputDesc.Width || height != outputDesc.Height || format != outputDesc.Format)
         {
             Flush();
-            stagingDesc = {};
-            stagingDesc.Width = width;
-            stagingDesc.Height = height;
-            stagingDesc.MipLevels = 1;
-            stagingDesc.ArraySize = 1;
-            stagingDesc.Format = format;
-            stagingDesc.SampleDesc.Count = 1;
-            stagingDesc.Usage = D3D11_USAGE_STAGING;
-            stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            outputDesc = {};
+            outputDesc.Width = width;
+            outputDesc.Height = height;
+            outputDesc.Format = format;
         }
-    }
-
-    HRESULT Map(UINT width, UINT height, DXGI_FORMAT format, Mapping& target)
-    {
-        // Only synchronous D3D/MF failures reach the provider's permanent CPU fallback.
-        SetOutput(width, height, format);
-
-        auto& staging = stagingTextures[nextStaging];
-        if (!staging)
-        {
-            auto hr = device->CreateTexture2D(&stagingDesc, nullptr, staging.put());
-            if (FAILED(hr))
-            {
-                av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload CreateTexture2D STAGING failed (hr=0x%08X).\n", static_cast<unsigned>(hr));
-                return hr;
-            }
-        }
-        nextStaging = (nextStaging + 1) % stagingTextures.size();
-        target.context = context;
-        target.texture = staging;
-        // WRITE (not DISCARD) on a small staging ring: Map waits if the previous GPU copy still uses it.
-        auto mapStart = BaleUploadTiming::Now();
-        auto hr = context->Map(staging.get(), 0, D3D11_MAP_WRITE, 0, &target.mapped);
-        timing.Add(BaleUploadTiming::Map, BaleUploadTiming::Now() - mapStart);
-        if (FAILED(hr)) av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload Map failed (hr=0x%08X).\n", static_cast<unsigned>(hr));
-        return hr;
-    }
-
-    MediaStreamSample CreateSample(Mapping& source, TimeSpan position, IDirect3DSurface* surface,
-        BaleFilmGrain& grain, const BaleGrainParams* params, bool planar)
-    {
-        auto unmapStart = BaleUploadTiming::Now();
-        source.Unmap();
-        timing.Add(BaleUploadTiming::Unmap, BaleUploadTiming::Now() - unmapStart);
-        return Publish(position, surface, planar ? "repack" : "CopyResource", [&](ID3D11Texture2D* texture)
-            {
-                if (planar)
-                {
-                    // Planar staging is not displayable: every path must end in a repack draw.
-                    bool grained = false;
-                    if (params && grain.mode == 2)
-                    {
-                        // GPU grain reads a clean NV12/P010 frame: repack into Bale-owned scratch first.
-                        auto scratch = RepackScratch();
-                        ApplyRepack(source.texture.get(), scratch);
-                        grained = ApplyGrain(grain, *params, scratch, texture);
-                    }
-                    // A failed grain pass may have partially written the target: repack it clean.
-                    if (!grained) ApplyRepack(source.texture.get(), texture);
-                }
-                else if (!params || grain.mode != 2 || !ApplyGrain(grain, *params, source.texture.get(), texture))
-                {
-                    // Grain reads clean, unmapped staging and writes only the Bale-owned pooled target.
-                    // A failed pass may have partially written it: overwrite with the clean plain copy.
-                    context->CopyResource(texture, source.texture.get());
-                }
-                return true;
-            });
     }
 
     // Zero-copy: `landing` is bale_zc_repack's borrowed P010 texture (SetOutput size), valid until
@@ -307,19 +167,11 @@ public:
     {
         return Publish(position, surface, "zero-copy CopyResource", [&](ID3D11Texture2D* texture)
             {
-                // Same rule as staging: a failed grain pass is overwritten with the clean copy.
-                if (!params || grain.mode != 2 || !ApplyGrain(grain, *params, landing, texture))
-                {
-                    context->CopyResource(texture, landing);
-                }
+                // GPU grain failure throws (the stream fails); there is no ungrained fallback.
+                if (params) ApplyGrain(grain, *params, landing, texture);
+                else context->CopyResource(texture, landing);
                 return true;
             });
-    }
-
-    // Zero-copy direct write needs pooled textures that D3D12 can open and write (variant 6).
-    bool CanWriteDirect() const
-    {
-        return (bindFlags & D3D11_BIND_UNORDERED_ACCESS) && (miscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
     }
 
     // Zero-copy direct write: `write` fills a pooled texture of the SetOutput size itself, or
@@ -334,7 +186,7 @@ public:
 
     void EndGrain() { DestroyGrain(); }
 
-    // Producer-thread only (same serialization as Map/CreateSample).
+    // Producer-thread only (same serialization as the Create*Sample calls).
     BaleUploadTiming timing;
 
     void Flush()
@@ -351,15 +203,12 @@ public:
         // Drop all old references, never recycle their textures into a new seek/size generation.
         // MF's own surface references keep any in-flight textures alive until it is finished.
         texturePool.Clear();
-        repackScratch = nullptr;
-        for (auto& texture : stagingTextures) texture = nullptr;
-        stagingDesc = {};
-        nextStaging = 0;
+        outputDesc = {};
     }
 
 private:
     // Fills a pooled texture of the SetOutput size with `draw`, then flushes and wraps it in a
-    // tracked MF sample. Any failure throws (the provider's permanent CPU fallback). A draw that
+    // tracked MF sample. Any failure throws (the provider latches it and fails the stream). A draw that
     // returns false left the texture untouched: it goes back to the pool and the sample is null.
     // `position` is read only after `draw` succeeded.
     template <typename Draw>
@@ -378,7 +227,7 @@ private:
             winrt::com_ptr<ID3D11Texture2D> texture;
             {
                 std::lock_guard lock(samplesMutex);
-                winrt::check_hresult(texturePool.GetUploadTexture(stagingDesc.Width, stagingDesc.Height, stagingDesc.Format, bindFlags, miscFlags, texture));
+                winrt::check_hresult(texturePool.GetUploadTexture(outputDesc.Width, outputDesc.Height, outputDesc.Format, bindFlags, miscFlags, texture));
             }
             operation = drawOperation;
             if (!draw(texture.get()))
@@ -397,8 +246,6 @@ private:
             operation = "GetSurface";
             auto dxgiSurface = texture.as<IDXGISurface>();
             auto directSurface = DirectXInteropHelper::GetSurface(dxgiSurface);
-            // Create while the decoded AVFrame is still alive, so even a surface/sample failure can
-            // re-run the ordinary CPU output step for this same frame, without retaining/copying it.
             operation = "CreateFromDirect3D11Surface";
             auto sample = MediaStreamSample::CreateFromDirect3D11Surface(directSurface, position);
             operation = "track Processed";
@@ -435,40 +282,6 @@ private:
     }
 
     void* grainHandle = nullptr; // Only the serialized producer/teardown owner touches this.
-    void* repackHandle = nullptr; // Same ownership as grainHandle; survives Flush (create runs a readback self-test).
-    winrt::com_ptr<ID3D11Texture2D> repackScratch; // Clean repacked frame for GPU grain; dropped on Flush.
-
-    void ApplyRepack(ID3D11Texture2D* source, ID3D11Texture2D* target)
-    {
-        const auto& api = BaleRepackExports::Get();
-        if (!api.apply) winrt::throw_hresult(E_NOINTERFACE);
-        if (!repackHandle)
-        {
-            auto hr = api.create(device.get(), context.get(), &repackHandle);
-            if (hr != S_OK || !repackHandle)
-            {
-                repackHandle = nullptr;
-                winrt::throw_hresult(hr == S_OK ? E_UNEXPECTED : hr);
-            }
-            av_log(nullptr, AV_LOG_INFO, "Bale D3D11 repack created (self-test passed).\n");
-        }
-        winrt::check_hresult(api.apply(repackHandle, source, target));
-    }
-
-    ID3D11Texture2D* RepackScratch()
-    {
-        if (!repackScratch)
-        {
-            auto desc = stagingDesc;
-            desc.Usage = D3D11_USAGE_DEFAULT;
-            desc.CPUAccessFlags = 0;
-            desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-            desc.MiscFlags = 0;
-            winrt::check_hresult(device->CreateTexture2D(&desc, nullptr, repackScratch.put()));
-        }
-        return repackScratch.get();
-    }
-
     void DestroyGrain()
     {
         if (grainHandle)
@@ -478,7 +291,8 @@ private:
         }
     }
 
-    bool ApplyGrain(BaleFilmGrain& grain, const BaleGrainParams& params, ID3D11Texture2D* source, ID3D11Texture2D* target)
+    // Throws on failure after recording it in `grain` (the stream fails, no ungrained frame).
+    void ApplyGrain(BaleFilmGrain& grain, const BaleGrainParams& params, ID3D11Texture2D* source, ID3D11Texture2D* target)
     {
         const auto& api = BaleGrainExports::Get();
         if (!grainHandle)
@@ -488,14 +302,14 @@ private:
             {
                 grain.GpuFailed(hr == S_OK ? E_UNEXPECTED : hr, true);
                 DestroyGrain();
-                return false;
+                winrt::throw_hresult(FAILED(hr) ? hr : E_FAIL);
             }
         }
         auto hr = api.gpuApply(grainHandle, &params, source, target);
-        if (hr == S_OK) return true;
+        if (hr == S_OK) return;
         grain.GpuFailed(hr, false);
         DestroyGrain();
-        return false;
+        winrt::throw_hresult(FAILED(hr) ? hr : E_FAIL);
     }
 
     struct TrackedSample
@@ -555,14 +369,12 @@ private:
     winrt::com_ptr<ID3D11Device> device;
     winrt::com_ptr<ID3D11DeviceContext> context;
     TexturePool texturePool;
-    UINT bindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-    UINT miscFlags = 0;
+    UINT bindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+    UINT miscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED;
     // Protected by samplesMutex; totals survive Flush, so each diagnostic is logged once per uploader.
     unsigned issuedSamples = 0;
     unsigned processedSamples = 0;
-    std::array<winrt::com_ptr<ID3D11Texture2D>, 3> stagingTextures;
-    D3D11_TEXTURE2D_DESC stagingDesc{};
-    size_t nextStaging = 0;
+    D3D11_TEXTURE2D_DESC outputDesc{}; // Pooled output size/format; only Width/Height/Format are used.
     std::map<winrt::Windows::Foundation::IUnknown, TrackedSample> trackedSamples;
     std::mutex samplesMutex;
     std::atomic<bool> processedFailureLogged{ false };

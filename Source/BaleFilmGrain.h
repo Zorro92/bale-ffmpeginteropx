@@ -65,7 +65,6 @@ struct BaleGrainExports
 {
     uint32_t (__cdecl* abiVersion)() = nullptr;
     HRESULT (__cdecl* validate)(const BaleGrainParams*) = nullptr;
-    HRESULT (__cdecl* cpuApply)(const BaleGrainParams*, uint32_t, uint8_t*, ptrdiff_t, uint8_t*, ptrdiff_t, uint32_t) = nullptr;
     HRESULT (__cdecl* gpuCreate)(void*, void*, void**) = nullptr;
     HRESULT (__cdecl* gpuApply)(void*, const BaleGrainParams*, void*, void*) = nullptr;
     void (__cdecl* gpuDestroy)(void*) = nullptr;
@@ -74,6 +73,7 @@ struct BaleGrainExports
     {
         // Thread-safe C++ static initialization: exactly one load attempt per process. Keep a
         // successful module loaded for the process lifetime, including all stream destructors.
+        // Only the GPU exports are used (no CPU grain); grain ABI 1 and 2 share them unchanged.
         static const BaleGrainExports exports = []
         {
             BaleGrainExports api;
@@ -81,11 +81,11 @@ struct BaleGrainExports
             if (!module) return api;
             api.abiVersion = reinterpret_cast<decltype(api.abiVersion)>(GetProcAddress(module, "bale_grain_abi_version"));
             api.validate = reinterpret_cast<decltype(api.validate)>(GetProcAddress(module, "bale_grain_validate"));
-            api.cpuApply = reinterpret_cast<decltype(api.cpuApply)>(GetProcAddress(module, "bale_grain_cpu_apply"));
             api.gpuCreate = reinterpret_cast<decltype(api.gpuCreate)>(GetProcAddress(module, "bale_grain_gpu_create"));
             api.gpuApply = reinterpret_cast<decltype(api.gpuApply)>(GetProcAddress(module, "bale_grain_gpu_apply"));
             api.gpuDestroy = reinterpret_cast<decltype(api.gpuDestroy)>(GetProcAddress(module, "bale_grain_gpu_destroy"));
-            if (!api.abiVersion || !api.validate || !api.cpuApply || !api.gpuCreate || !api.gpuApply || !api.gpuDestroy || api.abiVersion() != 1)
+            auto version = api.abiVersion ? api.abiVersion() : 0;
+            if (!api.validate || !api.gpuCreate || !api.gpuApply || !api.gpuDestroy || (version != 1 && version != 2))
             {
                 FreeLibrary(module);
                 return BaleGrainExports{};
@@ -102,10 +102,9 @@ struct BaleGrainExports
 class BaleFilmGrain
 {
 public:
-    int mode = 0; // 0 dav1d at open / no grain after GPU loss, 1 Rust CPU, 2 GPU; never reset on seek.
-    bool above1080p = false; // Initial codec size class; runtime GPU fallback must not overload 4K decode.
+    int mode = 0; // 0 dav1d at open (or after a GPU failure, which fails the stream), 2 GPU; never reset on seek.
     // 8-bit pictures written into P010 by the zero-copy direct write (EightBitZeroCopy); only that
-    // write applies their grain, so Compatible stays strict for every staging path.
+    // write applies their grain.
     bool eightInP010 = false;
 
     static int BitDepth(AVPixelFormat format)
@@ -133,8 +132,9 @@ public:
     }
 
     // Must run before avcodec_open2: libdav1d reads apply_grain only during initialization.
+    // GPU grain (2) only for zero-copy streams; a requested 1 (former CPU grain) also selects 2.
     static int SelectMode(int requested, bool exportOnly, bool dav1d, bool hardware,
-        AVPixelFormat input, AVPixelFormat output, int uploadVariant, bool eightInP010 = false)
+        AVPixelFormat input, AVPixelFormat output, bool zeroCopy, bool eightInP010 = false)
     {
         bool eight = eightInP010 && EightInP010(input, output);
         int selected = 0;
@@ -144,27 +144,17 @@ public:
         else if (requested)
         {
             if (!dav1d || hardware) reason = "decoder is not software libdav1d";
+            else if (!zeroCopy) reason = "GPU grain needs the zero-copy upload; keeping dav1d";
             else if (!BitDepth(input)) reason = "input is not 4:2:0 8/10-bit";
             else if (!Compatible(input, output) && !eight) reason = "output is not matching NV12/P010";
             else if (!BaleGrainExports::Get().validate) reason = "grain DLL unavailable or incompatible";
             else
             {
-                selected = requested;
-                // After patch 0008 only variants 1 and 6 (0016) have D3D11_BIND_RENDER_TARGET.
-                if (selected == 2 && uploadVariant != 1 && uploadVariant != 6)
-                {
-                    // Keep dav1d's faster synthesis while export can still be left off.
-                    selected = 0;
-                    reason = "GPU requires render-target upload variant 1; keeping dav1d";
-                }
-                else if (selected == 1 && eight)
-                {
-                    selected = 0;
-                    reason = "CPU grain cannot write 8-bit into P010; keeping dav1d";
-                }
+                selected = 2;
+                if (requested == 1) reason = "CPU grain removed; using GPU";
             }
         }
-        const char* name = selected == 2 ? "gpu" : selected == 1 ? "cpu" : "dav1d";
+        const char* name = selected == 2 ? "gpu" : "dav1d";
         if (reason) av_log(nullptr, AV_LOG_INFO, "Bale film grain: mode=%s (%s)\n", name, reason);
         else av_log(nullptr, AV_LOG_INFO, "Bale film grain: mode=%s\n", name);
         return selected;
@@ -203,67 +193,21 @@ public:
         return true;
     }
 
-    bool ApplyCpu(const BaleGrainParams& params, AVPixelFormat output, uint8_t** data, const int* pitch)
-    {
-        auto hr = BaleGrainExports::Get().cpuApply(&params, output == AV_PIX_FMT_NV12 ? 1U : 2U,
-            data[0], pitch[0], data[1], pitch[1], 0);
-        if (hr == S_OK) return true;
-        if (!cpuLogged)
-        {
-            cpuLogged = true;
-            av_log(nullptr, AV_LOG_WARNING, "Bale film grain: CPU apply failed (hr=0x%08X); showing ungrained frame.\n", static_cast<unsigned>(hr));
-        }
-        // Caller must refill its owned output: a contained Rust panic need not roll back writes.
-        return false;
-    }
-
+    // The zero-copy stream fails with this HRESULT (no CPU or ungrained fallback): log once.
     void GpuFailed(HRESULT hr, bool creating)
     {
-        if (mode != 2) return;
-        mode = above1080p ? 0 : 1;
+        mode = 0;
         if (!gpuLogged)
         {
             gpuLogged = true;
-            if (above1080p)
-            {
-                if (creating) av_log(nullptr, AV_LOG_WARNING, "Bale film grain: GPU create failed (hr=0x%08X); showing ungrained frames (above 1080p).\n", static_cast<unsigned>(hr));
-                else av_log(nullptr, AV_LOG_WARNING, "Bale film grain: GPU apply failed (hr=0x%08X); showing ungrained frames (above 1080p).\n", static_cast<unsigned>(hr));
-            }
-            else
-            {
-                if (creating) av_log(nullptr, AV_LOG_WARNING, "Bale film grain: GPU create failed (hr=0x%08X); using CPU grain.\n", static_cast<unsigned>(hr));
-                else av_log(nullptr, AV_LOG_WARNING, "Bale film grain: GPU apply failed (hr=0x%08X); using CPU grain.\n", static_cast<unsigned>(hr));
-            }
-        }
-    }
-
-    void UploadDisabled(HRESULT hr)
-    {
-        if (mode != 2) return;
-        mode = above1080p ? 0 : 1;
-        if (!uploadLogged)
-        {
-            uploadLogged = true;
-            if (above1080p) av_log(nullptr, AV_LOG_WARNING, "Bale film grain: upload disabled (hr=0x%08X); showing ungrained frames (above 1080p).\n", static_cast<unsigned>(hr));
-            else av_log(nullptr, AV_LOG_WARNING, "Bale film grain: upload disabled (hr=0x%08X); using CPU grain.\n", static_cast<unsigned>(hr));
-        }
-    }
-
-    void NoUpload()
-    {
-        if (mode != 2) return;
-        mode = above1080p ? 0 : 1;
-        if (!missingUploadLogged)
-        {
-            missingUploadLogged = true;
-            if (above1080p) av_log(nullptr, AV_LOG_WARNING, "Bale film grain: upload unavailable; showing ungrained frames (above 1080p).\n");
-            else av_log(nullptr, AV_LOG_WARNING, "Bale film grain: upload unavailable; using CPU grain.\n");
+            av_log(nullptr, AV_LOG_WARNING, "Bale film grain: GPU %s failed (hr=0x%08X); failing the stream.\n",
+                creating ? "create" : "apply", static_cast<unsigned>(hr));
         }
     }
 
 private:
     bool invalidLogged = false, scalingLogged = false, formatLogged = false;
-    bool cpuLogged = false, gpuLogged = false, uploadLogged = false, missingUploadLogged = false;
+    bool gpuLogged = false;
 
     bool Invalid()
     {

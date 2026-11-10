@@ -251,7 +251,7 @@ namespace winrt::FFmpegInteropX::implementation
         std::shared_ptr<MediaSampleProvider> CreateVideoStream(AVStream* avStream, int index);
         std::shared_ptr<SubtitleProvider> CreateSubtitleSampleProvider(AVStream* avStream, int index);
         std::shared_ptr<MediaSampleProvider> CreateAudioSampleProvider(AVStream* avStream, AVCodecContext* avCodecCtx, int index);
-        std::shared_ptr<MediaSampleProvider> CreateVideoSampleProvider(AVStream* avStream, AVCodecContext* avCodecCtx, int index, int filmGrainMode, bool eightBitZeroCopy);
+        std::shared_ptr<MediaSampleProvider> CreateVideoSampleProvider(AVStream* avStream, AVCodecContext* avCodecCtx, int index, int filmGrainMode, bool eightBitZeroCopy, bool zeroCopyStream);
         HRESULT ParseOptions(PropertySet const& ffmpegOptions);
         void MediaStreamSourceClosed(MediaStreamSource const& sender, MediaStreamSourceClosedEventArgs const& args);
         void OnStarting(MediaStreamSource const& sender, MediaStreamSourceStartingEventArgs const& args);
@@ -342,16 +342,13 @@ namespace winrt::FFmpegInteropX::implementation
 
         // Bale tuning, read from FFmpegOptions keys starting with "bale_" (never passed to FFmpeg).
         int baleDecodeAheadFrames = 0;
-        int baleSwsThreads = 1;
         int baleDav1dMaxFrameDelay = 0;
         int baleDav1dExportFilmGrain = 0;
         int baleFilmGrainMode = 0;
+        // 0 = off (upstream CPU output); any nonzero value = the D3D12-writable upload texture.
         int baleD3d11Upload = 0;
-        // Debug fault injection: fail the GPU upload after this many uploaded frames (0 = off).
-        int baleD3d11UploadFaultFrames = 0;
-        // Debug: planar copy into staging plus a GPU NV12/P010 repack instead of swscale (0 = off).
-        int baleD3d11Repack = 0;
-        // 1 = libdav1d 10-bit pictures decode into bale_gpu zero-copy buffers (needs the D3D11 upload).
+        // 1 = software libdav1d decodes into bale_gpu zero-copy buffers (needs the D3D11 upload).
+        // Zero-copy only: a stream it cannot take is refused or fails (no CPU fallback).
         int baleZeroCopy = 0;
         int baleDecodeThreadPriority = 0;
         int baleDecoderUseMaxResolution = 0;
@@ -407,6 +404,12 @@ namespace winrt::FFmpegInteropX::implementation
         void InitializeUploadDevice(MediaStreamSource const& sender);
         void DisableUploadStreams(HRESULT hr);
         void CloseUploadDevice();
+        // Bale: true once the current video stream's zero-copy failure was raised (NotifyError).
+        bool baleFatalRaised = false; // Under mutex.
+        // Bale: set by CreateVideoStream when it refused the stream for zero-copy.
+        bool baleZeroCopyRefused = false;
+        bool RaiseBaleFatal(MediaStreamSource const& sender);
+        bool HasZeroCopyStream();
 
         uint64_t windowId;
         bool useHdr;

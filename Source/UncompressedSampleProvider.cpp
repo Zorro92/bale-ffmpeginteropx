@@ -63,6 +63,14 @@ HRESULT UncompressedSampleProvider::CreateNextSampleBuffer(IBuffer* pBuffer, int
         {
             hr = CreateBufferFromFrame(pBuffer, surface, avFrame, samplePts, sampleDuration);
 
+            if (hr == BaleFrameDropped)
+            {
+                // Bale: the frame was dropped without a sample; decode the next one.
+                av_frame_unref(avFrame);
+                hr = S_OK;
+                continue;
+            }
+
             if (SUCCEEDED(hr))
             {
                 // sample created. update m_nextFramePts in case pts or duration have changed
@@ -71,7 +79,7 @@ HRESULT UncompressedSampleProvider::CreateNextSampleBuffer(IBuffer* pBuffer, int
             }
         }
 
-        if (!SUCCEEDED(hr) && errorCount++ < m_config.General().SkipErrors())
+        if (!SUCCEEDED(hr) && SUCCEEDED(FatalError()) && errorCount++ < m_config.General().SkipErrors())
         {
             DebugMessage(L"Decode error.\n");
 
