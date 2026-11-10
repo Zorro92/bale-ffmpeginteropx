@@ -355,6 +355,10 @@ namespace winrt::FFmpegInteropX::implementation
         int baleDecoderMaxDpbCount = 0;
         // 1 = AC-3/E-AC-3 packets go undecoded to the system Dolby decoder (keeps E-AC-3 JOC/Atmos).
         int baleSystemDecoderDolby = 0;
+        // Bitmap subtitle stream (AVStream index) whose decoded rects go to bale_gpu's overlay
+        // bound to bale_subtitle_sink (a token); -1/0 = none, the upstream ImageCue path.
+        int baleSubtitleStream = -1;
+        int baleSubtitleSink = 0;
         bool TryParseBaleOption(std::string const& key, hstring const& value, HRESULT& hr);
         void SetBaleDecoderProperties(Windows::Media::MediaProperties::VideoEncodingProperties const& videoProperties);
 

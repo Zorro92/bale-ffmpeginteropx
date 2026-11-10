@@ -955,7 +955,21 @@ namespace winrt::FFmpegInteropX::implementation
                         }
                         else if ((avSubsCodecCtx->codec_descriptor->props & AV_CODEC_PROP_BITMAP_SUB) == AV_CODEC_PROP_BITMAP_SUB)
                         {
-                            avSubsStream = std::shared_ptr<SubtitleProvider>(new SubtitleProviderBitmap(m_pReader, avFormatCtx, avSubsCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index));
+                            // Bale: the chosen bitmap stream feeds bale_gpu's subtitle overlay instead of ImageCues.
+                            uint64_t sinkToken = 0;
+                            if (baleSubtitleSink > 0 && index == baleSubtitleStream && !config->IsExternalSubtitleParser)
+                            {
+                                if (BaleSubtitleSinkExports::Get().Available())
+                                {
+                                    sinkToken = (uint64_t)baleSubtitleSink;
+                                    av_log(nullptr, AV_LOG_INFO, "Bale subtitle sink: stream %d (%s)\n", index, avSubsCodec->name);
+                                }
+                                else
+                                {
+                                    av_log(nullptr, AV_LOG_WARNING, "Bale subtitle sink: bale_gpu.dll has no bitmap ABI 1; stream %d stays a cue track.\n", index);
+                                }
+                            }
+                            avSubsStream = std::shared_ptr<SubtitleProvider>(new SubtitleProviderBitmap(m_pReader, avFormatCtx, avSubsCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, sinkToken));
                         }
                         else
                         {
@@ -2502,6 +2516,8 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_decoder_use_max_resolution") { target = &baleDecoderUseMaxResolution; minimum = 0; maximum = 1; }
         else if (key == "bale_decoder_max_dpb_count") { target = &baleDecoderMaxDpbCount; minimum = 0; maximum = 16; }
         else if (key == "bale_system_decoder_dolby") { target = &baleSystemDecoderDolby; minimum = 0; maximum = 1; }
+        else if (key == "bale_subtitle_stream") { target = &baleSubtitleStream; minimum = 0; maximum = 65535; }
+        else if (key == "bale_subtitle_sink") { target = &baleSubtitleSink; minimum = 1; maximum = 999999999; }
         else
         {
             hr = E_INVALIDARG;
@@ -2509,7 +2525,7 @@ namespace winrt::FFmpegInteropX::implementation
         }
 
         auto text = StringUtils::PlatformStringToUtf8String(value);
-        if (text.empty() || text.size() > 3)
+        if (text.empty() || text.size() > 9)
         {
             hr = E_INVALIDARG;
             return true;

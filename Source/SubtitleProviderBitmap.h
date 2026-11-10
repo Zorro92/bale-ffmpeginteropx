@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SubtitleProvider.h"
+#include "BaleSubtitleSink.h"
 #include <winrt/FFmpegInteropX.h>
 
 using namespace winrt::Windows::Graphics::Imaging;
@@ -14,9 +15,31 @@ public:
         AVFormatContext* avFormatCtx,
         AVCodecContext* avCodecCtx,
         MediaSourceConfig const& config,
-        int index)
-        : SubtitleProvider(reader, avFormatCtx, avCodecCtx, config, index, TimedMetadataKind::ImageSubtitle)
+        int index,
+        uint64_t sinkToken = 0)
+        : SubtitleProvider(reader, avFormatCtx, avCodecCtx, config, index, TimedMetadataKind::ImageSubtitle),
+        baleSinkToken(sinkToken)
     {
+    }
+
+    // Bale: a sink stream decodes every packet and hands the rects to bale_gpu's overlay instead of
+    // creating ImageCues. Subtitle streams are never discarded, so this runs whatever the
+    // TimedMetadataTrack presentation mode is; the overlay owns timing (clears end the previous event).
+    virtual void QueuePacket(AVPacket* packet) override
+    {
+        if (!baleSinkToken)
+        {
+            SubtitleProvider::QueuePacket(packet);
+            return;
+        }
+        try
+        {
+            PushToBaleSink(packet);
+        }
+        catch (...)
+        {
+        }
+        av_packet_free(&packet);
     }
 
     virtual HRESULT Initialize() override
@@ -109,6 +132,11 @@ public:
     {
         SubtitleProvider::Flush(flushBuffers);
 
+        if (baleSinkToken && flushBuffers)
+        {
+            BaleSubtitleSinkExports::Get().flush(baleSinkToken);
+        }
+
         if (!m_config.as<implementation::MediaSourceConfig>()->IsExternalSubtitleParser && flushBuffers)
         {
             for (const auto& entry : map)
@@ -122,6 +150,65 @@ public:
     }
 
 private:
+
+    void PushToBaleSink(AVPacket* packet)
+    {
+        if (packet->pts == AV_NOPTS_VALUE)
+        {
+            return;
+        }
+
+        AVSubtitle subtitle{};
+        int gotSubtitle = 0;
+        if (avcodec_decode_subtitle2(m_pAvCodecCtx, &subtitle, &gotSubtitle, packet) < 0 || !gotSubtitle)
+        {
+            avsubtitle_free(&subtitle);
+            return;
+        }
+
+        constexpr unsigned int MaxRects = 64;
+        BaleSubBitmapRect rects[MaxRects];
+        int32_t count = 0;
+        for (unsigned int i = 0; i < subtitle.num_rects && count < (int32_t)MaxRects; i++)
+        {
+            auto rect = subtitle.rects[i];
+            if (!rect || rect->type != SUBTITLE_BITMAP || rect->w <= 0 || rect->h <= 0 ||
+                !rect->data[0] || !rect->data[1] || rect->nb_colors <= 0 || rect->linesize[0] < rect->w)
+            {
+                continue;
+            }
+            rects[count++] = BaleSubBitmapRect{ rect->x, rect->y, rect->w, rect->h, rect->linesize[0],
+                rect->nb_colors > 256 ? 256 : rect->nb_colors, rect->data[0], reinterpret_cast<const uint32_t*>(rect->data[1]) };
+        }
+
+        // Display times are relative to the packet pts. PGS sends UINT32_MAX (shown until the next
+        // display set, which may be a clear); DVB sends its page timeout; 0 falls back to the packet.
+        auto positionMs = ConvertPosition(packet->pts).count() / 10000;
+        BaleSubBitmapEvent event{};
+        event.start_ms = positionMs + subtitle.start_display_time;
+        if (subtitle.end_display_time != UINT32_MAX && subtitle.end_display_time > subtitle.start_display_time)
+        {
+            event.end_ms = positionMs + subtitle.end_display_time;
+        }
+        else if (subtitle.end_display_time == 0 && packet->duration > 0)
+        {
+            event.end_ms = event.start_ms + ConvertDuration(packet->duration).count() / 10000;
+        }
+        else
+        {
+            event.end_ms = -1;
+        }
+        event.canvas_w = m_pAvCodecCtx->width;
+        event.canvas_h = m_pAvCodecCtx->height;
+        event.video_w = videoWidth;
+        event.video_h = videoHeight;
+        event.rects = count > 0 ? rects : nullptr;
+        event.count = count;
+
+        // Copies synchronously; a negative result only means the overlay is gone or not bound yet.
+        BaleSubtitleSinkExports::Get().push(baleSinkToken, &event);
+        avsubtitle_free(&subtitle);
+    }
 
     void OnCueEntered(TimedMetadataTrack sender, MediaCueEventArgs args)
     {
@@ -319,6 +406,7 @@ private:
     }
 
 private:
+    uint64_t baleSinkToken = 0;
     int videoWidth = 0;
     int videoHeight = 0;
     double videoAspectRatio = 0.0;
