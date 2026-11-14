@@ -16,10 +16,10 @@ public:
     virtual winrt::Windows::Media::Core::IMediaStreamDescriptor CreateStreamDescriptor() override;
 
     // Enable before Initialize; HDR attributes follow the source's HDR policy.
-    void EnableColorAttributes(bool applyHdrColorInfo)
+    void EnableColorAttributes(bool enableHdrColorInfo)
     {
         applyColorAttributes = true;
-        this->applyHdrColorInfo = applyHdrColorInfo;
+        applyHdrColorInfo = enableHdrColorInfo;
     }
 
 private:
