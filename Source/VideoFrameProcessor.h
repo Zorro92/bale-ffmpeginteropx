@@ -28,10 +28,12 @@ struct VideoFrameColorInfo
     static VideoFrameColorInfo FromFrame(const AVFrame* frame, const AVCodecParameters* codecParameters)
     {
         VideoFrameColorInfo info;
-        info.transfer = static_cast<uint8_t>(frame->color_trc);
-        info.primaries = static_cast<uint8_t>(frame->color_primaries);
-        info.matrix = static_cast<uint8_t>(frame->colorspace);
-        info.range = static_cast<uint8_t>(frame->color_range);
+        // A decoded frame's colour fields come from the bitstream (e.g. HEVC VUI) and may be
+        // unspecified when only the container describes the colour; fall back to the stream values.
+        info.transfer = static_cast<uint8_t>(frame->color_trc != AVCOL_TRC_UNSPECIFIED ? frame->color_trc : codecParameters->color_trc);
+        info.primaries = static_cast<uint8_t>(frame->color_primaries != AVCOL_PRI_UNSPECIFIED ? frame->color_primaries : codecParameters->color_primaries);
+        info.matrix = static_cast<uint8_t>(frame->colorspace != AVCOL_SPC_UNSPECIFIED ? frame->colorspace : codecParameters->color_space);
+        info.range = static_cast<uint8_t>(frame->color_range != AVCOL_RANGE_UNSPECIFIED ? frame->color_range : codecParameters->color_range);
         info.chromaLocation = static_cast<uint8_t>(frame->chroma_location);
 
         const AVMasteringDisplayMetadata* mastering = nullptr;

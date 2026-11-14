@@ -154,7 +154,14 @@ public:
         frame.max_cll = colorInfo.maxCLL;
         frame.max_fall = colorInfo.maxFALL;
         auto hr = BaleToneMapExports::Get().apply(handle, context, input, inputSubresource, output, &frame);
-        return hr == S_OK ? S_OK : LogFailure(FAILED(hr) ? hr : E_UNEXPECTED, "apply failed");
+        if (hr == S_OK) return S_OK;
+        if (!failureLogged)
+        {
+            // What bale_gpu was given, to tell a rejected colour description from a device failure.
+            av_log(nullptr, AV_LOG_ERROR, "Bale tonemap: apply frame transfer=%d primaries=%d matrix=%d full_range=%d chroma=%d\n",
+                frame.transfer, frame.primaries, frame.matrix, frame.full_range, frame.chroma_location);
+        }
+        return LogFailure(FAILED(hr) ? hr : E_UNEXPECTED, "apply failed");
     }
 
     void NotifyError(HRESULT hr) noexcept override
