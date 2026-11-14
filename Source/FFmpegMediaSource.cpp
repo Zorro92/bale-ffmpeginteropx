@@ -17,7 +17,6 @@
 #include "PlatformInfo.h"
 #include "BaleThreadBoost.h"
 #include "BaleToneMap.h"
-#include <cwchar>
 // Bale: Media Foundation error codes for streams zero-copy refuses at open.
 #include <mferror.h>
 
@@ -2450,11 +2449,10 @@ namespace winrt::FFmpegInteropX::implementation
         }
         else if (compressed)
         {
-            wchar_t message[192];
-            swprintf_s(message, L"Bale compressed colour info: transfer=%d primaries=%d matrix=%d range=%d hdr=%d\n",
+            // av_log, like the other Bale lines: the app captures only FFmpeg log lines starting with "Bale ".
+            av_log(nullptr, AV_LOG_INFO, "Bale compressed colour info: transfer=%d primaries=%d matrix=%d range=%d hdr=%d\n",
                 static_cast<int>(avStream->codecpar->color_trc), static_cast<int>(avStream->codecpar->color_primaries),
                 static_cast<int>(avStream->codecpar->color_space), static_cast<int>(avStream->codecpar->color_range), useHdr ? 1 : 0);
-            DebugMessage(message);
         }
 
         return videoSampleProvider;
