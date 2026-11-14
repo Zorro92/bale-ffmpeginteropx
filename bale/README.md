@@ -37,7 +37,7 @@ must be an ancestor of HEAD, and the checkout must be clean (including staged an
 untracked files). The diff from that base to HEAD may touch only:
 
 - `.cpp` and `.h` files under `Source/`, including nested directories.
-- Fork-owned `bale/**`, `.github/workflows/bale-*.yml`, `NOTICE` and `README.md`.
+- Fork-owned `bale/**`, `.github/workflows/bale-*.yml`, `AGENTS.md`, `NOTICE` and `README.md`.
 
 IDL, project files, `packages.config`, `Build/` and all other upstream files are
 protected. Renames check both the old and new paths. API/ABI changes need a

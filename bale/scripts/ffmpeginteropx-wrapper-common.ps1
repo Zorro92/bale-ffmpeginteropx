@@ -64,7 +64,7 @@ function Assert-WrapperSource {
     foreach ($file in $changes) {
         if ($file -cnotmatch '^Source/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.(cpp|h)$' -and
             $file -cnotmatch '^bale/.+$' -and $file -cnotmatch '^\.github/workflows/bale-[^/]+\.yml$' -and
-            $file -cnotmatch '^(NOTICE|README\.md)$') {
+            $file -cnotmatch '^(AGENTS\.md|NOTICE|README\.md)$') {
             throw "Wrapper source guard forbids changes outside Source/**/*.cpp|h and fork-owned paths: $file"
         }
     }

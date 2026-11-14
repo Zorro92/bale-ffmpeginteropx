@@ -15,6 +15,7 @@ Modifications by the Bale project, starting from upstream commit
              Source/BaleThreadBoost.h
              bale/ (fork-owned build scripts, pins and documentation)
              .github/workflows/bale-wrapper.yml
+             AGENTS.md (guide for coding agents)
   Modified:  Source/FFmpegMediaSource.cpp, Source/FFmpegMediaSource.h
              Source/FFmpegReader.cpp, Source/FFmpegReader.h
              Source/MediaSampleProvider.cpp, Source/MediaSampleProvider.h

@@ -40,7 +40,7 @@ try {
 
     # A committed .cpp/.h change (including nested Source paths) and fork-owned files pass.
     foreach ($name in @('Source/test.cpp', 'Source/nested/test.h', 'bale/ffmpeginteropx-wrapper.json',
-        'bale/scripts/test.ps1', '.github/workflows/bale-wrapper.yml', 'README.md', 'NOTICE')) {
+        'bale/scripts/test.ps1', '.github/workflows/bale-wrapper.yml', 'README.md', 'NOTICE', 'AGENTS.md')) {
         $path = Join-Path $repo $name
         New-Item -ItemType Directory -Force (Split-Path $path -Parent) | Out-Null
         'allowed fork change' | Set-Content $path
