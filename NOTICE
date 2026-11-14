@@ -16,6 +16,7 @@ Modifications by the Bale project, starting from upstream commit
              Source/BaleToneMap.h
              Source/bale_tonemap.h (copied from Bale)
              Source/VideoFrameProcessor.h
+             Source/VideoColorAttributes.h
              bale/ (fork-owned build scripts, pins and documentation)
              .github/workflows/bale-wrapper.yml
              AGENTS.md (guide for coding agents)
