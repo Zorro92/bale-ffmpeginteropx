@@ -98,7 +98,7 @@ try {
         'Repack changes: x64 DLL replaced; x64 PDB added (absent in the original); package version/core-properties updated;',
         'SOURCES.txt and content-type declarations added; invalidated NuGet repository signature removed.',
         'Built/original winmd public type-name sets must match; this is not a complete ABI/member comparison.',
-        'Source guard: upstream base must be an ancestor of HEAD; changes only in Source/**/*.cpp and Source/**/*.h or fork-owned bale/**, .github/workflows/bale-*.yml, NOTICE and README.md; clean checkout required.',
+        'Source guard: upstream base must be an ancestor of HEAD; changes only in Source/**/*.cpp and Source/**/*.h or fork-owned bale/**, .github/workflows/bale-*.yml, AGENTS.md, NOTICE and README.md; clean checkout required.',
         'This is a pinned build recipe, not a claim of bit-identical output across runner/compiler revisions.'
     )
     $sourcesPath = Join-Path $output 'SOURCES.txt'
