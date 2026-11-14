@@ -112,6 +112,7 @@ Measured through Bale's debug server; full notes are in Bale's `docs/player-plan
   0/4/61/177/223, 0.60 (untone-mapped 0/6/69/128/154, 0.40); 1080p HDR10+ base layer
   0/9/32/147/164, 0.62 vs 0/9/32/149/166, 0.61. Hable (`2`) is darker (max 198). bale_gpu's
   self-test passes on the console. Other sources (e.g. BT.709 SDR) log `request ignored` and play unchanged.
+- HLG (frame transfer 18 on BT.2020) through the same stage looks correct on the console (bale.29).
 - GPU cost of the stage (slice copy included): about 20 points of 3D-engine use, about 8 ms per
   4K24 frame (HEVC and VP9 alike); CPU unchanged.
 - Stream side data (c3a9adb, 2c08f7c): MaxCLL/MaxFALL 4057/321 and mastering 1000/0.0001 nits
