@@ -69,7 +69,7 @@ public:
                 std::lock_guard lock(samplesMutex);
                 if (device && deviceContext)
                 {
-                    texturePool = std::unique_ptr<TexturePool>(new TexturePool(device, 5));
+                    texturePool = std::make_shared<TexturePool>(device, 5);
                 }
                 else
                 {
@@ -132,12 +132,26 @@ public:
         {
             std::lock_guard lock(samplesMutex);
 
+            // Capture the texture while the sample is open. MF may close its surface before Processed.
+            winrt::com_ptr<IDXGISurface> surface;
+            auto hr = DirectXInteropHelper::GetDXGISurface(sample.Direct3D11Surface(), surface);
+            if (FAILED(hr)) return hr;
+            auto texture = surface.as<ID3D11Texture2D>();
+
             // AddRef the sample on native interface to prevent it from being collected before Processed is called
             auto sampleNative = sample.as<winrt::Windows::Foundation::IUnknown>();
 
             // Attach Processed event and store in samples list
             auto token = sample.Processed(weak_handler(this, &D3D11VideoSampleProvider::OnProcessed));
-            trackedSamples.insert_or_assign(sampleNative, token);
+            try
+            {
+                trackedSamples.emplace(sampleNative, TrackedSample{ token, texture, texturePool });
+            }
+            catch (...)
+            {
+                DetachProcessed(sampleNative, token);
+                throw;
+            }
         }
 
         return UncompressedVideoSampleProvider::SetSampleProperties(sample);
@@ -145,33 +159,51 @@ public:
 
     void OnProcessed(MediaStreamSample const& sender, winrt::Windows::Foundation::IInspectable const&)
     {
-        std::lock_guard lock(samplesMutex);
-
-        auto sampleNative = sender.as<winrt::Windows::Foundation::IUnknown>();
-        auto mapEntry = trackedSamples.find(sampleNative);
-        if (mapEntry == trackedSamples.end())
+        try
         {
-            // sample was already released during Flush() or destructor
+            std::lock_guard lock(samplesMutex);
+            auto sampleNative = sender.as<winrt::Windows::Foundation::IUnknown>();
+            auto entry = trackedSamples.find(sampleNative);
+            if (entry == trackedSamples.end()) return; // Already released by Flush or device change.
+
+            auto tracked = std::move(entry->second);
+            trackedSamples.erase(entry);
+            DetachProcessed(sampleNative, tracked.token);
+            ReturnTextureToPool(tracked);
         }
-        else
+        catch (...)
         {
-            // Release the sample's native interface and return texture to pool
-            sender.Processed(mapEntry->second);
-            trackedSamples.erase(mapEntry);
-
-            ReturnTextureToPool(sender);
+            // Never throw out of a Media Foundation event handler.
+            DebugMessage(L"Failed to recycle processed video texture.\n");
         }
     }
 
-    void ReturnTextureToPool(MediaStreamSample const& sample)
+    struct TrackedSample
     {
-        winrt::com_ptr<IDXGISurface> surface;
-        HRESULT hr = DirectXInteropHelper::GetDXGISurface(sample.Direct3D11Surface(), surface);
+        winrt::event_token token;
+        winrt::com_ptr<ID3D11Texture2D> texture;
+        std::weak_ptr<TexturePool> pool;
+    };
 
-        if (SUCCEEDED(hr))
+    void DetachProcessed(winrt::Windows::Foundation::IUnknown const& sample, winrt::event_token token) noexcept
+    {
+        try
         {
-            auto texture = surface.as<ID3D11Texture2D>();
-            texturePool->ReturnTexture(texture);
+            sample.as<MediaStreamSample>().Processed(token);
+        }
+        catch (...)
+        {
+            DebugMessage(L"Failed to detach processed video sample.\n");
+        }
+    }
+
+    void ReturnTextureToPool(TrackedSample const& tracked)
+    {
+        // A replacement pool must never receive textures from the previous device generation.
+        auto pool = tracked.pool.lock();
+        if (pool && pool == texturePool)
+        {
+            pool->ReturnTexture(tracked.texture);
         }
     }
 
@@ -180,13 +212,8 @@ public:
         std::lock_guard lock(samplesMutex);
         for (auto& entry : trackedSamples)
         {
-            // detach Processed event and release native interface
-            auto sampleNative = entry.first;
-            auto sample = sampleNative.as<MediaStreamSample>();
-
-            sample.Processed(entry.second);
+            DetachProcessed(entry.first, entry.second.token);
         }
-
         trackedSamples.clear();
     }
 
@@ -195,16 +222,9 @@ public:
         std::lock_guard lock(samplesMutex);
         for (auto& entry : trackedSamples)
         {
-            // detach Processed event and release native interface
-            auto sampleNative = entry.first;
-            auto sample = sampleNative.as<MediaStreamSample>();
-
-            sample.Processed(entry.second);
-
-            // return texture to pool
-            ReturnTextureToPool(sample);
+            DetachProcessed(entry.first, entry.second.token);
+            ReturnTextureToPool(entry.second);
         }
-
         trackedSamples.clear();
     }
 
@@ -439,8 +459,8 @@ public:
         return hr;
     }
 
-    std::unique_ptr<TexturePool> texturePool;
-    std::map<winrt::Windows::Foundation::IUnknown, winrt::event_token> trackedSamples;
+    std::shared_ptr<TexturePool> texturePool;
+    std::map<winrt::Windows::Foundation::IUnknown, TrackedSample> trackedSamples;
     std::mutex samplesMutex;
 };
 
