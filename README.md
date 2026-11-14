@@ -1,3 +1,22 @@
+# bale-ffmpeginteropx
+
+**This is Bale's fork of [FFmpegInteropX](https://github.com/ffmpeginteropx/FFmpegInteropX), built
+for [Bale](https://github.com/Zorro92/bale-for-silo), an Xbox client for Silo.** It is not a
+general-purpose replacement for FFmpegInteropX and is not affiliated with the FFmpegInteropX project.
+Use the [upstream packages](https://www.nuget.org/packages/FFmpegInteropX.UWP.Lib/) unless you are
+building Bale.
+
+- Changes are opt-in `bale_*` keys in `MediaSourceConfig.FFmpegOptions`; the public WinRT API (IDL,
+  winmd) is unchanged. Several of them need Bale's `bale_gpu.dll` and its patched native FFmpeg build.
+- `main` is upstream plus Bale's commits; upstream `master` is merged from time to time.
+- Builds are published as GitHub releases of this repository only (package
+  `FFmpegInteropX.UWP.Lib`, version `2.1.0-bale.N`), never on nuget.org.
+- Licensed under Apache-2.0 like upstream; see [NOTICE](NOTICE) for the modified files.
+
+The upstream README follows.
+
+---
+
 # FFmpegInteropX library for Windows
 
 #### This project is licensed under the [Apache 2.0 License](http://www.apache.org/licenses/LICENSE-2.0)

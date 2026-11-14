@@ -1,0 +1,23 @@
+bale-ffmpeginteropx
+Copyright the FFmpegInteropX contributors (https://github.com/ffmpeginteropx/FFmpegInteropX),
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This is a modified version of FFmpegInteropX, maintained for Bale
+(https://github.com/Zorro92/bale-for-silo), an Xbox client for Silo. It is not
+affiliated with or endorsed by the FFmpegInteropX project.
+
+Modifications by the Bale project, starting from upstream commit
+88428c66e106852338b48554a4a00c9e48da588f (see the git history for details):
+
+  Added:     Source/BaleD3D11Upload.h
+             Source/BaleFilmGrain.h
+             Source/BaleSubtitleSink.h
+             Source/BaleThreadBoost.h
+  Modified:  Source/FFmpegMediaSource.cpp, Source/FFmpegMediaSource.h
+             Source/FFmpegReader.cpp, Source/FFmpegReader.h
+             Source/MediaSampleProvider.cpp, Source/MediaSampleProvider.h
+             Source/SubtitleProviderBitmap.h
+             Source/TexturePool.h
+             Source/UncompressedSampleProvider.cpp, Source/UncompressedSampleProvider.h
+             Source/UncompressedVideoSampleProvider.cpp, Source/UncompressedVideoSampleProvider.h
+             README.md (this fork's section), NOTICE (this file)
