@@ -64,6 +64,38 @@ not console-confirmed. No console testing was performed for these changes.
 Runtime shader correctness/performance and compatibility with the final ABI
 header still require review and console validation.
 
+## Compressed video colour option
+
+`MediaSourceConfig.FFmpegOptions["bale_compressed_color_info"]` accepts decimal
+strings: `"0"` = off (default), `"1"` = on. The wrapper consumes the key; it is
+never passed to FFmpeg. When enabled, video handed to a Windows system decoder
+uses the same codecpar and coded side-data mapping as FFmpeg-decoded video:
+primaries, transfer function, YUV matrix, nominal range, MaxCLL/MaxFALL and
+mastering display luminance/primaries. HDR primaries, transfer functions and
+static metadata follow the same `HdrSupport`/`useHdr` policy as the uncompressed
+providers; non-HDR values, matrix and range use the existing mapping regardless
+of that policy. Audio is unchanged. Unset/zero leaves compressed media types
+unchanged. No new native FFmpeg build is needed.
+
+VP9 needs container colour information because its bitstream does not identify
+the PQ transfer function and BT.2020 primaries or carry HDR10 static metadata.
+Without these media-type attributes, the system decoder cannot infer that a
+VP9 profile 2 stream is HDR10. HEVC also gains the container's static metadata,
+in addition to any colour/HDR information carried in-band. The option covers
+all compressed video providers, including the H.264/HEVC NAL subclasses.
+
+Debug builds emit one fixed diagnostic per successfully initialized opted-in
+system video stream: `Bale compressed colour info: transfer=%d primaries=%d matrix=%d range=%d hdr=%d`.
+The colour fields are AV code points; `hdr` is the source's `useHdr` policy flag,
+not a claim that HDR metadata was present or that the display activated HDR.
+
+Evidence/limits: the reported Xbox Series X VP9 profile 2 HDR10 media type had
+none of these colour/HDR attributes. The available test display is SDR, so the
+HDR-TV effect remains unverified. This option stays off by default pending the
+owner's HDR-TV test. No console testing was performed for this change. A generic,
+default-on form that propagates container colour information while retaining
+the HDR policy would be the natural upstream shape, subject to review and testing.
+
 ## Cut a release
 
 Choose a fresh version (the first fork build is `2.1.0-bale.23`):

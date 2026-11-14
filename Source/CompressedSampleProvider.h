@@ -15,7 +15,16 @@ public:
     virtual HRESULT CreateBufferFromPacket(AVPacket* avPacket, winrt::Windows::Storage::Streams::IBuffer* pBuffer);
     virtual winrt::Windows::Media::Core::IMediaStreamDescriptor CreateStreamDescriptor() override;
 
+    // Enable before Initialize; HDR attributes follow the source's HDR policy.
+    void EnableColorAttributes(bool applyHdrColorInfo)
+    {
+        applyColorAttributes = true;
+        this->applyHdrColorInfo = applyHdrColorInfo;
+    }
+
 private:
     winrt::Windows::Media::MediaProperties::VideoEncodingProperties videoEncodingProperties = { nullptr };
     winrt::Windows::Media::MediaProperties::AudioEncodingProperties audioEncodingProperties = { nullptr };
+    bool applyColorAttributes = false;
+    bool applyHdrColorInfo = false;
 };

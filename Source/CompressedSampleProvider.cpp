@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "CompressedSampleProvider.h"
 #include "NativeBufferFactory.h"
+#include "VideoColorAttributes.h"
 
 using namespace winrt::FFmpegInteropX;
 using namespace winrt::Windows::Media::Core;
@@ -93,6 +94,10 @@ IMediaStreamDescriptor CompressedSampleProvider::CreateStreamDescriptor()
     if (videoEncodingProperties != nullptr)
     {
         SetCommonVideoEncodingProperties(videoEncodingProperties, true);
+        if (applyColorAttributes)
+        {
+            VideoColorAttributes::Apply(m_pAvStream->codecpar, applyHdrColorInfo, videoEncodingProperties.Properties());
+        }
         mediaStreamDescriptor = VideoStreamDescriptor(videoEncodingProperties);
     }
     else

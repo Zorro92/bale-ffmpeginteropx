@@ -17,6 +17,7 @@
 #include "PlatformInfo.h"
 #include "BaleThreadBoost.h"
 #include "BaleToneMap.h"
+#include <cwchar>
 // Bale: Media Foundation error codes for streams zero-copy refuses at open.
 #include <mferror.h>
 
@@ -2432,11 +2433,28 @@ namespace winrt::FFmpegInteropX::implementation
         {
             BaleToneMap::LogIneligible();
         }
+        std::shared_ptr<CompressedSampleProvider> compressed;
+        if (baleCompressedColorInfo > 0)
+        {
+            compressed = std::dynamic_pointer_cast<CompressedSampleProvider>(videoSampleProvider);
+            if (compressed)
+            {
+                compressed->EnableColorAttributes(useHdr);
+            }
+        }
         auto hr = videoSampleProvider->Initialize();
 
         if (FAILED(hr))
         {
             videoSampleProvider = nullptr;
+        }
+        else if (compressed)
+        {
+            wchar_t message[192];
+            swprintf_s(message, L"Bale compressed colour info: transfer=%d primaries=%d matrix=%d range=%d hdr=%d\n",
+                static_cast<int>(avStream->codecpar->color_trc), static_cast<int>(avStream->codecpar->color_primaries),
+                static_cast<int>(avStream->codecpar->color_space), static_cast<int>(avStream->codecpar->color_range), useHdr ? 1 : 0);
+            DebugMessage(message);
         }
 
         return videoSampleProvider;
@@ -2520,6 +2538,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_decode_thread_priority") { target = &baleDecodeThreadPriority; minimum = 0; maximum = 2; }
         else if (key == "bale_decoder_use_max_resolution") { target = &baleDecoderUseMaxResolution; minimum = 0; maximum = 1; }
         else if (key == "bale_decoder_max_dpb_count") { target = &baleDecoderMaxDpbCount; minimum = 0; maximum = 16; }
+        else if (key == "bale_compressed_color_info") { target = &baleCompressedColorInfo; minimum = 0; maximum = 1; }
         else if (key == "bale_system_decoder_dolby") { target = &baleSystemDecoderDolby; minimum = 0; maximum = 1; }
         else if (key == "bale_subtitle_stream") { target = &baleSubtitleStream; minimum = 0; maximum = 65535; }
         else if (key == "bale_subtitle_sink") { target = &baleSubtitleSink; minimum = 1; maximum = 999999999; }
