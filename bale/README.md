@@ -20,9 +20,10 @@ result, build log and corresponding source archive.
 `"0"` = off (default), `"1"` = BT.2390 EETF, `"2"` = Hable. The wrapper consumes
 this key; it is never passed to FFmpeg. It applies only when provider selection
 chooses `D3D11VideoSampleProvider` and the source is 10-bit with either codecpar
-transfer SMPTE 2084 (PQ, tone mapped), or an SDR transfer (BT.709, SMPTE 170M,
-BT.2020 10/12-bit) on BT.2020 primaries and the BT.2020 non-constant-luminance
-matrix (gamut conversion to BT.709 only; Windows otherwise shows such video as if
+transfer SMPTE 2084 (PQ, tone mapped), or HLG (ARIB STD-B67) or an SDR transfer
+(BT.709, SMPTE 170M, BT.2020 10/12-bit) on BT.2020 primaries and the BT.2020
+non-constant-luminance matrix (HLG converted to SDR; SDR gets a gamut conversion to
+BT.709 only; Windows otherwise shows such video as if
 it were BT.709, desaturated). Other providers/formats log one ignored-request
 diagnostic and keep upstream behaviour. Unset/zero does not load the tone-map ABI or process frames.
 
