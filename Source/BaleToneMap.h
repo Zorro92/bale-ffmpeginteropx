@@ -70,17 +70,28 @@ public:
 
     static void LogIneligible()
     {
-        av_log(nullptr, AV_LOG_INFO, "Bale tonemap: request ignored; not a D3D11 10-bit PQ stream.\n");
+        av_log(nullptr, AV_LOG_INFO, "Bale tonemap: request ignored; not a D3D11 10-bit PQ or BT.2020 SDR stream.\n");
     }
 
     // Called only for a stream that will use D3D11VideoSampleProvider, before its descriptor exists.
+    // PQ (HDR10) is tone mapped. 10-bit SDR on BT.2020 primaries/matrix gets only the gamut
+    // conversion to BT.709: Windows shows it as BT.709 otherwise (desaturated). The shader reads
+    // the transfer per frame, so both share one stage and one SDR BT.709 output.
+    static bool IsSupportedSource(const AVCodecParameters* parameters)
+    {
+        if (parameters->color_trc == AVCOL_TRC_SMPTEST2084) return true;
+        bool sdrTransfer = parameters->color_trc == AVCOL_TRC_BT709 || parameters->color_trc == AVCOL_TRC_SMPTE170M ||
+            parameters->color_trc == AVCOL_TRC_BT2020_10 || parameters->color_trc == AVCOL_TRC_BT2020_12;
+        return sdrTransfer && parameters->color_primaries == AVCOL_PRI_BT2020 && parameters->color_space == AVCOL_SPC_BT2020_NCL;
+    }
+
     static std::unique_ptr<VideoFrameProcessor> Create(int curve, const AVCodecParameters* parameters)
     {
         if (curve == 0) return nullptr;
         auto description = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(parameters->format));
         bool tenBit = description && description->nb_components > 0
             ? description->comp[0].depth == 10 : parameters->bits_per_raw_sample == 10;
-        if (!tenBit || parameters->color_trc != AVCOL_TRC_SMPTEST2084)
+        if (!tenBit || !IsSupportedSource(parameters))
         {
             LogIneligible();
             return nullptr;

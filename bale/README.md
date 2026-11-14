@@ -19,9 +19,12 @@ result, build log and corresponding source archive.
 `MediaSourceConfig.FFmpegOptions["bale_tonemap"]` accepts decimal strings:
 `"0"` = off (default), `"1"` = BT.2390 EETF, `"2"` = Hable. The wrapper consumes
 this key; it is never passed to FFmpeg. It applies only when provider selection
-chooses `D3D11VideoSampleProvider` and the source is 10-bit with codecpar transfer
-SMPTE 2084 (PQ). Other providers/formats log one ignored-request diagnostic and
-keep upstream behaviour. Unset/zero does not load the tone-map ABI or process frames.
+chooses `D3D11VideoSampleProvider` and the source is 10-bit with either codecpar
+transfer SMPTE 2084 (PQ, tone mapped), or an SDR transfer (BT.709, SMPTE 170M,
+BT.2020 10/12-bit) on BT.2020 primaries and the BT.2020 non-constant-luminance
+matrix (gamut conversion to BT.709 only; Windows otherwise shows such video as if
+it were BT.709, desaturated). Other providers/formats log one ignored-request
+diagnostic and keep upstream behaviour. Unset/zero does not load the tone-map ABI or process frames.
 
 Active output is fixed-size NV12 with BT.709 transfer, primaries and matrix,
 limited range (16–235), and no stream/sample HDR mastering or content-light
@@ -107,7 +110,7 @@ Measured through Bale's debug server; full notes are in Bale's `docs/player-plan
   luma min/p1/p50/p99/max and saturation: 1080p HDR10 HEVC 0/4/62/169/218, 0.62 vs server
   0/4/61/177/223, 0.60 (untone-mapped 0/6/69/128/154, 0.40); 1080p HDR10+ base layer
   0/9/32/147/164, 0.62 vs 0/9/32/149/166, 0.61. Hable (`2`) is darker (max 198). bale_gpu's
-  self-test passes on the console. Non-PQ sources log `request ignored` and play unchanged.
+  self-test passes on the console. Other sources (e.g. BT.709 SDR) log `request ignored` and play unchanged.
 - GPU cost of the stage (slice copy included): about 20 points of 3D-engine use, about 8 ms per
   4K24 frame (HEVC and VP9 alike); CPU unchanged.
 - Stream side data (c3a9adb, 2c08f7c): MaxCLL/MaxFALL 4057/321 and mastering 1000/0.0001 nits
