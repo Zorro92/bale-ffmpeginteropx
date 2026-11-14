@@ -12,6 +12,7 @@ building Bale.
 - Builds are published as GitHub releases of this repository only (package
   `FFmpegInteropX.UWP.Lib`, version `2.1.0-bale.N`), never on nuget.org.
 - Licensed under Apache-2.0 like upstream; see [NOTICE](NOTICE) for the modified files.
+- Fork CI, source guard and release instructions: [bale/README.md](bale/README.md).
 
 The upstream README follows.
 
