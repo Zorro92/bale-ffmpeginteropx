@@ -33,9 +33,11 @@ Both curves use source peak 1000 nits, target white 100 nits, desaturation 0;
 these defaults match Silo's `tonemapx bt2390 peak=100` setup.
 
 The optional shader is loaded from the app's packaged `bale_gpu.dll`, tone-map
-ABI 1. `Source/BaleToneMap.h` contains a marked mirror of
-`bale-gpu include/bale_tonemap.h`; replace the block verbatim when that header
-lands (configuration/frame sizes are asserted as 40/72 bytes). No new native
+ABI 1. `Source/bale_tonemap.h` is a verbatim copy of Bale's
+`native/bale-gpu/include/bale_tonemap.h` (Bale owns the ABI; copy it again,
+unchanged, whenever Bale changes it). `Source/BaleToneMap.h` includes it and
+asserts the configuration/frame sizes (40/72 bytes). A self-test mismatch at
+create returns `BALE_TONEMAP_E_SELFTEST` (0x8004BA01) and is logged as such. No new native
 FFmpeg build is needed. The fork creates an NV12 RTV/SRV output pool; bale_gpu
 accepts decoder-bound P010 arrays and copies an input slice internally if needed.
 

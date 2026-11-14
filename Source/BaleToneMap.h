@@ -7,31 +7,9 @@ extern "C"
 #include <libavutil/pixdesc.h>
 }
 
-// BEGIN mirrored from bale-gpu include/bale_tonemap.h ABI 1; replace verbatim when that header lands
-extern "C"
-{
-uint32_t bale_tonemap_abi_version(void);
-typedef struct BaleToneMapConfig {
-    uint32_t width, height;
-    uint32_t curve;
-    float source_peak_nits;
-    float target_white_nits;
-    float desat;
-    uint32_t reserved[4];
-} BaleToneMapConfig;
-typedef struct BaleToneMapFrameInfo {
-    uint8_t transfer, primaries, matrix, full_range, chroma_location;
-    uint8_t has_mastering, has_content_light, reserved0;
-    float mastering_primaries[3][2], mastering_white[2];
-    float mastering_min_nits, mastering_max_nits;
-    uint32_t max_cll, max_fall;
-    uint32_t reserved[4];
-} BaleToneMapFrameInfo;
-HRESULT bale_tonemap_create(ID3D11Device* device, const BaleToneMapConfig* config, void** handle);
-HRESULT bale_tonemap_apply(void* handle, ID3D11DeviceContext* context, ID3D11Texture2D* input, uint32_t input_subresource, ID3D11Texture2D* output, const BaleToneMapFrameInfo* frame);
-void bale_tonemap_destroy(void* handle);
-}
-// END ABI mirror
+// Bale's tone-map ABI 1, copied verbatim from bale-for-silo native/bale-gpu/include/bale_tonemap.h
+// (commit f778498). Keep it after the Windows headers (pch.h): it defines HRESULT only if they didn't.
+#include "bale_tonemap.h"
 static_assert(sizeof(BaleToneMapConfig) == 40, "BaleToneMapConfig must match ABI 1");
 static_assert(sizeof(BaleToneMapFrameInfo) == 72, "BaleToneMapFrameInfo must match ABI 1");
 static_assert(offsetof(BaleToneMapFrameInfo, mastering_primaries) == 8);
@@ -129,7 +107,8 @@ public:
         if (hr != S_OK || !handle)
         {
             Destroy();
-            return LogFailure(FAILED(hr) ? hr : E_UNEXPECTED, "create or self-test failed");
+            return LogFailure(FAILED(hr) ? hr : E_UNEXPECTED,
+                hr == BALE_TONEMAP_E_SELFTEST ? "self-test did not match the CPU reference" : "create failed");
         }
         if (!activeLogged)
         {

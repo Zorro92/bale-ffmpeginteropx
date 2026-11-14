@@ -14,6 +14,7 @@ Modifications by the Bale project, starting from upstream commit
              Source/BaleSubtitleSink.h
              Source/BaleThreadBoost.h
              Source/BaleToneMap.h
+             Source/bale_tonemap.h (copied from Bale)
              Source/VideoFrameProcessor.h
              bale/ (fork-owned build scripts, pins and documentation)
              .github/workflows/bale-wrapper.yml
