@@ -22,6 +22,7 @@
 #include <mfapi.h>
 #include <d3d10.h>
 #include <unordered_set>
+#include <cmath>
 #include "VideoFilterFactory.h"
 
 extern "C"
@@ -416,8 +417,8 @@ IMediaStreamDescriptor UncompressedVideoSampleProvider::CreateStreamDescriptor()
         if (masteringDisplayMetadata->has_luminance)
         {
             constexpr UINT32 MASTERING_DISP_LUMINANCE_SCALE{ 10000 };
-            properties.Insert(MF_MT_MIN_MASTERING_LUMINANCE, PropertyValue::CreateUInt32(static_cast<UINT32>(MASTERING_DISP_LUMINANCE_SCALE * av_q2d(masteringDisplayMetadata->min_luminance))));
-            properties.Insert(MF_MT_MAX_MASTERING_LUMINANCE, PropertyValue::CreateUInt32(static_cast<UINT32>(av_q2d(masteringDisplayMetadata->max_luminance))));
+            properties.Insert(MF_MT_MIN_MASTERING_LUMINANCE, PropertyValue::CreateUInt32(static_cast<UINT32>(std::lround(MASTERING_DISP_LUMINANCE_SCALE * av_q2d(masteringDisplayMetadata->min_luminance)))));
+            properties.Insert(MF_MT_MAX_MASTERING_LUMINANCE, PropertyValue::CreateUInt32(static_cast<UINT32>(std::lround(av_q2d(masteringDisplayMetadata->max_luminance)))));
         }
 
         if (masteringDisplayMetadata->has_primaries)
@@ -787,8 +788,8 @@ void UncompressedVideoSampleProvider::ReadFrameProperties(AVFrame* avFrame, int6
         if (masteringDisplayMetadata->has_luminance)
         {
             constexpr UINT32 MASTERING_DISP_LUMINANCE_SCALE{ 10000 };
-            minLuminance = PropertyValue::CreateUInt32(static_cast<UINT32>(MASTERING_DISP_LUMINANCE_SCALE * av_q2d(masteringDisplayMetadata->min_luminance)));
-            maxLuminance = PropertyValue::CreateUInt32(static_cast<UINT32>(av_q2d(masteringDisplayMetadata->max_luminance)));
+            minLuminance = PropertyValue::CreateUInt32(static_cast<UINT32>(std::lround(MASTERING_DISP_LUMINANCE_SCALE * av_q2d(masteringDisplayMetadata->min_luminance))));
+            maxLuminance = PropertyValue::CreateUInt32(static_cast<UINT32>(std::lround(av_q2d(masteringDisplayMetadata->max_luminance))));
         }
         else
         {
