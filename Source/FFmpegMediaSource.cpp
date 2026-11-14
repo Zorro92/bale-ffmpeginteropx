@@ -16,6 +16,7 @@
 #include "FFmpegReader.h"
 #include "PlatformInfo.h"
 #include "BaleThreadBoost.h"
+#include "BaleToneMap.h"
 // Bale: Media Foundation error codes for streams zero-copy refuses at open.
 #include <mferror.h>
 
@@ -2309,8 +2310,6 @@ namespace winrt::FFmpegInteropX::implementation
 
     std::shared_ptr<MediaSampleProvider> FFmpegMediaSource::CreateVideoSampleProvider(AVStream* avStream, AVCodecContext* avVideoCodecCtx, int index, int filmGrainMode, bool eightBitZeroCopy, bool zeroCopyStream)
     {
-        UNREFERENCED_PARAMETER(avStream);
-
         std::shared_ptr<MediaSampleProvider> videoSampleProvider = nullptr;
         winrt::FFmpegInteropX::HardwareDecoderStatus hardwareDecoderStatus = HardwareDecoderStatus::Unknown;
 
@@ -2408,7 +2407,8 @@ namespace winrt::FFmpegInteropX::implementation
         else if (avVideoCodecCtx->hw_device_ctx)
         {
             hardwareDecoderStatus = HardwareDecoderStatus::Available;
-            videoSampleProvider = std::shared_ptr<MediaSampleProvider>(new D3D11VideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr));
+            auto processor = BaleToneMap::Create(baleToneMap, avStream->codecpar);
+            videoSampleProvider = std::shared_ptr<MediaSampleProvider>(new D3D11VideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr, std::move(processor)));
         }
         else
         {
@@ -2428,6 +2428,10 @@ namespace winrt::FFmpegInteropX::implementation
 
 #pragma warning (default: 4973)
 
+        if (baleToneMap > 0 && videoSampleProvider->Decoder() != DecoderEngine::FFmpegD3D11HardwareDecoder)
+        {
+            BaleToneMap::LogIneligible();
+        }
         auto hr = videoSampleProvider->Initialize();
 
         if (FAILED(hr))
@@ -2511,6 +2515,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_dav1d_export_film_grain") { target = &baleDav1dExportFilmGrain; minimum = 0; maximum = 1; }
         else if (key == "bale_film_grain_mode") { target = &baleFilmGrainMode; minimum = 0; maximum = 2; }
         else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 6; }
+        else if (key == "bale_tonemap") { target = &baleToneMap; minimum = 0; maximum = 2; }
         else if (key == "bale_zero_copy") { target = &baleZeroCopy; minimum = 0; maximum = 1; }
         else if (key == "bale_decode_thread_priority") { target = &baleDecodeThreadPriority; minimum = 0; maximum = 2; }
         else if (key == "bale_decoder_use_max_resolution") { target = &baleDecoderUseMaxResolution; minimum = 0; maximum = 1; }

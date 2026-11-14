@@ -13,6 +13,7 @@ Modifications by the Bale project, starting from upstream commit
              Source/BaleFilmGrain.h
              Source/BaleSubtitleSink.h
              Source/BaleThreadBoost.h
+             Source/BaleToneMap.h
              Source/VideoFrameProcessor.h
              bale/ (fork-owned build scripts, pins and documentation)
              .github/workflows/bale-wrapper.yml

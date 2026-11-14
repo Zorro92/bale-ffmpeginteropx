@@ -347,6 +347,8 @@ namespace winrt::FFmpegInteropX::implementation
         int baleFilmGrainMode = 0;
         // 0 = off (upstream CPU output); any nonzero value = the D3D12-writable upload texture.
         int baleD3d11Upload = 0;
+        // Opt-in D3D11 10-bit PQ -> NV12 BT.709: 0 = off, 1 = BT.2390, 2 = Hable.
+        int baleToneMap = 0;
         // 1 = software libdav1d decodes into bale_gpu zero-copy buffers (needs the D3D11 upload).
         // Zero-copy only: a stream it cannot take is refused or fails (no CPU fallback).
         int baleZeroCopy = 0;

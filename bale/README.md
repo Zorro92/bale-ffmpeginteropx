@@ -14,6 +14,54 @@ original winmd public type-name sets must match; this is not a full ABI/member
 comparison. Artifacts include the package and SHA256, provenance, comparison
 result, build log and corresponding source archive.
 
+## Tone map option
+
+`MediaSourceConfig.FFmpegOptions["bale_tonemap"]` accepts decimal strings:
+`"0"` = off (default), `"1"` = BT.2390 EETF, `"2"` = Hable. The wrapper consumes
+this key; it is never passed to FFmpeg. It applies only when provider selection
+chooses `D3D11VideoSampleProvider` and the source is 10-bit with codecpar transfer
+SMPTE 2084 (PQ). Other providers/formats log one ignored-request diagnostic and
+keep upstream behaviour. Unset/zero does not load the tone-map ABI or process frames.
+
+Active output is fixed-size NV12 with BT.709 transfer, primaries and matrix,
+limited range (16–235), and no stream/sample HDR mastering or content-light
+attributes. The source `HasHdrMetadata` flag is retained; `IsHdrActive` is false.
+The shader receives each frame's colour code points, mastering primaries/white
+point/luminance (in nits) and content-light metadata. Frame side-data payloads
+win over coded stream side data, with size checks before either payload is read.
+Both curves use source peak 1000 nits, target white 100 nits, desaturation 0;
+these defaults match Silo's `tonemapx bt2390 peak=100` setup.
+
+The optional shader is loaded from the app's packaged `bale_gpu.dll`, tone-map
+ABI 1. `Source/BaleToneMap.h` contains a marked mirror of
+`bale-gpu include/bale_tonemap.h`; replace the block verbatim when that header
+lands (configuration/frame sizes are asserted as 40/72 bytes). No new native
+FFmpeg build is needed. The fork creates an NV12 RTV/SRV output pool; bale_gpu
+accepts decoder-bound P010 arrays and copies an input slice internally if needed.
+
+Initialization, including bale_gpu's self-test, waits until the first frame:
+MediaStreamSource supplies its renderer device after the stream descriptor is
+created. An eligible request always declares SDR, even when ABI loading or
+initialization will fail. Missing exports, ABI mismatch, self-test/create/apply
+failure, device errors, software fallback, unsupported per-frame colour data,
+or a frame-size change latch a fatal error and use the existing one-shot
+`MediaStreamSource.NotifyError` path so Bale can replan to server transcode.
+No failed or unprocessed frame is delivered as SDR. Fixed `Bale tonemap` logs
+report activation once per stream and the first failure with its HRESULT.
+
+The processor runs under FFmpeg's D3D11 device lock followed by the device's
+multithread protection; the fork Flushes after processing before releasing
+those locks. Pool operations use a separate mutex outside that context lock.
+Processed callbacks return the stored texture without reopening a closed MF
+surface; weak originating-pool references prevent recycling into a replacement
+device pool. Seek flush retains the hardware path's existing return semantics.
+
+Evidence/limits: Xbox Series X P010 HDR10 d3d11va decode was already verified in
+real time, but this processing stage, its texture recycling and concurrency are
+not console-confirmed. No console testing was performed for these changes.
+Runtime shader correctness/performance and compatibility with the final ABI
+header still require review and console validation.
+
 ## Cut a release
 
 Choose a fresh version (the first fork build is `2.1.0-bale.23`):
