@@ -23,6 +23,7 @@ namespace NativeBuffer
         NativeBuffer(BYTE* buffer, UINT32 totalSize)
         {
             m_length = totalSize;
+            m_capacity = totalSize;
             m_buffer = buffer;
             m_free = NULL;
             m_opaque = NULL;
@@ -34,6 +35,7 @@ namespace NativeBuffer
         NativeBuffer(BYTE* buffer, UINT32 totalSize, void(*free)(void* opaque), void* opaque)
         {
             m_length = totalSize;
+            m_capacity = totalSize;
             m_buffer = buffer;
             m_free = free;
             m_opaque = opaque;
@@ -45,6 +47,7 @@ namespace NativeBuffer
         NativeBuffer(BYTE* buffer, UINT32 totalSize, winrt::Windows::Foundation::IInspectable pObject)
         {
             m_length = totalSize;
+            m_capacity = totalSize;
             m_buffer = buffer;
             m_free = NULL;
             m_opaque = NULL;
@@ -59,13 +62,24 @@ namespace NativeBuffer
             return S_OK;
         }
 
-        uint32_t Capacity() const { return m_length; }
+        // IBuffer: Capacity is the fixed size of the memory; Length is how much of it holds data
+        // and may be set anywhere in [0, Capacity]. Readers commonly reset Length to 0 and then
+        // fill up to Capacity, so Capacity must not follow Length.
+        uint32_t Capacity() const { return m_capacity; }
         uint32_t Length() const { return m_length; }
-        void Length(uint32_t length) { m_length = length; }
+        void Length(uint32_t length)
+        {
+            if (length > m_capacity)
+            {
+                throw winrt::hresult_invalid_argument();
+            }
+            m_length = length;
+        }
 
 
     private:
         UINT32 m_length = 0;
+        UINT32 m_capacity = 0;
         BYTE* m_buffer = NULL;
         void(*m_free)(void* opaque);
         void* m_opaque;
