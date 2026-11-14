@@ -96,6 +96,27 @@ owner's HDR-TV test. No console testing was performed for this change. A generic
 default-on form that propagates container colour information while retaining
 the HDR policy would be the natural upstream shape, subject to review and testing.
 
+## Console evidence (Xbox Series X, app mode, SDR display)
+
+Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.
+
+- d3d11va (`VideoDecoderMode.Automatic`) decodes HEVC Main10 and VP9 profile 2 as P010, including
+  4K and Dolby Vision profile 8.1 (RPUs ignored), in real time. The Xbox media pipeline does no
+  HDR-to-SDR conversion of tagged P010 on an SDR display, so `bale_tonemap` is needed there.
+- `bale_tonemap=1` (BT.2390, 1000-nit peak, 100-nit white) against the Silo server's transcode,
+  luma min/p1/p50/p99/max and saturation: 1080p HDR10 HEVC 0/4/62/169/218, 0.62 vs server
+  0/4/61/177/223, 0.60 (untone-mapped 0/6/69/128/154, 0.40); 1080p HDR10+ base layer
+  0/9/32/147/164, 0.62 vs 0/9/32/149/166, 0.61. Hable (`2`) is darker (max 198). bale_gpu's
+  self-test passes on the console. Non-PQ sources log `request ignored` and play unchanged.
+- GPU cost of the stage (slice copy included): about 20 points of 3D-engine use, about 8 ms per
+  4K24 frame (HEVC and VP9 alike); CPU unchanged.
+- Stream side data (c3a9adb, 2c08f7c): MaxCLL/MaxFALL 4057/321 and mastering 1000/0.0001 nits
+  now match Windows' own MKV source (previously garbage, then a truncated minimum).
+- Memory: with `hevcPlayback` the app has one 3328 MiB heap that includes GPU memory
+  (`GetExtendedMemoryInfo` graphics partition 0/0). 1080p HEVC uses ~0.6–0.7 GiB, 4K VP9 HDR
+  1.2–1.3 GiB; no growth over 5-minute runs on either d3d11va build.
+- Not yet verified: the display-matrix rotation fix, and `bale_compressed_color_info` on an HDR TV.
+
 ## Cut a release
 
 Choose a fresh version (the first fork build is `2.1.0-bale.23`):
