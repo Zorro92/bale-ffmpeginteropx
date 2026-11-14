@@ -115,7 +115,10 @@ Measured through Bale's debug server; full notes are in Bale's `docs/player-plan
 - Memory: with `hevcPlayback` the app has one 3328 MiB heap that includes GPU memory
   (`GetExtendedMemoryInfo` graphics partition 0/0). 1080p HEVC uses ~0.6–0.7 GiB, 4K VP9 HDR
   1.2–1.3 GiB; no growth over 5-minute runs on either d3d11va build.
-- Not yet verified: the display-matrix rotation fix, and `bale_compressed_color_info` on an HDR TV.
+- `bale_compressed_color_info=1` (with HDR colour info enabled): 4K HDR10 VP9 reaches the system
+  decoder with PQ, BT.2020, MaxCLL and mastering attributes (previously none).
+- Not yet verified: the display-matrix rotation fix, and what `bale_compressed_color_info` changes
+  on an HDR TV (the test display is SDR).
 
 ## Cut a release
 
