@@ -100,6 +100,32 @@ public:
         return hr;
     }
 
+    // Explicit output resources for a frame-processing stage, separate from the decoder pool.
+    HRESULT GetTexture(UINT width, UINT height, DXGI_FORMAT format, UINT bindFlags, winrt::com_ptr<ID3D11Texture2D>& result)
+    {
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = width;
+        desc.Height = height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = format;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = bindFlags;
+        if (!MatchesDescription(desc))
+        {
+            Clear();
+            desc_shared = desc;
+        }
+        if (!pool.empty())
+        {
+            result = pool.back();
+            pool.pop_back();
+            return S_OK;
+        }
+        return device->CreateTexture2D(&desc_shared, nullptr, result.put());
+    }
+
     // Bale: a separate software-upload pool; flags are selected by bale_d3d11_upload.
     HRESULT GetUploadTexture(UINT width, UINT height, DXGI_FORMAT format, UINT bindFlags, UINT miscFlags, winrt::com_ptr<ID3D11Texture2D>& result)
     {
@@ -152,13 +178,21 @@ public:
         D3D11_TEXTURE2D_DESC desc;
         texture->GetDesc(&desc);
 
-        if (desc.Width == desc_shared.Width && desc.Height == desc_shared.Height && desc.Format == desc_shared.Format)
+        if (MatchesDescription(desc))
         {
             pool.push_back(texture);
         }
     }
 
 private:
+    bool MatchesDescription(const D3D11_TEXTURE2D_DESC& desc) const
+    {
+        return desc.Width == desc_shared.Width && desc.Height == desc_shared.Height && desc.Format == desc_shared.Format &&
+            desc.MipLevels == desc_shared.MipLevels && desc.ArraySize == desc_shared.ArraySize &&
+            desc.SampleDesc.Count == desc_shared.SampleDesc.Count && desc.SampleDesc.Quality == desc_shared.SampleDesc.Quality &&
+            desc.Usage == desc_shared.Usage && desc.BindFlags == desc_shared.BindFlags &&
+            desc.CPUAccessFlags == desc_shared.CPUAccessFlags && desc.MiscFlags == desc_shared.MiscFlags;
+    }
 
     winrt::com_ptr<ID3D11Device> device;
     std::vector<winrt::com_ptr<ID3D11Texture2D>> pool;

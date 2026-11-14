@@ -2,6 +2,8 @@
 #include "pch.h"
 #include "UncompressedVideoSampleProvider.h"
 #include "TexturePool.h"
+#include "VideoFrameProcessor.h"
+#include <d3d10.h>
 #include "DirectXInteropHelper.h"
 #include "FFmpegReader.h"
 #include "FFmpegUtils.h"
@@ -27,9 +29,13 @@ public:
         winrt::FFmpegInteropX::MediaSourceConfig const& config,
         int streamIndex,
         HardwareDecoderStatus hardwareDecoderStatus,
-        bool applyHdrColorInfo)
+        bool applyHdrColorInfo,
+        std::unique_ptr<VideoFrameProcessor> processor = nullptr)
         : UncompressedVideoSampleProvider(reader, avFormatCtx, avCodecCtx, config, streamIndex, hardwareDecoderStatus, applyHdrColorInfo)
     {
+        frameProcessor = std::move(processor);
+        processorWidth = avCodecCtx->width;
+        processorHeight = avCodecCtx->height;
         decoder = DecoderEngine::FFmpegD3D11HardwareDecoder;
         hwCodec = avCodecCtx->codec;
 
@@ -50,17 +56,20 @@ public:
         ReleaseTrackedSamples();
     }
 
-        virtual void Flush(bool flushBuffers) override
-        {
-            UncompressedVideoSampleProvider::Flush(flushBuffers);
-            ReturnTrackedSamples();
-        }
+    virtual void Flush(bool flushBuffers) override
+    {
+        UncompressedVideoSampleProvider::Flush(flushBuffers);
+        ReturnTrackedSamples();
+    }
 
 
     virtual HRESULT CreateBufferFromFrame(IBuffer* pBuffer, IDirect3DSurface* surface, AVFrame* avFrame, int64_t& framePts, int64_t& frameDuration) override
     {
-        HRESULT hr = S_OK;
+        auto fatalHr = FatalError();
+        if (FAILED(fatalHr)) return fatalHr;
+        if (frameProcessor) return CreateProcessedBufferFromFrame(surface, avFrame, framePts);
 
+        HRESULT hr = S_OK;
         if (avFrame->format == AV_PIX_FMT_D3D11)
         {
             if (!texturePool)
@@ -128,34 +137,43 @@ public:
 
     virtual HRESULT SetSampleProperties(MediaStreamSample const& sample) override
     {
-        if (sample.Direct3D11Surface())
+        try
         {
-            std::lock_guard lock(samplesMutex);
-
-            // Capture the texture while the sample is open. MF may close its surface before Processed.
-            winrt::com_ptr<IDXGISurface> surface;
-            auto hr = DirectXInteropHelper::GetDXGISurface(sample.Direct3D11Surface(), surface);
-            if (FAILED(hr)) return hr;
-            auto texture = surface.as<ID3D11Texture2D>();
-
-            // AddRef the sample on native interface to prevent it from being collected before Processed is called
-            auto sampleNative = sample.as<winrt::Windows::Foundation::IUnknown>();
-
-            // Attach Processed event and store in samples list
-            auto token = sample.Processed(weak_handler(this, &D3D11VideoSampleProvider::OnProcessed));
-            try
+            if (sample.Direct3D11Surface())
             {
-                trackedSamples.emplace(sampleNative, TrackedSample{ token, texture, texturePool });
+                std::lock_guard lock(samplesMutex);
+
+                // Capture the texture while the sample is open. MF may close its surface before Processed.
+                winrt::com_ptr<IDXGISurface> surface;
+                auto hr = DirectXInteropHelper::GetDXGISurface(sample.Direct3D11Surface(), surface);
+                if (FAILED(hr)) return frameProcessor ? FailProcessing(hr) : hr;
+                auto texture = surface.as<ID3D11Texture2D>();
+
+                // AddRef the sample on native interface to prevent it from being collected before Processed is called
+                auto sampleNative = sample.as<winrt::Windows::Foundation::IUnknown>();
+
+                // Attach Processed event and store in samples list
+                auto token = sample.Processed(weak_handler(this, &D3D11VideoSampleProvider::OnProcessed));
+                try
+                {
+                    trackedSamples.emplace(sampleNative, TrackedSample{ token, texture, frameProcessor ? processedTexturePool : texturePool });
+                }
+                catch (...)
+                {
+                    DetachProcessed(sampleNative, token);
+                    throw;
+                }
             }
-            catch (...)
-            {
-                DetachProcessed(sampleNative, token);
-                throw;
-            }
+
+            auto hr = UncompressedVideoSampleProvider::SetSampleProperties(sample);
+            return FAILED(hr) && frameProcessor ? FailProcessing(hr) : hr;
         }
-
-        return UncompressedVideoSampleProvider::SetSampleProperties(sample);
-    };
+        catch (...)
+        {
+            if (frameProcessor) return FailProcessing(winrt::to_hresult());
+            throw;
+        }
+    }
 
     void OnProcessed(MediaStreamSample const& sender, winrt::Windows::Foundation::IInspectable const&)
     {
@@ -201,7 +219,7 @@ public:
     {
         // A replacement pool must never receive textures from the previous device generation.
         auto pool = tracked.pool.lock();
-        if (pool && pool == texturePool)
+        if (pool && (pool == texturePool || pool == processedTexturePool))
         {
             pool->ReturnTexture(tracked.texture);
         }
@@ -281,11 +299,13 @@ public:
             std::lock_guard lock(samplesMutex);
             texturePool.reset();
             texturePool = nullptr;
+            processedTexturePool.reset();
+            processorInitialized = false;
         }
 
         ReleaseTrackedSamples();
 
-        return hr;
+        return FAILED(hr) && frameProcessor ? FailProcessing(hr) : hr;
     }
 
     HRESULT UpdateCodecContext(const AVCodec* codec, AVBufferRef* avHardwareContext)
@@ -459,6 +479,119 @@ public:
         return hr;
     }
 
+protected:
+    bool HasProcessedOutput() const override { return frameProcessor != nullptr; }
+
+private:
+    // Match FFmpeg's lock ordering: its device lock precedes the D3D multithread lock.
+    class DeviceContextLock
+    {
+    public:
+        DeviceContextLock(AVD3D11VADeviceContext* hardwareContext, ID3D10Multithread* multithread)
+            : hardwareContext(hardwareContext), multithread(multithread)
+        {
+            if (hardwareContext && hardwareContext->lock && hardwareContext->unlock)
+            {
+                hardwareContext->lock(hardwareContext->lock_ctx);
+                locked = true;
+            }
+            multithread->Enter();
+        }
+
+        ~DeviceContextLock()
+        {
+            multithread->Leave();
+            if (locked) hardwareContext->unlock(hardwareContext->lock_ctx);
+        }
+
+        DeviceContextLock(const DeviceContextLock&) = delete;
+        DeviceContextLock& operator=(const DeviceContextLock&) = delete;
+
+    private:
+        AVD3D11VADeviceContext* hardwareContext;
+        ID3D10Multithread* multithread;
+        bool locked = false;
+    };
+
+    HRESULT FailProcessing(HRESULT hr)
+    {
+        auto fatalHr = LatchFatalError(hr);
+        DebugMessage(L"Video frame processing failed.\n");
+        frameProcessor->NotifyError(fatalHr);
+        return fatalHr;
+    }
+
+    HRESULT CreateProcessedBufferFromFrame(IDirect3DSurface* surface, AVFrame* frame, int64_t& framePts)
+    {
+        try
+        {
+            // The declared output never changes; a fallback or size change cannot bypass processing.
+            if (frame->format != AV_PIX_FMT_D3D11 || frame->width != processorWidth || frame->height != processorHeight)
+            {
+                winrt::throw_hresult(E_INVALIDARG);
+            }
+            if (!device || !deviceContext || !frame->data[0]) winrt::throw_hresult(E_NOINTERFACE);
+            if (processorWidth <= 0 || processorHeight <= 0 || (processorWidth & 1) || (processorHeight & 1))
+            {
+                winrt::throw_hresult(E_INVALIDARG);
+            }
+            auto input = reinterpret_cast<ID3D11Texture2D*>(frame->data[0]);
+            D3D11_TEXTURE2D_DESC desc{};
+            input->GetDesc(&desc);
+            auto subresource = reinterpret_cast<uintptr_t>(frame->data[1]);
+            if (desc.Format != DXGI_FORMAT_P010 || desc.Width < static_cast<UINT>(processorWidth) ||
+                desc.Height < static_cast<UINT>(processorHeight) || subresource >= desc.ArraySize || desc.MipLevels != 1)
+            {
+                winrt::throw_hresult(E_INVALIDARG);
+            }
+            winrt::com_ptr<ID3D11Texture2D> output;
+            {
+                std::lock_guard lock(samplesMutex);
+                if (!processedTexturePool) processedTexturePool = std::make_shared<TexturePool>(device, 5);
+                winrt::check_hresult(processedTexturePool->GetTexture(processorWidth, processorHeight, DXGI_FORMAT_NV12,
+                    D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, output));
+            }
+
+            auto multithread = device.try_as<ID3D10Multithread>();
+            if (!multithread) multithread = deviceContext.try_as<ID3D10Multithread>();
+            if (!multithread || (device->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED))
+            {
+                winrt::throw_hresult(E_NOINTERFACE);
+            }
+            multithread->SetMultithreadProtected(TRUE);
+            if (!multithread->GetMultithreadProtected()) winrt::throw_hresult(E_FAIL);
+            auto colorInfo = VideoFrameColorInfo::FromFrame(frame, m_pAvStream->codecpar);
+            auto hardwareDevice = m_pAvCodecCtx->hw_device_ctx;
+            auto hardwareContext = hardwareDevice
+                ? reinterpret_cast<AVD3D11VADeviceContext*>(reinterpret_cast<AVHWDeviceContext*>(hardwareDevice->data)->hwctx)
+                : nullptr;
+            {
+                // Never hold samplesMutex while entering the shared immediate context.
+                DeviceContextLock contextLock(hardwareContext, multithread.get());
+                if (!processorInitialized)
+                {
+                    winrt::check_hresult(frameProcessor->Initialize(device.get(), processorWidth, processorHeight));
+                    processorInitialized = true;
+                }
+                winrt::check_hresult(frameProcessor->Process(deviceContext.get(), input, static_cast<UINT>(subresource), output.get(), colorInfo));
+                deviceContext->Flush();
+                winrt::check_hresult(device->GetDeviceRemovedReason());
+            }
+            *surface = DirectXInteropHelper::GetSurface(output.as<IDXGISurface>());
+            ReadFrameProperties(frame, framePts);
+            return S_OK;
+        }
+        catch (...)
+        {
+            return FailProcessing(winrt::to_hresult());
+        }
+    }
+
+    std::unique_ptr<VideoFrameProcessor> frameProcessor;
+    bool processorInitialized = false;
+    int processorWidth = 0;
+    int processorHeight = 0;
+    std::shared_ptr<TexturePool> processedTexturePool;
     std::shared_ptr<TexturePool> texturePool;
     std::map<winrt::Windows::Foundation::IUnknown, TrackedSample> trackedSamples;
     std::mutex samplesMutex;

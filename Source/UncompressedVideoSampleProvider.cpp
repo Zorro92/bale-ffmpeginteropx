@@ -128,7 +128,7 @@ bool UncompressedVideoSampleProvider::ZeroCopyEligible(AVPixelFormat input, AVPi
 
 void UncompressedVideoSampleProvider::SelectOutputFormat()
 {
-    m_OutputPixelFormat = SelectOutputPixelFormat(m_pAvCodecCtx->pix_fmt,
+    m_OutputPixelFormat = HasProcessedOutput() ? AV_PIX_FMT_NV12 : SelectOutputPixelFormat(m_pAvCodecCtx->pix_fmt,
         (m_pAvCodecCtx->codec->capabilities & AV_CODEC_CAP_DR1) && decoder != DecoderEngine::FFmpegD3D11HardwareDecoder, m_config,
         ZeroCopyEightBit);
     switch (m_OutputPixelFormat)
@@ -142,7 +142,7 @@ void UncompressedVideoSampleProvider::SelectOutputFormat()
     outputWidth = outputFrameWidth = m_pAvCodecCtx->width;
     outputHeight = outputFrameHeight = m_pAvCodecCtx->height;
 
-    if (m_OutputPixelFormat != AV_PIX_FMT_BGRA)
+    if (m_OutputPixelFormat != AV_PIX_FMT_BGRA && !HasProcessedOutput())
     {
         // only BGRA supports unaligned image sizes, all others require 4 pixel alignment
         outputFrameWidth = ((outputWidth - 1) / 4 * 4) + 4;
@@ -440,6 +440,21 @@ IMediaStreamDescriptor UncompressedVideoSampleProvider::CreateStreamDescriptor()
 
     hasHdrMetadata = (masteringDisplayMetadata != nullptr && (masteringDisplayMetadata->has_primaries || masteringDisplayMetadata->has_luminance)) || contentLightMetadata != nullptr || hasHdrVideoPrimaries || hasHdrVideoTransferFunction;
     isHdrActive = hasHdrMetadata && applyHdrColorInfo;
+
+    if (HasProcessedOutput())
+    {
+        // The processing contract fixes the output colour space for the lifetime of the stream.
+        properties.Insert(MF_MT_VIDEO_PRIMARIES, PropertyValue::CreateUInt32(MFVideoPrimaries_BT709));
+        properties.Insert(MF_MT_TRANSFER_FUNCTION, PropertyValue::CreateUInt32(MFVideoTransFunc_709));
+        properties.Insert(MF_MT_YUV_MATRIX, PropertyValue::CreateUInt32(MFVideoTransferMatrix_BT709));
+        properties.Insert(MF_MT_VIDEO_NOMINAL_RANGE, PropertyValue::CreateUInt32(MFNominalRange_16_235));
+        for (auto key : { MF_MT_MAX_LUMINANCE_LEVEL, MF_MT_MAX_FRAME_AVERAGE_LUMINANCE_LEVEL,
+            MF_MT_MIN_MASTERING_LUMINANCE, MF_MT_MAX_MASTERING_LUMINANCE, MF_MT_CUSTOM_VIDEO_PRIMARIES })
+        {
+            if (properties.HasKey(key)) properties.Remove(key);
+        }
+        isHdrActive = false;
+    }
 
     videoProperties.Properties().Insert(MF_MT_INTERLACE_MODE, winrt::box_value((UINT32)_MFVideoInterlaceMode::MFVideoInterlace_MixedInterlaceOrProgressive));
 
@@ -744,6 +759,13 @@ void UncompressedVideoSampleProvider::ReadFrameProperties(AVFrame* avFrame, int6
                 videoProperties.Properties().Insert(MF_MT_VIDEO_ROTATION, winrt::box_value((UINT32)rotationAngle));
             }
         }
+    }
+
+    if (HasProcessedOutput())
+    {
+        // Source HDR metadata belongs to the processor, never to its SDR output samples.
+        maxCLL = maxFALL = minLuminance = maxLuminance = customPrimaries = nullptr;
+        return;
     }
 
     auto sideData = av_frame_get_side_data(avFrame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);

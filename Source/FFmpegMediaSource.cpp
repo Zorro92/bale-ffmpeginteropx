@@ -2761,19 +2761,19 @@ namespace winrt::FFmpegInteropX::implementation
         return false;
     }
 
-    // Called with `mutex` held. Raises the current video stream's latched zero-copy failure once.
+    // Called with `mutex` held. Raises the current video stream's latched fatal failure once.
     // Returns true when that stream has failed; the caller then delivers no sample.
     bool FFmpegMediaSource::RaiseBaleFatal(MediaStreamSource const& sender)
     {
         if (baleFatalRaised) return true;
-        if (baleD3d11Upload <= 0 || baleZeroCopy <= 0 || !currentVideoStream) return false;
+        if (!currentVideoStream) return false;
         auto uncompressed = std::dynamic_pointer_cast<UncompressedVideoSampleProvider>(currentVideoStream);
         if (!uncompressed) return false;
         HRESULT hr = uncompressed->FatalError();
         if (SUCCEEDED(hr)) return false;
 
         baleFatalRaised = true;
-        av_log(nullptr, AV_LOG_ERROR, "Bale zero-copy: video stream failed (hr=0x%08X); raising MediaStreamSource error.\n", static_cast<unsigned>(hr));
+        av_log(nullptr, AV_LOG_ERROR, "Bale video: stream failed (hr=0x%08X); raising MediaStreamSource error.\n", static_cast<unsigned>(hr));
         try
         {
             sender.NotifyError(hr == E_INVALIDARG || hr == UncompressedVideoSampleProvider::ZeroCopyMissed
@@ -2782,7 +2782,7 @@ namespace winrt::FFmpegInteropX::implementation
         }
         catch (...)
         {
-            av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy: NotifyError failed (hr=0x%08X).\n", static_cast<unsigned>(winrt::to_hresult()));
+            av_log(nullptr, AV_LOG_WARNING, "Bale video: NotifyError failed (hr=0x%08X).\n", static_cast<unsigned>(winrt::to_hresult()));
         }
         return true;
     }
@@ -2918,7 +2918,7 @@ namespace winrt::FFmpegInteropX::implementation
 
         try
         {
-            // Bale: after a zero-copy failure the source is in error; decode and deliver nothing.
+            // Bale: after a fatal video failure the source is in error; decode and deliver nothing.
             if (RaiseBaleFatal(sender))
             {
                 return;
@@ -2941,7 +2941,7 @@ namespace winrt::FFmpegInteropX::implementation
                     return;
                 }
                 auto sample = UseDecodeAhead() ? TakeAheadSample() : currentVideoStream->GetNextSample();
-                if (!sample && RaiseBaleFatal(sender))
+                if (RaiseBaleFatal(sender))
                 {
                     return;
                 }

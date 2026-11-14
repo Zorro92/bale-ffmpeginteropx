@@ -142,10 +142,20 @@ public:
         videoStreamInfoImpl->SetIsHdrActive(isHdrActive);
     }
 
+protected:
+    virtual bool HasProcessedOutput() const { return false; }
+    HRESULT LatchFatalError(HRESULT hr)
+    {
+        if (SUCCEEDED(hr)) hr = E_UNEXPECTED;
+        HRESULT expected = S_OK;
+        fatal.compare_exchange_strong(expected, hr);
+        return fatal.load();
+    }
+
 private:
     std::shared_ptr<BaleD3D11Upload> upload;
     MediaStreamSample uploadSample{ nullptr };
-    // Bale: first zero-copy failure, S_OK until then. Written by Fail on the serialized producer or
+    // First fatal output failure, S_OK until then. Written on the serialized producer or
     // in OnStarting/device checks (decode-ahead paused); read by FFmpegMediaSource.
     std::atomic<HRESULT> fatal{ S_OK };
     HRESULT Fail(HRESULT hr, const char* reason);
