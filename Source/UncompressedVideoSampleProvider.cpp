@@ -400,14 +400,17 @@ IMediaStreamDescriptor UncompressedVideoSampleProvider::CreateStreamDescriptor()
         }
     }
 
-    const AVContentLightMetadata* contentLightMetadata{ reinterpret_cast<const AVContentLightMetadata*>(av_packet_side_data_get(m_pAvStream->codecpar->coded_side_data, m_pAvStream->codecpar->nb_coded_side_data, AV_PKT_DATA_CONTENT_LIGHT_LEVEL)) };
+    // av_packet_side_data_get returns the side data entry; the metadata struct is its payload.
+    auto contentLightSideData = av_packet_side_data_get(m_pAvStream->codecpar->coded_side_data, m_pAvStream->codecpar->nb_coded_side_data, AV_PKT_DATA_CONTENT_LIGHT_LEVEL);
+    const AVContentLightMetadata* contentLightMetadata{ contentLightSideData && contentLightSideData->size >= sizeof(AVContentLightMetadata) ? reinterpret_cast<const AVContentLightMetadata*>(contentLightSideData->data) : nullptr };
     if (contentLightMetadata != nullptr && applyHdrColorInfo)
     {
         properties.Insert(MF_MT_MAX_LUMINANCE_LEVEL, PropertyValue::CreateUInt32(contentLightMetadata->MaxCLL));
         properties.Insert(MF_MT_MAX_FRAME_AVERAGE_LUMINANCE_LEVEL, PropertyValue::CreateUInt32(contentLightMetadata->MaxFALL));
     }
 
-    const AVMasteringDisplayMetadata* masteringDisplayMetadata{ reinterpret_cast<const AVMasteringDisplayMetadata*>(av_packet_side_data_get(m_pAvStream->codecpar->coded_side_data, m_pAvStream->codecpar->nb_coded_side_data, AV_PKT_DATA_MASTERING_DISPLAY_METADATA)) };
+    auto masteringDisplaySideData = av_packet_side_data_get(m_pAvStream->codecpar->coded_side_data, m_pAvStream->codecpar->nb_coded_side_data, AV_PKT_DATA_MASTERING_DISPLAY_METADATA);
+    const AVMasteringDisplayMetadata* masteringDisplayMetadata{ masteringDisplaySideData && masteringDisplaySideData->size >= sizeof(AVMasteringDisplayMetadata) ? reinterpret_cast<const AVMasteringDisplayMetadata*>(masteringDisplaySideData->data) : nullptr };
     if (masteringDisplayMetadata != nullptr && applyHdrColorInfo)
     {
         if (masteringDisplayMetadata->has_luminance)

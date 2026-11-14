@@ -443,10 +443,10 @@ void MediaSampleProvider::SetCommonVideoEncodingProperties(VideoEncodingProperti
     {
         // get rotation from side data
         auto displaymatrix = av_packet_side_data_get(m_pAvStream->codecpar->coded_side_data, m_pAvStream->codecpar->nb_coded_side_data, AVPacketSideDataType::AV_PKT_DATA_DISPLAYMATRIX);
-        if (displaymatrix)
+        if (displaymatrix && displaymatrix->size >= 9 * sizeof(int32_t))
         {
             // need to invert and use positive values
-            auto rotation = av_display_rotation_get((int32_t*)displaymatrix);
+            auto rotation = av_display_rotation_get(reinterpret_cast<const int32_t*>(displaymatrix->data));
             if (rotation == 90)
             {
                 rotationAngle = 270;
