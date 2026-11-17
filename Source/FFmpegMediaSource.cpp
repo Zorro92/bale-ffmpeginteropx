@@ -2117,6 +2117,7 @@ namespace winrt::FFmpegInteropX::implementation
         {
             deviceManager->CloseDeviceHandle(deviceHandle);
         }
+        if (!isClosed) av_log(nullptr, AV_LOG_INFO, "Bale source: closed\n");
 
         device = nullptr;
         deviceContext = nullptr;

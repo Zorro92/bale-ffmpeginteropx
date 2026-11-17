@@ -54,6 +54,8 @@ public:
     virtual ~D3D11VideoSampleProvider()
     {
         ReleaseTrackedSamples();
+        // Bale diagnostics: pairs with "created" to show every stream's GPU resources were released.
+        av_log(nullptr, AV_LOG_INFO, "Bale video: d3d11 provider destroyed (tracked=%d)\n", static_cast<int>(trackedSamples.size()));
     }
 
     virtual void Flush(bool flushBuffers) override
@@ -67,6 +69,13 @@ public:
     {
         auto fatalHr = FatalError();
         if (FAILED(fatalHr)) return fatalHr;
+        if (!poolLogged && avFrame->format == AV_PIX_FMT_D3D11 && avFrame->hw_frames_ctx)
+        {
+            poolLogged = true;
+            auto frames = reinterpret_cast<AVHWFramesContext*>(avFrame->hw_frames_ctx->data);
+            av_log(nullptr, AV_LOG_INFO, "Bale video: d3d11 provider created; decoder surfaces=%d %dx%d processed=%d\n",
+                frames->initial_pool_size, frames->width, frames->height, frameProcessor ? 1 : 0);
+        }
         if (frameProcessor) return CreateProcessedBufferFromFrame(surface, avFrame, framePts);
 
         HRESULT hr = S_OK;
@@ -589,6 +598,7 @@ private:
 
     std::unique_ptr<VideoFrameProcessor> frameProcessor;
     bool processorInitialized = false;
+    bool poolLogged = false;
     int processorWidth = 0;
     int processorHeight = 0;
     std::shared_ptr<TexturePool> processedTexturePool;

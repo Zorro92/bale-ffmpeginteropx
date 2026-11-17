@@ -188,6 +188,7 @@ private:
         {
             BaleToneMapExports::Get().destroy(handle);
             handle = nullptr;
+            av_log(nullptr, AV_LOG_INFO, "Bale tonemap destroyed\n");
         }
     }
 
