@@ -121,10 +121,17 @@ public:
         {
             result = pool.back();
             pool.pop_back();
+            reusedCount++;
             return S_OK;
         }
-        return device->CreateTexture2D(&desc_shared, nullptr, result.put());
+        auto hr = device->CreateTexture2D(&desc_shared, nullptr, result.put());
+        if (SUCCEEDED(hr)) createdCount++;
+        return hr;
     }
+
+    // Diagnostics for GetTexture pools (caller holds its pool mutex).
+    uint32_t CreatedCount() const { return createdCount; }
+    uint32_t ReusedCount() const { return reusedCount; }
 
     // Bale: a separate software-upload pool; flags are selected by bale_d3d11_upload.
     HRESULT GetUploadTexture(UINT width, UINT height, DXGI_FORMAT format, UINT bindFlags, UINT miscFlags, winrt::com_ptr<ID3D11Texture2D>& result)
@@ -198,5 +205,7 @@ private:
     std::vector<winrt::com_ptr<ID3D11Texture2D>> pool;
     D3D11_TEXTURE2D_DESC desc_shared{};
     int initialPoolSize = 0;
+    uint32_t createdCount = 0;
+    uint32_t reusedCount = 0;
 };
 

@@ -55,7 +55,9 @@ public:
     {
         ReleaseTrackedSamples();
         // Bale diagnostics: pairs with "created" to show every stream's GPU resources were released.
-        av_log(nullptr, AV_LOG_INFO, "Bale video: d3d11 provider destroyed (tracked=%d)\n", static_cast<int>(trackedSamples.size()));
+        av_log(nullptr, AV_LOG_INFO, "Bale video: d3d11 provider destroyed (tracked=%d output created=%u reused=%u)\n",
+            static_cast<int>(trackedSamples.size()), processedTexturePool ? processedTexturePool->CreatedCount() : 0u,
+            processedTexturePool ? processedTexturePool->ReusedCount() : 0u);
     }
 
     virtual void Flush(bool flushBuffers) override
@@ -584,7 +586,13 @@ private:
                 }
                 winrt::check_hresult(frameProcessor->Process(deviceContext.get(), input, static_cast<UINT>(subresource), output.get(), colorInfo));
                 deviceContext->Flush();
-                winrt::check_hresult(device->GetDeviceRemovedReason());
+                auto removed = device->GetDeviceRemovedReason();
+                if (FAILED(removed))
+                {
+                    // The shared MF device was removed; the stage only noticed it, it did not cause it.
+                    av_log(nullptr, AV_LOG_ERROR, "Bale video: device removed (hr=0x%08X)\n", static_cast<unsigned>(removed));
+                    winrt::throw_hresult(removed);
+                }
             }
             *surface = DirectXInteropHelper::GetSurface(output.as<IDXGISurface>());
             ReadFrameProperties(frame, framePts);
