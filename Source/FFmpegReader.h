@@ -38,7 +38,7 @@ public:
     void Start();
     void Stop();
     void Flush();
-    HRESULT Seek(TimeSpan position, TimeSpan& actualPosition, TimeSpan currentPosition, bool allowFastSeek, std::shared_ptr<MediaSampleProvider> videoStream, std::shared_ptr<MediaSampleProvider> audioStream);
+    HRESULT Seek(TimeSpan position, TimeSpan& actualPosition, TimeSpan currentPosition, bool allowFastSeek, std::shared_ptr<MediaSampleProvider> videoStream, std::shared_ptr<MediaSampleProvider> audioStream, bool fastSeekBackwardOnly = false);
 
 private:
 
@@ -72,6 +72,8 @@ private:
     timer<int>* sleepTimer = NULL;
 
     bool isLastSeekForward = false;
+    // Fast seeks of the current Seek call may only land on a keyframe at or before the target.
+    bool seekBackwardOnly = false;
     TimeSpan lastSeekStart { 0 };
     TimeSpan lastSeekActual { 0 };
 };

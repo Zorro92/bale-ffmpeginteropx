@@ -2537,6 +2537,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_decoder_use_max_resolution") { target = &baleDecoderUseMaxResolution; minimum = 0; maximum = 1; }
         else if (key == "bale_decoder_max_dpb_count") { target = &baleDecoderMaxDpbCount; minimum = 0; maximum = 16; }
         else if (key == "bale_compressed_color_info") { target = &baleCompressedColorInfo; minimum = 0; maximum = 1; }
+        else if (key == "bale_fast_seek_without_session") { target = &baleFastSeekWithoutSession; minimum = 0; maximum = 1; }
         else if (key == "bale_system_decoder_dolby") { target = &baleSystemDecoderDolby; minimum = 0; maximum = 1; }
         else if (key == "bale_subtitle_stream") { target = &baleSubtitleStream; minimum = 0; maximum = 65535; }
         else if (key == "bale_subtitle_sink") { target = &baleSubtitleSink; minimum = 1; maximum = 999999999; }
@@ -3179,9 +3180,13 @@ namespace winrt::FFmpegInteropX::implementation
 
         auto diffCurrent = position - currentPosition;
         auto diffLast = position - lastPosition;
-        bool isSeekBeforeStreamSwitch = allowFastSeek && config->General().FastSeekSmartStreamSwitching() && !isFirstSeekAfterStreamSwitch && diffCurrent.count() > 0 && diffCurrent.count() < 5000000 && diffLast.count() > 0 && diffLast.count() < 10000000;
+        // Bale: without a MediaPlaybackSession, currentPosition/lastPosition never update, so the
+        // stream-switch heuristic is skipped and fast seeks are backward-only (bale_fast_seek_without_session).
+        bool hasSession = PlaybackSession() != nullptr;
+        bool sessionlessFastSeek = !hasSession && baleFastSeekWithoutSession > 0;
+        bool isSeekBeforeStreamSwitch = hasSession && allowFastSeek && config->General().FastSeekSmartStreamSwitching() && !isFirstSeekAfterStreamSwitch && diffCurrent.count() > 0 && diffCurrent.count() < 5000000 && diffLast.count() > 0 && diffLast.count() < 10000000;
 
-        bool fastSeek = allowFastSeek && config->General().FastSeek() && currentVideoStream && PlaybackSession() && !isFirstSeekAfterStreamSwitch;
+        bool fastSeek = allowFastSeek && config->General().FastSeek() && currentVideoStream && (hasSession || sessionlessFastSeek) && !isFirstSeekAfterStreamSwitch;
         if (isSeekBeforeStreamSwitch)
         {
             return S_OK;
@@ -3198,7 +3203,13 @@ namespace winrt::FFmpegInteropX::implementation
                 // Bale: decoded-ahead samples predate the seek. Callers hold `mutex`; pause clears
                 // the queue and waits for the worker to finish its current sample.
                 AheadPauseScope aheadPause(this, true);
-                return m_pReader->Seek(position, actualPosition, lastPosition, fastSeek, currentVideoStream, currentAudioStream);
+                auto hr = m_pReader->Seek(position, actualPosition, lastPosition, fastSeek, currentVideoStream, currentAudioStream, fastSeek && sessionlessFastSeek);
+                if (fastSeek && sessionlessFastSeek && SUCCEEDED(hr))
+                {
+                    av_log(nullptr, AV_LOG_INFO, "Bale seek: sessionless fast seek target=%lld landed=%lld ms\n",
+                        static_cast<long long>(position.count() / 10000), static_cast<long long>(actualPosition.count() / 10000));
+                }
+                return hr;
             }
         }
     }

@@ -100,6 +100,24 @@ owner's HDR-TV test. No console testing was performed for this change. A generic
 default-on form that propagates container colour information while retaining
 the HDR policy would be the natural upstream shape, subject to review and testing.
 
+## Fast seek without a playback session
+
+Upstream FastSeek only runs when `FFmpegMediaSource.PlaybackSession` is set to a
+`MediaPlayer` session: it uses the session's position to choose the seek direction.
+Players without one (e.g. `IMFMediaEngine` in rendering mode, which also ignores
+`MF_MEDIA_ENGINE_SEEK_MODE_APPROXIMATE`) therefore always get full seeks, which decode
+every frame from the keyframe to the target (for 4K software AV1 that ran the
+zero-copy upload out of GPU memory on the console).
+
+`bale_fast_seek_without_session` = `"1"` (default `"0"`) enables FastSeek without a
+session, backward-only: buffered and demuxer seeks take the keyframe at or before
+the target and report it through the `MediaStreamSource` Starting request
+(`SetActualStartPosition`), so the player's clock starts there. Seeks never land
+after the target; they land up to one keyframe interval early. The stream-switch
+skip heuristic, which needs the session position, is off in this mode. A session,
+when set, keeps upstream behaviour. Each such seek logs
+`Bale seek: sessionless fast seek target=.. landed=.. ms`.
+
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
 Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.

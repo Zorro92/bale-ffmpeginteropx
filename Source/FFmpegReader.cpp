@@ -127,13 +127,14 @@ void FFmpegReader::FlushCodecsAndBuffers()
     isEof = false;
 }
 
-HRESULT FFmpegReader::Seek(TimeSpan position, TimeSpan& actualPosition, TimeSpan currentPosition, bool fastSeek, std::shared_ptr<MediaSampleProvider> videoStream, std::shared_ptr<MediaSampleProvider> audioStream)
+HRESULT FFmpegReader::Seek(TimeSpan position, TimeSpan& actualPosition, TimeSpan currentPosition, bool fastSeek, std::shared_ptr<MediaSampleProvider> videoStream, std::shared_ptr<MediaSampleProvider> audioStream, bool fastSeekBackwardOnly)
 {
     Stop();
 
     std::lock_guard demuxLock(demuxMutex);
     std::lock_guard lock(mutex);
 
+    seekBackwardOnly = fastSeekBackwardOnly;
     auto hr = S_OK;
     if (readResult != 0)
     {
@@ -186,7 +187,15 @@ HRESULT FFmpegReader::SeekFast(TimeSpan position, TimeSpan& actualPosition, Time
     TimeSpan referenceTime;
 
     // decide seek direction
-    if (isLastSeekForward && position > lastSeekStart && position <= lastSeekActual)
+    if (seekBackwardOnly)
+    {
+        // Without a playback position the direction heuristics cannot work; take the keyframe
+        // at or before the target (max = target below), so the seek never lands after it.
+        seekForward = false;
+        referenceTime = position;
+        DebugMessage(L" - ### Backward-only seeking\n");
+    }
+    else if (isLastSeekForward && position > lastSeekStart && position <= lastSeekActual)
     {
         seekForward = true;
         referenceTime = lastSeekStart + ((position - lastSeekStart) * 0.2);
@@ -362,7 +371,7 @@ bool FFmpegReader::TrySeekBuffered(TimeSpan position, TimeSpan& actualPosition, 
     {
         auto pts = videoStream->ConvertPosition(targetPosition);
         LONGLONG resultPts = pts;
-        vIndex = videoStream->packetBuffer->TryFindPacketIndex(pts, resultPts, true, fastSeek, isForwardSeek);
+        vIndex = videoStream->packetBuffer->TryFindPacketIndex(pts, resultPts, true, fastSeek, isForwardSeek, seekBackwardOnly);
         result &= vIndex >= 0;
 
         if (result && fastSeek)

@@ -162,7 +162,7 @@ public:
         return buffer.at(index);
     }
 
-    int TryFindPacketIndex(LONGLONG pts, LONGLONG& resultPts, bool requireKeyFrame, bool fastSeek, bool isForwardSeek)
+    int TryFindPacketIndex(LONGLONG pts, LONGLONG& resultPts, bool requireKeyFrame, bool fastSeek, bool isForwardSeek, bool backwardOnly = false)
     {
         std::lock_guard lock(mutex);
 
@@ -183,7 +183,7 @@ public:
 
         if (requireKeyFrame)
         {
-            return TryFindClosestKeyframe(pts, isForwardSeek, fastSeek, resultPts);
+            return TryFindClosestKeyframe(pts, isForwardSeek, fastSeek, resultPts, backwardOnly);
         }
         else
         {
@@ -211,7 +211,7 @@ public:
         return result;
     }
 
-    int TryFindClosestKeyframe(long long target, bool isForwardSeek, bool fastSeek, LONGLONG& resultPts)
+    int TryFindClosestKeyframe(long long target, bool isForwardSeek, bool fastSeek, LONGLONG& resultPts, bool backwardOnly = false)
     {
         bool hasTarget = false;
         int index = 0;
@@ -268,6 +268,16 @@ public:
                 {
                     return -1;
                 }
+            }
+            else if (backwardOnly)
+            {
+                // Fast seek that must not land after the target: only a keyframe at or before it.
+                if (packetBeforeIndex >= 0)
+                {
+                    resultPts = packetBeforePts;
+                    return packetBeforeIndex;
+                }
+                return -1;
             }
             else
             {
