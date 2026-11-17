@@ -2534,7 +2534,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 6; }
         else if (key == "bale_tonemap") { target = &baleToneMap; minimum = 0; maximum = 2; }
         else if (key == "bale_tonemap_output") { target = &baleToneMapOutput; minimum = 0; maximum = 15; }
-        else if (key == "bale_tonemap_format") { target = &baleToneMapFormat; minimum = 0; maximum = 2; }
+        else if (key == "bale_tonemap_format") { target = &baleToneMapFormat; minimum = 0; maximum = 3; }
         else if (key == "bale_zero_copy") { target = &baleZeroCopy; minimum = 0; maximum = 1; }
         else if (key == "bale_decode_thread_priority") { target = &baleDecodeThreadPriority; minimum = 0; maximum = 2; }
         else if (key == "bale_decoder_use_max_resolution") { target = &baleDecoderUseMaxResolution; minimum = 0; maximum = 1; }

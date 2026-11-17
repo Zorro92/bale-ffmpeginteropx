@@ -85,12 +85,13 @@ file without the stage, or on the system decoder, survived 40 opens.
   bale_gpu is never created or called (the picture is undefined). Isolates the
   fork-side stage from bale_gpu in opens-to-failure tests.
 
-`bale_tonemap_format` (`"0"` NV12 default, `"1"` P010, `"2"` BGRA8) changes the
-stage's output texture format and media type. bale_gpu writes NV12 only, so a
-non-NV12 format is honoured only together with bypass bit 8 (otherwise it is
-ignored with a warning). Don't combine BGRA8 with bit 1 (DECODER binds need a
-video format). It exists to test whether the player's per-open cost follows the
-NV12 output type.
+`bale_tonemap_format` picks the stage's output: `"0"` auto (default: P010 when the
+loaded bale_gpu exports `bale_tonemap_output_formats` with P010, else NV12), `"1"`
+P010, `"2"` BGRA8 (debug, only with bypass bit 8; don't combine with bit 1), `"3"`
+NV12. P010 carries BT.709 limited-range SDR in 10 bits, with the same BT.709 media
+type as NV12. Why P010: on the Xbox, Media Foundation's video processor leaks
+driver state for every 4K NV12 stream it opens (also with Windows' own decoder
+and no FFmpeg; the process dies after ~22–30 opens), while P010 survived 40/40.
 
 The stream logs `Bale tonemap output mode=N` once.
 

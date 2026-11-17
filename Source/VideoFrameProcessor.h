@@ -113,4 +113,6 @@ public:
         ID3D11Texture2D* output, const VideoFrameColorInfo& colorInfo) = 0;
     // Includes failures in the surrounding output stage (allocation, surface creation, fallback).
     virtual void NotifyError(HRESULT hr) noexcept { UNREFERENCED_PARAMETER(hr); }
+    // Output texture formats Process can write. NV12 is the baseline every processor supports.
+    virtual bool SupportsOutputFormat(DXGI_FORMAT format) const { return format == DXGI_FORMAT_NV12; }
 };

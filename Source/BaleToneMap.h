@@ -21,6 +21,8 @@ struct BaleToneMapExports
     decltype(&bale_tonemap_create) create = nullptr;
     decltype(&bale_tonemap_apply) apply = nullptr;
     decltype(&bale_tonemap_destroy) destroy = nullptr;
+    // Optional (additive in ABI 1): absent means NV12 output only.
+    decltype(&bale_tonemap_output_formats) outputFormats = nullptr;
     HRESULT status = HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
 
     static const BaleToneMapExports& Get()
@@ -40,6 +42,7 @@ struct BaleToneMapExports
             api.create = reinterpret_cast<decltype(api.create)>(GetProcAddress(module, "bale_tonemap_create"));
             api.apply = reinterpret_cast<decltype(api.apply)>(GetProcAddress(module, "bale_tonemap_apply"));
             api.destroy = reinterpret_cast<decltype(api.destroy)>(GetProcAddress(module, "bale_tonemap_destroy"));
+            api.outputFormats = reinterpret_cast<decltype(api.outputFormats)>(GetProcAddress(module, "bale_tonemap_output_formats"));
             if (!api.abiVersion || !api.create || !api.apply || !api.destroy)
             {
                 FreeLibrary(module);
@@ -164,6 +167,14 @@ public:
                 frame.transfer, frame.primaries, frame.matrix, frame.full_range, frame.chroma_location);
         }
         return LogFailure(FAILED(hr) ? hr : E_UNEXPECTED, "apply failed");
+    }
+
+    bool SupportsOutputFormat(DXGI_FORMAT format) const override
+    {
+        if (format == DXGI_FORMAT_NV12) return true;
+        auto& api = BaleToneMapExports::Get();
+        return format == DXGI_FORMAT_P010 && SUCCEEDED(api.status) && api.outputFormats &&
+            (api.outputFormats() & BALE_TONEMAP_OUTPUT_P010) != 0;
     }
 
     void NotifyError(HRESULT hr) noexcept override
