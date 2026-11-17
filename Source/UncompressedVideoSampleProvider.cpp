@@ -130,7 +130,7 @@ bool UncompressedVideoSampleProvider::ZeroCopyEligible(AVPixelFormat input, AVPi
 
 void UncompressedVideoSampleProvider::SelectOutputFormat()
 {
-    m_OutputPixelFormat = HasProcessedOutput() ? AV_PIX_FMT_NV12 : SelectOutputPixelFormat(m_pAvCodecCtx->pix_fmt,
+    m_OutputPixelFormat = HasProcessedOutput() ? ProcessedOutputPixelFormat() : SelectOutputPixelFormat(m_pAvCodecCtx->pix_fmt,
         (m_pAvCodecCtx->codec->capabilities & AV_CODEC_CAP_DR1) && decoder != DecoderEngine::FFmpegD3D11HardwareDecoder, m_config,
         ZeroCopyEightBit);
     switch (m_OutputPixelFormat)
@@ -201,8 +201,17 @@ IMediaStreamDescriptor UncompressedVideoSampleProvider::CreateStreamDescriptor()
         {
             properties.Insert(MF_MT_VIDEO_PRIMARIES, PropertyValue::CreateUInt32(MFVideoPrimaries_BT709));
             properties.Insert(MF_MT_TRANSFER_FUNCTION, PropertyValue::CreateUInt32(MFVideoTransFunc_709));
-            properties.Insert(MF_MT_YUV_MATRIX, PropertyValue::CreateUInt32(MFVideoTransferMatrix_BT709));
-            properties.Insert(MF_MT_VIDEO_NOMINAL_RANGE, PropertyValue::CreateUInt32(MFNominalRange_16_235));
+            if (m_OutputPixelFormat == AV_PIX_FMT_BGRA)
+            {
+                // RGB output: no YUV matrix, full range.
+                if (properties.HasKey(MF_MT_YUV_MATRIX)) properties.Remove(MF_MT_YUV_MATRIX);
+                properties.Insert(MF_MT_VIDEO_NOMINAL_RANGE, PropertyValue::CreateUInt32(MFNominalRange_0_255));
+            }
+            else
+            {
+                properties.Insert(MF_MT_YUV_MATRIX, PropertyValue::CreateUInt32(MFVideoTransferMatrix_BT709));
+                properties.Insert(MF_MT_VIDEO_NOMINAL_RANGE, PropertyValue::CreateUInt32(MFNominalRange_16_235));
+            }
         }
         else
         {

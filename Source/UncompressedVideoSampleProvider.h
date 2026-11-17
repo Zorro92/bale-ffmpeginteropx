@@ -124,6 +124,7 @@ protected:
     virtual bool HasProcessedOutput() const { return false; }
     // False: leave the processed output colour description to the player's defaults.
     virtual bool ProcessedOutputSetsColorAttributes() const { return true; }
+    virtual AVPixelFormat ProcessedOutputPixelFormat() const { return AV_PIX_FMT_NV12; }
     HRESULT LatchFatalError(HRESULT hr)
     {
         if (SUCCEEDED(hr)) hr = E_UNEXPECTED;

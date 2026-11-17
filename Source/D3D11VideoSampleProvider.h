@@ -31,11 +31,18 @@ public:
         HardwareDecoderStatus hardwareDecoderStatus,
         bool applyHdrColorInfo,
         std::unique_ptr<VideoFrameProcessor> processor = nullptr,
-        int processedOutputMode = 0)
+        int processedOutputMode = 0,
+        int processedOutputFormat = 0)
         : UncompressedVideoSampleProvider(reader, avFormatCtx, avCodecCtx, config, streamIndex, hardwareDecoderStatus, applyHdrColorInfo)
     {
         frameProcessor = std::move(processor);
         outputMode = frameProcessor ? processedOutputMode : 0;
+        // The processor writes NV12 only; other formats are a debug test with the processor bypassed.
+        outputFormat = frameProcessor && (outputMode & OutputBypassProcessor) ? processedOutputFormat : 0;
+        if (frameProcessor && processedOutputFormat != 0 && outputFormat == 0)
+        {
+            av_log(nullptr, AV_LOG_WARNING, "Bale tonemap format=%d ignored without bypass (output bit 8)\n", processedOutputFormat);
+        }
         processorWidth = avCodecCtx->width;
         processorHeight = avCodecCtx->height;
         decoder = DecoderEngine::FFmpegD3D11HardwareDecoder;
@@ -496,6 +503,14 @@ public:
 protected:
     bool HasProcessedOutput() const override { return frameProcessor != nullptr; }
     bool ProcessedOutputSetsColorAttributes() const override { return (outputMode & OutputNoColorAttributes) == 0; }
+    AVPixelFormat ProcessedOutputPixelFormat() const override
+    {
+        return outputFormat == 1 ? AV_PIX_FMT_P010LE : outputFormat == 2 ? AV_PIX_FMT_BGRA : AV_PIX_FMT_NV12;
+    }
+    DXGI_FORMAT ProcessedOutputDxgiFormat() const
+    {
+        return outputFormat == 1 ? DXGI_FORMAT_P010 : outputFormat == 2 ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_NV12;
+    }
 
 private:
     // Match FFmpeg's lock ordering: its device lock precedes the D3D multithread lock.
@@ -566,7 +581,7 @@ private:
             {
                 std::lock_guard lock(samplesMutex);
                 if (!processedTexturePool) processedTexturePool = std::make_shared<TexturePool>(device, 5);
-                winrt::check_hresult(processedTexturePool->GetTexture(processorWidth, processorHeight, DXGI_FORMAT_NV12,
+                winrt::check_hresult(processedTexturePool->GetTexture(processorWidth, processorHeight, ProcessedOutputDxgiFormat(),
                     decoderBinds ? (D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE) : (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE), output));
             }
             if (decoderBinds && !processedRenderTarget)
@@ -576,7 +591,7 @@ private:
                 targetDesc.Height = processorHeight;
                 targetDesc.MipLevels = 1;
                 targetDesc.ArraySize = 1;
-                targetDesc.Format = DXGI_FORMAT_NV12;
+                targetDesc.Format = ProcessedOutputDxgiFormat();
                 targetDesc.SampleDesc.Count = 1;
                 targetDesc.Usage = D3D11_USAGE_DEFAULT;
                 targetDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
@@ -585,7 +600,7 @@ private:
             if (!outputModeLogged)
             {
                 outputModeLogged = true;
-                av_log(nullptr, AV_LOG_INFO, "Bale tonemap output mode=%d\n", outputMode);
+                av_log(nullptr, AV_LOG_INFO, "Bale tonemap output mode=%d format=%d\n", outputMode, outputFormat);
             }
 
             auto multithread = device.try_as<ID3D10Multithread>();
@@ -647,6 +662,7 @@ private:
     static constexpr int OutputNoFlush = 4;
     static constexpr int OutputBypassProcessor = 8;
     int outputMode = 0;
+    int outputFormat = 0;
     bool outputModeLogged = false;
     winrt::com_ptr<ID3D11Texture2D> processedRenderTarget;
     std::unique_ptr<VideoFrameProcessor> frameProcessor;

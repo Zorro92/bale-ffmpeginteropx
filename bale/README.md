@@ -85,6 +85,13 @@ file without the stage, or on the system decoder, survived 40 opens.
   bale_gpu is never created or called (the picture is undefined). Isolates the
   fork-side stage from bale_gpu in opens-to-failure tests.
 
+`bale_tonemap_format` (`"0"` NV12 default, `"1"` P010, `"2"` BGRA8) changes the
+stage's output texture format and media type. bale_gpu writes NV12 only, so a
+non-NV12 format is honoured only together with bypass bit 8 (otherwise it is
+ignored with a warning). Don't combine BGRA8 with bit 1 (DECODER binds need a
+video format). It exists to test whether the player's per-open cost follows the
+NV12 output type.
+
 The stream logs `Bale tonemap output mode=N` once.
 
 ## Compressed video colour option
