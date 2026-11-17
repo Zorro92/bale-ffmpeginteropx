@@ -604,13 +604,17 @@ private:
             {
                 // Never hold samplesMutex while entering the shared immediate context.
                 DeviceContextLock contextLock(hardwareContext, multithread.get());
-                if (!processorInitialized)
+                bool bypass = (outputMode & OutputBypassProcessor) != 0;
+                if (!processorInitialized && !bypass)
                 {
                     winrt::check_hresult(frameProcessor->Initialize(device.get(), processorWidth, processorHeight));
                     processorInitialized = true;
                 }
                 auto target = decoderBinds ? processedRenderTarget.get() : output.get();
-                winrt::check_hresult(frameProcessor->Process(deviceContext.get(), input, static_cast<UINT>(subresource), target, colorInfo));
+                if (!bypass)
+                {
+                    winrt::check_hresult(frameProcessor->Process(deviceContext.get(), input, static_cast<UINT>(subresource), target, colorInfo));
+                }
                 if (decoderBinds)
                 {
                     deviceContext->CopyResource(output.get(), target);
@@ -641,6 +645,7 @@ private:
     static constexpr int OutputDecoderBinds = 1;
     static constexpr int OutputNoColorAttributes = 2;
     static constexpr int OutputNoFlush = 4;
+    static constexpr int OutputBypassProcessor = 8;
     int outputMode = 0;
     bool outputModeLogged = false;
     winrt::com_ptr<ID3D11Texture2D> processedRenderTarget;

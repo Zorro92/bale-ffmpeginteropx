@@ -70,7 +70,7 @@ header still require review and console validation.
 
 ### Debug: tone-map output variants
 
-`bale_tonemap_output` (`"0"`–`"7"`, default `"0"`) is a bitmask, only used while
+`bale_tonemap_output` (`"0"`–`"15"`, default `"0"`) is a bitmask, only used while
 `bale_tonemap` is active, to isolate how the player's video processor handles the
 stage's output. On an Xbox Series X, 4K d3d11va with the stage removed the device
 at about the 22nd open (driver break in Media Foundation's msvproc), while the same
@@ -81,6 +81,9 @@ file without the stage, or on the system decoder, survived 40 opens.
 - `2`: the output type carries no transfer/primaries/matrix/range attributes, so the
   player uses its defaults (HDR attributes stay removed).
 - `4`: no context Flush after each frame.
+- `8`: bypass the processor: the stage, its pools and output type run as usual, but
+  bale_gpu is never created or called (the picture is undefined). Isolates the
+  fork-side stage from bale_gpu in opens-to-failure tests.
 
 The stream logs `Bale tonemap output mode=N` once.
 
