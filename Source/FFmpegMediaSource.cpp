@@ -2409,7 +2409,7 @@ namespace winrt::FFmpegInteropX::implementation
         {
             hardwareDecoderStatus = HardwareDecoderStatus::Available;
             auto processor = BaleToneMap::Create(baleToneMap, avStream->codecpar);
-            videoSampleProvider = std::shared_ptr<MediaSampleProvider>(new D3D11VideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr, std::move(processor)));
+            videoSampleProvider = std::shared_ptr<MediaSampleProvider>(new D3D11VideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr, std::move(processor), baleToneMapOutput));
         }
         else
         {
@@ -2533,6 +2533,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_film_grain_mode") { target = &baleFilmGrainMode; minimum = 0; maximum = 2; }
         else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 6; }
         else if (key == "bale_tonemap") { target = &baleToneMap; minimum = 0; maximum = 2; }
+        else if (key == "bale_tonemap_output") { target = &baleToneMapOutput; minimum = 0; maximum = 7; }
         else if (key == "bale_zero_copy") { target = &baleZeroCopy; minimum = 0; maximum = 1; }
         else if (key == "bale_decode_thread_priority") { target = &baleDecodeThreadPriority; minimum = 0; maximum = 2; }
         else if (key == "bale_decoder_use_max_resolution") { target = &baleDecoderUseMaxResolution; minimum = 0; maximum = 1; }

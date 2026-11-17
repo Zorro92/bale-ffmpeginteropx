@@ -30,10 +30,12 @@ public:
         int streamIndex,
         HardwareDecoderStatus hardwareDecoderStatus,
         bool applyHdrColorInfo,
-        std::unique_ptr<VideoFrameProcessor> processor = nullptr)
+        std::unique_ptr<VideoFrameProcessor> processor = nullptr,
+        int processedOutputMode = 0)
         : UncompressedVideoSampleProvider(reader, avFormatCtx, avCodecCtx, config, streamIndex, hardwareDecoderStatus, applyHdrColorInfo)
     {
         frameProcessor = std::move(processor);
+        outputMode = frameProcessor ? processedOutputMode : 0;
         processorWidth = avCodecCtx->width;
         processorHeight = avCodecCtx->height;
         decoder = DecoderEngine::FFmpegD3D11HardwareDecoder;
@@ -311,6 +313,7 @@ public:
             texturePool.reset();
             texturePool = nullptr;
             processedTexturePool.reset();
+            processedRenderTarget = nullptr;
             processorInitialized = false;
         }
 
@@ -492,6 +495,7 @@ public:
 
 protected:
     bool HasProcessedOutput() const override { return frameProcessor != nullptr; }
+    bool ProcessedOutputSetsColorAttributes() const override { return (outputMode & OutputNoColorAttributes) == 0; }
 
 private:
     // Match FFmpeg's lock ordering: its device lock precedes the D3D multithread lock.
@@ -555,12 +559,33 @@ private:
             {
                 winrt::throw_hresult(E_INVALIDARG);
             }
+            // Debug variant (outputMode & OutputDecoderBinds): the processor renders into one internal
+            // target, and the player gets copies in textures bound like decoder output.
+            bool decoderBinds = (outputMode & OutputDecoderBinds) != 0;
             winrt::com_ptr<ID3D11Texture2D> output;
             {
                 std::lock_guard lock(samplesMutex);
                 if (!processedTexturePool) processedTexturePool = std::make_shared<TexturePool>(device, 5);
                 winrt::check_hresult(processedTexturePool->GetTexture(processorWidth, processorHeight, DXGI_FORMAT_NV12,
-                    D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, output));
+                    decoderBinds ? (D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE) : (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE), output));
+            }
+            if (decoderBinds && !processedRenderTarget)
+            {
+                D3D11_TEXTURE2D_DESC targetDesc{};
+                targetDesc.Width = processorWidth;
+                targetDesc.Height = processorHeight;
+                targetDesc.MipLevels = 1;
+                targetDesc.ArraySize = 1;
+                targetDesc.Format = DXGI_FORMAT_NV12;
+                targetDesc.SampleDesc.Count = 1;
+                targetDesc.Usage = D3D11_USAGE_DEFAULT;
+                targetDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+                winrt::check_hresult(device->CreateTexture2D(&targetDesc, nullptr, processedRenderTarget.put()));
+            }
+            if (!outputModeLogged)
+            {
+                outputModeLogged = true;
+                av_log(nullptr, AV_LOG_INFO, "Bale tonemap output mode=%d\n", outputMode);
             }
 
             auto multithread = device.try_as<ID3D10Multithread>();
@@ -584,8 +609,16 @@ private:
                     winrt::check_hresult(frameProcessor->Initialize(device.get(), processorWidth, processorHeight));
                     processorInitialized = true;
                 }
-                winrt::check_hresult(frameProcessor->Process(deviceContext.get(), input, static_cast<UINT>(subresource), output.get(), colorInfo));
-                deviceContext->Flush();
+                auto target = decoderBinds ? processedRenderTarget.get() : output.get();
+                winrt::check_hresult(frameProcessor->Process(deviceContext.get(), input, static_cast<UINT>(subresource), target, colorInfo));
+                if (decoderBinds)
+                {
+                    deviceContext->CopyResource(output.get(), target);
+                }
+                if ((outputMode & OutputNoFlush) == 0)
+                {
+                    deviceContext->Flush();
+                }
                 auto removed = device->GetDeviceRemovedReason();
                 if (FAILED(removed))
                 {
@@ -604,6 +637,13 @@ private:
         }
     }
 
+    // Bale debug bitmask (bale_tonemap_output) to isolate how the player handles processed output.
+    static constexpr int OutputDecoderBinds = 1;
+    static constexpr int OutputNoColorAttributes = 2;
+    static constexpr int OutputNoFlush = 4;
+    int outputMode = 0;
+    bool outputModeLogged = false;
+    winrt::com_ptr<ID3D11Texture2D> processedRenderTarget;
     std::unique_ptr<VideoFrameProcessor> frameProcessor;
     bool processorInitialized = false;
     bool poolLogged = false;

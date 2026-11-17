@@ -197,10 +197,20 @@ IMediaStreamDescriptor UncompressedVideoSampleProvider::CreateStreamDescriptor()
     if (HasProcessedOutput())
     {
         // The processing contract fixes the output colour space for the lifetime of the stream.
-        properties.Insert(MF_MT_VIDEO_PRIMARIES, PropertyValue::CreateUInt32(MFVideoPrimaries_BT709));
-        properties.Insert(MF_MT_TRANSFER_FUNCTION, PropertyValue::CreateUInt32(MFVideoTransFunc_709));
-        properties.Insert(MF_MT_YUV_MATRIX, PropertyValue::CreateUInt32(MFVideoTransferMatrix_BT709));
-        properties.Insert(MF_MT_VIDEO_NOMINAL_RANGE, PropertyValue::CreateUInt32(MFNominalRange_16_235));
+        if (ProcessedOutputSetsColorAttributes())
+        {
+            properties.Insert(MF_MT_VIDEO_PRIMARIES, PropertyValue::CreateUInt32(MFVideoPrimaries_BT709));
+            properties.Insert(MF_MT_TRANSFER_FUNCTION, PropertyValue::CreateUInt32(MFVideoTransFunc_709));
+            properties.Insert(MF_MT_YUV_MATRIX, PropertyValue::CreateUInt32(MFVideoTransferMatrix_BT709));
+            properties.Insert(MF_MT_VIDEO_NOMINAL_RANGE, PropertyValue::CreateUInt32(MFNominalRange_16_235));
+        }
+        else
+        {
+            for (auto key : { MF_MT_VIDEO_PRIMARIES, MF_MT_TRANSFER_FUNCTION, MF_MT_YUV_MATRIX, MF_MT_VIDEO_NOMINAL_RANGE })
+            {
+                if (properties.HasKey(key)) properties.Remove(key);
+            }
+        }
         for (auto key : { MF_MT_MAX_LUMINANCE_LEVEL, MF_MT_MAX_FRAME_AVERAGE_LUMINANCE_LEVEL,
             MF_MT_MIN_MASTERING_LUMINANCE, MF_MT_MAX_MASTERING_LUMINANCE, MF_MT_CUSTOM_VIDEO_PRIMARIES })
         {
