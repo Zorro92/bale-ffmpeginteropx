@@ -111,13 +111,23 @@ time, as the player receives them; bale.49 printed stream time-base units by mis
 went backwards, gaps over 1.5 sample durations, and the deepest ready-frame queue. The first 24
 samples after an open or seek are also listed: `first samples pts ms=a,b,c,...`.
 
+Since bale.52 the line goes on with `inflight avg=.. max=N target=N wait avg=.. max=.. ms output
+avg=.. max=.. ms pool blocked=N`: temporal units in flight (fed to rav1g and not yet delivered,
+counted when a frame is taken for delivery, that frame included) against the feeder's target;
+the time the sample thread waited for a decoded frame (0 when one was queued); `OutputFrame` time
+(GPU fence wait, copy or stage, release signal and flush); and how often `get_image` had to wait
+for a free image in the window. The decode call is timed on the feeder thread.
+
+`bale_gpu_decode_inflight` (1–8, default 3; values above 7 act as 7, one below the 8 images)
+sets how many temporal units the feeder keeps in flight.
+
 With the player-side pool (bale.46+), the decoder's fixed pool no longer limits the player's
 buffer, so decode-ahead and BufferTime can be set as for dav1d. Mind the memory: each buffered
 frame is a player-side texture (1080p P010 ≈ 6 MiB, 4K ≈ 25 MiB).
 
 `bale_rav1g_parse` (0–8, default 0 = rav1g's choice: 1 frame in parse and 1 parse thread up to
 1440p) asks rav1g for N frames in parse and N parse threads. With one frame in parse, rav1g parses
-each unit inside the decode call on the sample thread; the "decode call" timing shows that cost.
+each unit inside the decode call on the feeder thread; the "decode call" timing shows that cost.
 rav1g's budget guard may still create fewer.
 
 ### rav1g prewarm and threading notes
@@ -221,20 +231,43 @@ Each decoder's output fence is opened on the D3D11 device (`OpenSharedFence`), a
 a recreate. Settings: `rav1g_settings_default`, the sequence size and depth from
 `rav1g_peek_stream_info`, `RAV1G_OUTPUT_SEMI_PLANAR`, `shared_fence`, the output callbacks
 and `memory_available` = `AppMemoryUsageLimit − AppMemoryUsage` minus the bytes of output
-images not created yet. `low_memory`, slots, threads and the process-global `rav1g_set_*`
-switches are never touched. The device handle comes from the MSS device manager at the
-first Starting request; a lost device fails the stream.
+images not created yet. `low_memory`, slots and threads stay rav1g's (unless
+`bale_rav1g_parse`); the process-global `rav1g_set_*` switches are never touched. The device
+handle comes from the MSS device manager at the first Starting request; a lost device fails the
+stream.
 
-**Flow and threads.** The sample thread (the decode-ahead worker when
-`bale_decode_ahead_frames` > 0, as Bale sets for AV1, else the MSS request thread) reads a
-packet, calls `rav1g_decoder_decode` with user data = index into a table of {pts,
-duration, generation}, and repeats until a frame is queued. rav1g's `frame` callback
-(completion thread) only queues the frame. The sample thread has the immediate context
-wait for the frame's fence (`ID3D11DeviceContext4::Wait`, on the GPU), under the device's
-`ID3D10Multithread` protection, then hands the texture to MF or runs the stage. End of
-stream drains. `NEEDS_RECONFIGURE` drains, recreates the decoder and decodes the unit again.
-Matroska may leave the sequence header out of blocks: a decoder created from the
-container's header gets it in front of its first unit.
+**Flow and threads.** Since bale.52 the provider has its own feeder thread (started at the
+first sample request, priority from `bale_decode_thread_priority`): it reads packets
+(`GetNextPacket`; `FFmpegReader` serialises reads with the other threads through its demux
+lock) and calls `rav1g_decoder_decode` with user data = index into a table of {pts, duration,
+generation} while fewer than `bale_gpu_decode_inflight` units are in flight (fed and not yet
+delivered). With one frame in parse rav1g parses on that thread, so the next units are parsed
+while the GPU decodes earlier ones and the sample thread delivers. rav1g's `frame` callback
+(completion thread) only queues the frame. The sample thread (the decode-ahead worker when
+`bale_decode_ahead_frames` > 0, as Bale sets for AV1, else the MSS request thread) waits for a
+queued frame, has the immediate context wait for its fence (`ID3D11DeviceContext4::Wait`, on
+the GPU) under the device's `ID3D10Multithread` protection, then copies it into a player-side
+texture or runs the stage. At end of stream the feeder drains rav1g; the sample thread returns
+end of stream once the queue is empty. `NEEDS_RECONFIGURE` drains, recreates the decoder and
+decodes the unit again (on the feeder). Matroska may leave the sequence header out of blocks:
+a decoder created from the container's header gets it in front of its first unit.
+
+Locks: the provider's frame lock guards the frame queue, the timing table and the feeder's
+state; it is never held while rav1g is called, and it may be taken before the image pool's lock
+(never after). rav1g is never called with the samples lock or the D3D11 multithread lock held.
+Order: source lock → decode-ahead lock → frame lock → pool lock. The feeder pauses whenever the
+source pauses the decode-ahead worker (after the worker has stopped, since a sample request it
+is in may wait for a frame): around seeks, flushes, stream switches, Starting requests and
+device checks. A flush, `ResumeAfterCancel` and a stream switch therefore never run beside a
+feeder step. Close stops and joins the feeders after the decode-ahead worker and before the
+reader stops; the destructor does the same. A disabled stream (end of stream, cancel, switch)
+gets no packets, so the feeder idles until it is enabled again.
+
+The decode-ahead worker still wraps this provider when `bale_decode_ahead_frames` > 0: the
+feeder supplies the decode parallelism, and the worker turns decoded frames into finished
+samples ahead of MF's requests, so the MSS request thread, which holds the source lock (also
+for audio requests), seldom waits for the GPU or the fence. Without the key the request thread
+waits for frames itself, which also works. Each finished sample holds a player-side texture.
 
 **Images.** 8 per stream, never more: D3D11 textures (`RENDER_TARGET | SHADER_RESOURCE |
 UNORDERED_ACCESS`, `MISC_SHARED_NTHANDLE | MISC_SHARED`; without unordered access if the
@@ -246,9 +279,11 @@ stored per sample) or, for processed output, right after the stage; the releaser
 D3D11 fence that `get_image` waits for before rav1g writes the image again. A flush also
 takes back the images of samples MF still holds, as the D3D11 path does.
 
-**Seek, stop.** MSS Starting and Close first cancel any `get_image` wait without taking
-the source lock (a wait can last a whole pause and the waiting thread may hold it).
-Flush bumps the generation, drains rav1g (image requests fail meanwhile; drain errors are
+**Seek, stop.** MSS Starting and Close first cancel waits without taking the source lock:
+a `get_image` wait for a free image (since bale.52 the cancel only ends waits; a request that
+finds a free image still gets it, so a Starting request no longer fails the unit the feeder is
+decoding) and the sample thread's wait for a frame (it checks every 20 ms). Flush (feeder
+paused) bumps the generation, drains rav1g (image requests fail meanwhile; drain errors are
 part of the seek), returns older frames unsent and skips packets until a key frame; the
 decoder is kept. Starting ends the cancel and, if the cancel failed a decode, drains and
 waits for a key frame too. Exact (non-fast) seeks deliver frames from the key frame on, as

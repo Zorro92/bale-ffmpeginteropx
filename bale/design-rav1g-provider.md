@@ -60,6 +60,17 @@ Pull model on the MSS sample-request thread, like the other providers:
    hand the texture to MF as the sample, or run the stage (§4) and hand its output. Timestamps from
    the `user_data` table.
 
+**Feeder thread (bale.52).** The pull model above fed one packet only when no frame was ready and
+parsed, copied, flushed and waited on one thread. On the console (Series X, 1080p 23.976 fps 10-bit
+film, bale.50) that delivered ~21.7 frames/s with ~92 ms request-to-delivery latency and an empty
+ready queue, while rav1g's own test player, keeping 4 units queued with the same settings, decodes
+at ~15 ms a frame (~20–25 ms when fed one at a time). The provider now has a feeder thread that
+reads packets and calls `rav1g_decoder_decode` while fewer than `bale_gpu_decode_inflight` (default
+3) units are in flight, so rav1g parses ahead on that thread while the GPU and the sample thread
+work; the sample thread only waits for a queued frame and outputs it (step 4). The feeder pauses
+with the decode-ahead worker (seek, flush, stream switch, Starting) and stops on Close; see
+README.md, "Flow and threads".
+
 `get_image` (decode thread or a rav1g thread): take a free pair from the pool and return its D3D12
 side. If none is free it **blocks** until MF returns one: a non-zero return fails the temporal unit
 (references break until the next key frame), so it returns non-zero only to cancel on stop or seek.

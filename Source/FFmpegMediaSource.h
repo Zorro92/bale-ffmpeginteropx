@@ -363,6 +363,8 @@ namespace winrt::FFmpegInteropX::implementation
         int baleCompressedColorInfo = 0;
         // Bale: rav1g frames in parse and parse threads (0 = rav1g's defaults).
         int baleRav1gParse = 0;
+        // Bale: access units a GPU decoder stream keeps in flight (0 = the provider's default, 3).
+        int baleGpuDecodeInflight = 0;
         // Bale: fast seek without a MediaPlaybackSession (e.g. IMFMediaEngine), backward-only.
         int baleFastSeekWithoutSession = 0;
         // 1 = AC-3/E-AC-3 packets go undecoded to the system Dolby decoder (keeps E-AC-3 JOC/Atmos).
@@ -438,6 +440,8 @@ namespace winrt::FFmpegInteropX::implementation
         // an image may hold it on the sample thread).
         std::vector<std::shared_ptr<GpuDecoderImagePool>> gpuDecoderPools;
         void CancelGpuDecoderWaits();
+        void PauseGpuDecoderFeeders(bool pause);
+        void StopGpuDecoderFeeders();
         // Renderer device handle for the GPU decoder streams (not an FFmpeg hardware device).
         com_ptr<IMFDXGIDeviceManager> gpuDecoderDeviceManager;
         HANDLE gpuDecoderDeviceHandle = nullptr;

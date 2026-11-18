@@ -12,7 +12,9 @@
 #include <d3d11_4.h>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <string>
+#include <thread>
 #include <cmath>
 
 // Video decoded on the GPU by a GpuVideoDecoder into textures shared with the renderer's D3D11 device.
@@ -22,17 +24,32 @@
 // The media type and size are fixed when the stream is created; a frame that type cannot carry
 // fails the stream.
 //
-// Threads: CreateNextSampleBuffer/SetSampleProperties run on the sample thread (the MediaStreamSource
-// request thread, or the media source's decode-ahead worker). The decoder calls AcquireImage on the
-// sample thread or its own threads and FrameReady on its completion thread; FrameReady only queues.
-// The sample thread waits for each frame's fence on the GPU (ID3D11DeviceContext4::Wait) and runs the
-// processor, under the device's multithread protection. Processed returns images on MF's thread.
+// Threads: the provider's feeder thread reads packets and calls the decoder (Create, Decode, Drain at
+// the end of the stream) so that a target number of access units stays in flight (fed and not yet
+// delivered). A decoder that parses on the calling thread then parses the next units while the GPU
+// decodes earlier ones and the sample thread delivers. CreateNextSampleBuffer/SetSampleProperties
+// run on the sample thread (the MediaStreamSource request thread, or the media source's decode-ahead
+// worker): it waits for a decoded frame, waits for its fence on the GPU (ID3D11DeviceContext4::Wait)
+// and copies or processes it under the device's multithread protection. The decoder calls
+// AcquireImage on the feeder thread or its own threads and FrameReady on its completion thread;
+// FrameReady only queues. Processed returns textures on MF's thread.
+//
+// The feeder shares the demuxer with the media source's threads (FFmpegReader serialises packet
+// reads), and is paused (PauseFeeder/ResumeFeeder) whenever the media source pauses its decode-ahead
+// worker: around seeks, flushes, stream switches and Starting requests. Flush, ResumeAfterCancel
+// and the stream's enable state change only while it is paused or idle. Locks: framesMutex guards
+// the feeder state, the frame queue and the timing table; it is never held while calling the
+// decoder, and it may be held while taking the image pool's lock (never the reverse). The decoder is
+// never called with samplesMutex or the device's multithread protection held.
 class GpuDecoderSampleProvider : public MediaSampleProvider, public GpuDecoderHost, public std::enable_shared_from_this<GpuDecoderSampleProvider>
 {
 public:
     // Output images per stream. The decoder holds up to its pipeline slots + 2; the rest are queued or
     // held by Media Foundation. The pool never grows: the decoder waits for an image instead.
     static constexpr uint32_t OutputImages = 8;
+    // Access units in flight (fed to the decoder and not yet delivered) unless SetDecodeInflight says
+    // otherwise. Each needs an output image, so the target stays below OutputImages.
+    static constexpr uint32_t DefaultInflight = 3;
 
     GpuDecoderSampleProvider(
         std::shared_ptr<FFmpegReader> reader,
@@ -80,6 +97,7 @@ public:
 
     virtual ~GpuDecoderSampleProvider()
     {
+        StopFeeder();
         pool->Shutdown();
         // Hands the frames in flight back (FrameReady/ImageUnused) before the images go away.
         gpuDecoder->Destroy();
@@ -98,6 +116,64 @@ public:
     std::shared_ptr<GpuDecoderImagePool> OutputPool() const { return pool; }
 
     HRESULT FatalError() const override { return fatal.load(); }
+
+    // Units the feeder keeps in flight (1 to OutputImages - 1; larger values are capped). Before the
+    // first sample.
+    void SetDecodeInflight(uint32_t units)
+    {
+        std::lock_guard lock(framesMutex);
+        inflightTarget = (std::max)(1u, (std::min)(units, OutputImages - 1));
+    }
+
+    // Win32 priority of the feeder thread. Before the first sample.
+    void SetFeederThreadPriority(int priority)
+    {
+        feederPriority = priority;
+    }
+
+    // Stops the feeder between two steps (it may finish the packet read or decode call it is in) and
+    // keeps it stopped until the matching ResumeFeeder. Nests. Never called on the feeder thread.
+    void PauseFeeder()
+    {
+        std::unique_lock lock(framesMutex);
+        feederPauses++;
+        framesChanged.wait(lock, [this] { return !feederBusy; });
+    }
+
+    void ResumeFeeder()
+    {
+        {
+            std::lock_guard lock(framesMutex);
+            if (feederPauses > 0) feederPauses--;
+        }
+        framesChanged.notify_all();
+    }
+
+    // Ends the feeder for good (the media source closes, or the provider is destroyed): fails waits
+    // for output images and joins the thread. The demuxer must still be open.
+    void StopFeeder()
+    {
+        {
+            std::lock_guard lock(framesMutex);
+            feederStop = true;
+        }
+        framesChanged.notify_all();
+        pool->Shutdown();
+        if (feeder.joinable()) feeder.join();
+    }
+
+    void EnableStream() override
+    {
+        MediaSampleProvider::EnableStream();
+        SetFeedEnabled(true);
+    }
+
+    void DisableStream() override
+    {
+        // A disabled stream gets no packets: the feeder must not wait for one.
+        MediaSampleProvider::DisableStream();
+        SetFeedEnabled(false);
+    }
 
     // The renderer's device (Media Foundation's D3D11 device). Before the first sample.
     HRESULT SetRendererDevice(winrt::com_ptr<ID3D11Device> newDevice, winrt::com_ptr<ID3D11DeviceContext> newContext)
@@ -147,18 +223,28 @@ public:
         Fail(hr, "renderer device lost");
     }
 
-    // Called by the media source, with its lock, after a Starting request that began with
-    // pool->RequestCancel(): a decode that the cancel failed leaves the decoder without references,
-    // so it is drained and waits for a key frame. True when a sample request ended in the cancel.
+    // Called by the media source, with its lock and the feeder paused, after a Starting request that
+    // began with pool->RequestCancel(): a decode that the cancel failed leaves the decoder without
+    // references, so it is drained and waits for a key frame. True when a sample request ended in
+    // the cancel.
     bool ResumeAfterCancel()
     {
+        FeederPause pause(this);
         if (pool->CancelHits() != handledCancelHits)
         {
-            generation++;
+            {
+                std::lock_guard lock(framesMutex);
+                generation++;
+            }
             DrainDecoder();
             awaitKeyFrame = true;
         }
         pool->ClearCancel();
+        {
+            std::lock_guard lock(framesMutex);
+            feedCancelled = false;
+        }
+        framesChanged.notify_all();
         if (cancelledRequest)
         {
             // The cancelled request ended the stream (no sample); a Starting request resumes it.
@@ -179,8 +265,15 @@ public:
         m_isDiscontinuous = true;
         IsCleanSample = false;
 
-        // Frames decoded before this point are never sent; decoding resumes at a key frame.
-        generation++;
+        // Frames decoded before this point are never sent; decoding resumes at a key frame. The media
+        // source has paused the feeder already (this pause only nests); it resumes after the flush.
+        FeederPause pause(this);
+        {
+            std::lock_guard lock(framesMutex);
+            generation++;
+            feedEnded = false;
+            feedCancelled = false;
+        }
         LogDeliveryStats();
         stats = DeliveryStats{};
         listedSinceStart = 0;
@@ -190,49 +283,67 @@ public:
         ReleasePending();
         awaitKeyFrame = true;
         inputEnded = false;
-        drained = false;
     }
 
     HRESULT CreateNextSampleBuffer(IBuffer* pBuffer, int64_t& samplePts, int64_t& sampleDuration, IDirect3DSurface* surface) override
     {
         UNREFERENCED_PARAMETER(pBuffer);
-        while (true)
+        auto fatalHr = FatalError();
+        if (FAILED(fatalHr)) return fatalHr;
+        if (!rendererDevice) return Fail(E_NOINTERFACE, "no renderer device");
+
+        GpuDecodedFrame frame;
+        FrameTiming timing;
+        uint32_t inFlight = 0;
+        size_t queued = 0;
+        double waitMs = 0;
         {
-            auto fatalHr = FatalError();
-            if (FAILED(fatalHr)) return fatalHr;
-            if (pool->CancelRequested()) return CancelRequest();
-
-            GpuDecodedFrame frame;
-            if (TakeFrame(frame))
+            std::unique_lock lock(framesMutex);
+            if (!feeder.joinable() && !feederStop)
             {
-                return OutputFrame(frame, surface, samplePts, sampleDuration);
+                try
+                {
+                    feeder = std::thread([this] { FeedLoop(); });
+                }
+                catch (...)
+                {
+                    return Fail(E_OUTOFMEMORY, "feeder thread");
+                }
             }
-            if (inputEnded)
+            std::chrono::steady_clock::time_point waitStart{};
+            while (true)
             {
-                if (drained || !gpuDecoder->IsCreated()) return S_FALSE;
-                // Every frame in flight is queued when Drain returns.
-                drained = true;
-                auto hr = gpuDecoder->Drain();
-                if (FAILED(hr)) return pool->CancelRequested() ? CancelRequest() : Fail(hr, "drain failed");
-                continue;
+                fatalHr = FatalError();
+                if (FAILED(fatalHr)) return fatalHr;
+                queued = readyFrames.size();
+                if (TakeFrame(frame, timing)) break;
+                // Every frame in flight is queued when the feeder's final drain returns.
+                if (feedEnded) return S_FALSE;
+                if (pool->CancelRequested()) return CancelRequest();
+                if (waitStart == std::chrono::steady_clock::time_point{}) waitStart = std::chrono::steady_clock::now();
+                // Woken when a frame is queued or the feeder stops; the timeout re-checks for a cancel,
+                // which another thread requests without this lock.
+                framesChanged.wait_for(lock, CancelCheckInterval);
             }
-            if (!rendererDevice) return Fail(E_NOINTERFACE, "no renderer device");
-
-            AVPacket* packet = nullptr;
-            LONGLONG pts = 0;
-            LONGLONG duration = 0;
-            auto hr = GetNextPacket(&packet, pts, duration);
-            if (hr == S_FALSE)
+            if (waitStart != std::chrono::steady_clock::time_point{})
             {
-                inputEnded = true;
-                continue;
+                waitMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count();
             }
-            if (FAILED(hr)) return Fail(hr, "packet read failed");
-            hr = FeedPacket(packet, pts, duration);
-            av_packet_free(&packet);
-            if (hr == E_ABORT) return CancelRequest();
-            if (FAILED(hr)) return Fail(hr, "decode failed");
+            outputting = true;
+            inFlight = InFlight();
         }
+
+        auto outputStart = std::chrono::steady_clock::now();
+        auto hr = OutputFrame(frame, timing, surface, samplePts, sampleDuration);
+        auto outputMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - outputStart).count();
+        {
+            std::lock_guard lock(framesMutex);
+            outputting = false;
+        }
+        // The feeder may feed again.
+        framesChanged.notify_all();
+        if (SUCCEEDED(hr)) RecordDelivery(timing, inFlight, queued, waitMs, outputMs);
+        return hr;
     }
 
     HRESULT SetSampleProperties(MediaStreamSample const& sample) override
@@ -378,12 +489,14 @@ public:
         {
             std::lock_guard lock(framesMutex);
             readyFrames.push_back(std::move(frame));
+            if (unitsInDecoder > 0) unitsInDecoder--;
         }
         catch (...)
         {
             pool->Release(static_cast<GpuDecoderImagePool::Image*>(image), 0);
             Fail(E_OUTOFMEMORY, "frame queue");
         }
+        framesChanged.notify_all();
     }
 
     int64_t MemoryAvailable() noexcept override
@@ -437,6 +550,9 @@ private:
     // samples after an open or seek are also listed one by one.
     static constexpr uint32_t StatsInterval = 240;
     static constexpr uint32_t ListedSamples = 24;
+    // How often a sample thread waiting for a frame checks for a cancel requested without framesMutex.
+    static constexpr std::chrono::milliseconds CancelCheckInterval{ 20 };
+    // Sample thread.
     struct DeliveryStats
     {
         uint32_t samples = 0;
@@ -449,17 +565,31 @@ private:
         uint32_t gaps = 0;
         size_t queueMax = 0;
         std::chrono::steady_clock::time_point windowStart{};
-        // Time spent inside the decoder's decode call (on the sample thread): with one frame in
-        // parse it includes the CPU parse of the unit.
-        uint32_t decodeCalls = 0;
-        double decodeSumMs = 0;
-        double decodeMaxMs = 0;
+        // Units in flight when a frame was taken for delivery (it included).
+        uint64_t inFlightSum = 0;
+        uint32_t inFlightMax = 0;
+        // Time the sample thread waited for a decoded frame (0 when one was queued).
+        double waitSumMs = 0;
+        double waitMaxMs = 0;
+        // OutputFrame: the GPU fence wait, the copy or processing, the release signal and the flush.
+        double outputSumMs = 0;
+        double outputMaxMs = 0;
+    };
+    // Time spent inside the decoder's decode call, on the feeder thread (with one frame in parse it
+    // includes the CPU parse of the unit). Under framesMutex.
+    struct DecodeCallStats
+    {
+        uint32_t calls = 0;
+        double sumMs = 0;
+        double maxMs = 0;
     };
     DeliveryStats stats;
+    DecodeCallStats decodeStats;
+    uint32_t windowBlocked = 0; // The pool's blocked count at the start of the window.
     uint32_t listedSinceStart = 0;
     std::string listedPts;
 
-    void RecordDelivery(const FrameTiming& timing) noexcept
+    void RecordDelivery(const FrameTiming& timing, uint32_t inFlight, size_t queued, double waitMs, double outputMs) noexcept
     {
         try
         {
@@ -485,10 +615,13 @@ private:
                 stats.deltaMax = (std::max)(stats.deltaMax, delta);
             }
             stats.lastPts = samplePts;
-            {
-                std::lock_guard lock(framesMutex);
-                stats.queueMax = (std::max)(stats.queueMax, readyFrames.size());
-            }
+            stats.queueMax = (std::max)(stats.queueMax, queued);
+            stats.inFlightSum += inFlight;
+            stats.inFlightMax = (std::max)(stats.inFlightMax, inFlight);
+            stats.waitSumMs += waitMs;
+            stats.waitMaxMs = (std::max)(stats.waitMaxMs, waitMs);
+            stats.outputSumMs += outputMs;
+            stats.outputMaxMs = (std::max)(stats.outputMaxMs, outputMs);
             if (listedSinceStart < ListedSamples)
             {
                 listedSinceStart++;
@@ -507,16 +640,42 @@ private:
         }
     }
 
+    // Sample thread, or a thread that runs while the sample thread is idle (Flush, the destructor).
     void LogDeliveryStats() noexcept
     {
+        DecodeCallStats decode;
+        uint32_t target = 0;
+        {
+            std::lock_guard lock(framesMutex);
+            decode = decodeStats;
+            decodeStats = DecodeCallStats{};
+            target = inflightTarget;
+        }
+        uint32_t created = 0, peak = 0, blocked = 0;
+        pool->Statistics(created, peak, blocked);
+        auto blockedDelta = blocked - windowBlocked;
+        windowBlocked = blocked;
         if (stats.samples == 0) return;
+        std::string decoderText;
+        try
+        {
+            gpuDecoder->AppendStatistics(decoderText);
+        }
+        catch (...)
+        {
+            decoderText.clear();
+        }
         auto elapsedS = std::chrono::duration<double>(std::chrono::steady_clock::now() - stats.windowStart).count();
         av_log(nullptr, AV_LOG_INFO,
-            "%s: delivery samples=%u rate=%.2f/s latency avg=%.1f max=%.1f ms decode call avg=%.1f max=%.1f ms pts step min=%.1f max=%.1f ms backwards=%u gaps=%u queue max=%u\n",
+            "%s: delivery samples=%u rate=%.2f/s latency avg=%.1f max=%.1f ms decode call avg=%.1f max=%.1f ms pts step min=%.1f max=%.1f ms backwards=%u gaps=%u queue max=%u"
+            " inflight avg=%.1f max=%u target=%u wait avg=%.1f max=%.1f ms output avg=%.1f max=%.1f ms pool blocked=%u%s\n",
             logName, stats.samples, elapsedS > 0 ? stats.samples / elapsedS : 0.0, stats.latencySumMs / stats.samples, stats.latencyMaxMs,
-            stats.decodeCalls ? stats.decodeSumMs / stats.decodeCalls : 0.0, stats.decodeMaxMs,
+            decode.calls ? decode.sumMs / decode.calls : 0.0, decode.maxMs,
             stats.deltaMin == INT64_MAX ? 0.0 : stats.deltaMin / 10000.0, stats.deltaMax == INT64_MIN ? 0.0 : stats.deltaMax / 10000.0,
-            stats.backwards, stats.gaps, static_cast<unsigned>(stats.queueMax));
+            stats.backwards, stats.gaps, static_cast<unsigned>(stats.queueMax),
+            static_cast<double>(stats.inFlightSum) / stats.samples, stats.inFlightMax, target,
+            stats.waitSumMs / stats.samples, stats.waitMaxMs, stats.outputSumMs / stats.samples, stats.outputMaxMs,
+            blockedDelta, decoderText.c_str());
         auto lastPts = stats.lastPts;
         stats = DeliveryStats{};
         stats.lastPts = lastPts;
@@ -598,6 +757,8 @@ private:
         {
             av_log(nullptr, AV_LOG_ERROR, "%s: stream failed (%s, hr=0x%08X)\n", logName, reason, static_cast<unsigned>(hr));
         }
+        // A waiting sample thread returns the failure (its wait times out if this wake-up is lost).
+        framesChanged.notify_all();
         return fatal.load();
     }
 
@@ -608,6 +769,141 @@ private:
         return E_ABORT;
     }
 
+    // Units in flight: in the decoder, decoded and queued, and the one being delivered. framesMutex.
+    uint32_t InFlight() const
+    {
+        return unitsInDecoder + static_cast<uint32_t>(readyFrames.size()) + (outputting ? 1u : 0u);
+    }
+
+    // framesMutex held.
+    bool CanFeed() const
+    {
+        return feedEnabled && !feedEnded && !feedCancelled && SUCCEEDED(fatal.load()) && InFlight() < inflightTarget;
+    }
+
+    void SetFeedEnabled(bool enabled)
+    {
+        {
+            std::lock_guard lock(framesMutex);
+            feedEnabled = enabled;
+        }
+        framesChanged.notify_all();
+    }
+
+    struct FeederPause
+    {
+        explicit FeederPause(GpuDecoderSampleProvider* owner) : owner(owner) { owner->PauseFeeder(); }
+        ~FeederPause() { owner->ResumeFeeder(); }
+        FeederPause(const FeederPause&) = delete;
+        FeederPause& operator=(const FeederPause&) = delete;
+        GpuDecoderSampleProvider* owner;
+    };
+
+    // The feeder thread: one step (a packet, or the final drain) at a time while CanFeed.
+    void FeedLoop()
+    {
+        if (feederPriority != THREAD_PRIORITY_NORMAL)
+        {
+            SetThreadPriority(GetCurrentThread(), feederPriority);
+        }
+        bool apartment = false;
+        try
+        {
+            // The decoder's memory callback reads Windows.System.MemoryManager on this thread.
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+            apartment = true;
+        }
+        catch (...)
+        {
+        }
+        {
+            std::unique_lock lock(framesMutex);
+            while (true)
+            {
+                feederBusy = false;
+                // PauseFeeder and a waiting sample thread (end of stream, failure) look again.
+                framesChanged.notify_all();
+                framesChanged.wait(lock, [this] { return feederStop || (feederPauses == 0 && CanFeed()); });
+                if (feederStop) break;
+                feederBusy = true;
+                lock.unlock();
+                FeedStep();
+                lock.lock();
+            }
+        }
+        if (apartment)
+        {
+            winrt::uninit_apartment();
+        }
+    }
+
+    // Feeder thread, no lock held. A cancelled step stops the feeder until ResumeAfterCancel or Flush;
+    // a failed one fails the stream.
+    void FeedStep() noexcept
+    {
+        HRESULT hr = S_OK;
+        const char* failure = "decode failed";
+        try
+        {
+            if (inputEnded)
+            {
+                // Every frame in flight is queued when Drain returns.
+                failure = "drain failed";
+                hr = gpuDecoder->IsCreated() ? gpuDecoder->Drain() : S_OK;
+                if (SUCCEEDED(hr))
+                {
+                    std::lock_guard lock(framesMutex);
+                    unitsInDecoder = 0;
+                    feedEnded = true;
+                    return;
+                }
+                if (pool->CancelRequested()) hr = E_ABORT;
+            }
+            else
+            {
+                AVPacket* packet = nullptr;
+                LONGLONG pts = 0;
+                LONGLONG duration = 0;
+                hr = GetNextPacket(&packet, pts, duration);
+                if (hr == S_FALSE)
+                {
+                    inputEnded = true;
+                    return;
+                }
+                if (FAILED(hr))
+                {
+                    failure = "packet read failed";
+                }
+                else
+                {
+                    try
+                    {
+                        hr = FeedPacket(packet, pts, duration);
+                    }
+                    catch (...)
+                    {
+                        hr = winrt::to_hresult();
+                    }
+                    av_packet_free(&packet);
+                }
+            }
+        }
+        catch (...)
+        {
+            hr = winrt::to_hresult();
+        }
+        if (hr == E_ABORT)
+        {
+            std::lock_guard lock(framesMutex);
+            feedCancelled = true;
+        }
+        else if (FAILED(hr))
+        {
+            Fail(hr, failure);
+        }
+    }
+
+    // Feeder thread.
     HRESULT FeedPacket(AVPacket* packet, int64_t pts, int64_t duration)
     {
         if (awaitKeyFrame && !(packet->flags & AV_PKT_FLAG_KEY))
@@ -628,21 +924,33 @@ private:
         awaitKeyFrame = false;
 
         auto cancelHits = pool->CancelHits();
-        auto userData = nextUserData++;
-        timings[userData % timings.size()] = FrameTiming{ userData, pts, duration, generation, std::chrono::steady_clock::now() };
+        uint64_t userData = 0;
         auto decodeStart = std::chrono::steady_clock::now();
+        {
+            // Counted before the call: the decoder may hand the frame over before Decode returns.
+            std::lock_guard lock(framesMutex);
+            userData = nextUserData++;
+            timings[userData % timings.size()] = FrameTiming{ userData, pts, duration, generation, decodeStart };
+            unitsInDecoder++;
+        }
         auto hr = gpuDecoder->Decode(packet->data, static_cast<size_t>(packet->size), userData);
         {
             auto decodeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - decodeStart).count();
-            stats.decodeCalls++;
-            stats.decodeSumMs += decodeMs;
-            stats.decodeMaxMs = (std::max)(stats.decodeMaxMs, decodeMs);
+            std::lock_guard lock(framesMutex);
+            decodeStats.calls++;
+            decodeStats.sumMs += decodeMs;
+            decodeStats.maxMs = (std::max)(decodeStats.maxMs, decodeMs);
         }
         if (hr == GpuVideoDecoder::ReconfigureRequired)
         {
             // A new sequence the decoder was not created for: its frames in flight are queued by the
             // drain, then a decoder for the new sequence takes the access unit again.
             hr = gpuDecoder->Drain();
+            {
+                // Nothing of this unit was decoded; it is the only one left in the decoder.
+                std::lock_guard lock(framesMutex);
+                unitsInDecoder = 1;
+            }
             gpuDecoder->Destroy();
             if (SUCCEEDED(hr)) hr = gpuDecoder->Create(packet->data, static_cast<size_t>(packet->size), this);
             if (hr == S_FALSE) hr = E_INVALIDARG;
@@ -657,9 +965,10 @@ private:
         return hr;
     }
 
-    bool TakeFrame(GpuDecodedFrame& result)
+    // framesMutex held.
+    bool TakeFrame(GpuDecodedFrame& result, FrameTiming& resultTiming)
     {
-        std::lock_guard lock(framesMutex);
+        bool discarded = false;
         while (!readyFrames.empty())
         {
             auto frame = std::move(readyFrames.front());
@@ -668,28 +977,36 @@ private:
             if (timing.userData == frame.userData && timing.generation == generation)
             {
                 result = std::move(frame);
+                resultTiming = timing;
+                if (discarded) framesChanged.notify_all();
                 return true;
             }
             // A frame of before a seek: back to the pool unsent.
             pool->Release(static_cast<GpuDecoderImagePool::Image*>(frame.image), 0);
             framesDiscarded++;
+            discarded = true;
         }
+        if (discarded) framesChanged.notify_all();
         return false;
     }
 
     void ReturnQueuedFrames()
     {
-        std::lock_guard lock(framesMutex);
-        for (auto& frame : readyFrames)
         {
-            pool->Release(static_cast<GpuDecoderImagePool::Image*>(frame.image), 0);
-            framesDiscarded++;
+            std::lock_guard lock(framesMutex);
+            for (auto& frame : readyFrames)
+            {
+                pool->Release(static_cast<GpuDecoderImagePool::Image*>(frame.image), 0);
+                framesDiscarded++;
+            }
+            readyFrames.clear();
         }
-        readyFrames.clear();
+        framesChanged.notify_all();
     }
 
     // Hands every frame in flight back (they are never sent) and leaves the decoder ready for a key
     // frame. Errors of frames still in parse are part of this, not stream failures: drain until clean.
+    // The feeder is paused or idle.
     void DrainDecoder()
     {
         if (gpuDecoder->IsCreated())
@@ -700,11 +1017,15 @@ private:
             }
             pool->SetFlushing(false);
         }
+        {
+            std::lock_guard lock(framesMutex);
+            unitsInDecoder = 0;
+        }
         ReturnQueuedFrames();
         handledCancelHits = pool->CancelHits();
     }
 
-    HRESULT OutputFrame(GpuDecodedFrame& frame, IDirect3DSurface* surface, int64_t& framePts, int64_t& frameDuration)
+    HRESULT OutputFrame(GpuDecodedFrame& frame, const FrameTiming& timing, IDirect3DSurface* surface, int64_t& framePts, int64_t& frameDuration)
     {
         auto image = static_cast<GpuDecoderImagePool::Image*>(frame.image);
         ReleasePending();
@@ -770,10 +1091,8 @@ private:
                 }
             }
 
-            auto& timing = timings[frame.userData % timings.size()];
             framePts = timing.pts;
             frameDuration = timing.duration;
-            RecordDelivery(timing);
             sampleColor = frameProcessor ? color : frame.color;
             sampleColor.chromaLocation = color.chromaLocation;
             // The processor or the copy has read the image (fenced); the sample carries the output.
@@ -958,23 +1277,36 @@ private:
     uint64_t releaseFenceValue = 0; // Under the multithread lock.
 
     std::atomic<HRESULT> fatal{ S_OK };
-    // Sample thread state (also changed by Flush/ResumeAfterCancel while the sample thread is idle).
-    std::array<FrameTiming, 64> timings{};
-    uint64_t nextUserData = 0;
-    uint64_t generation = 0;
-    uint32_t handledCancelHits = 0;
+    // Feeder state (also changed by Flush/ResumeAfterCancel while the feeder is paused).
     uint32_t packetsWithoutSequence = 0;
     bool awaitKeyFrame = true;
     bool inputEnded = false;
-    bool drained = false;
+    int feederPriority = THREAD_PRIORITY_NORMAL;
+    std::thread feeder;
+    // Sample thread state (also changed by Flush/ResumeAfterCancel while the sample thread is idle).
+    uint32_t handledCancelHits = 0;
     bool cancelledRequest = false;
     unsigned framesOut = 0;
     unsigned framesDiscarded = 0;
     GpuDecoderImagePool::Image* pendingImage = nullptr;
     winrt::com_ptr<ID3D11Texture2D> pendingOutput;
 
+    // Under framesMutex: the frame queue, the timing table, the feeder's control and its counts.
     std::mutex framesMutex;
+    std::condition_variable framesChanged;
     std::deque<GpuDecodedFrame> readyFrames;
+    std::array<FrameTiming, 64> timings{};
+    uint64_t nextUserData = 0;
+    uint64_t generation = 0;
+    uint32_t inflightTarget = DefaultInflight;
+    uint32_t unitsInDecoder = 0;   // Fed and not handed back by FrameReady (0 after a drain).
+    uint32_t feederPauses = 0;
+    bool outputting = false;        // The sample thread delivers a frame it took from the queue.
+    bool feederBusy = false;        // The feeder runs a step (packet read, decode, drain).
+    bool feederStop = false;
+    bool feedEnabled = false;       // The stream is enabled (DisableStream: no packets come).
+    bool feedEnded = false;         // End of stream: the decoder is drained, the queue holds the rest.
+    bool feedCancelled = false;     // A step ended in a cancel; the feeder waits for ResumeAfterCancel.
 
     std::mutex samplesMutex;
     std::map<winrt::Windows::Foundation::IUnknown, TrackedSample> trackedSamples;

@@ -2,6 +2,7 @@
 #include "pch.h"
 #include "VideoFrameProcessor.h"
 #include <d3d11_4.h>
+#include <string>
 
 // A video decoder that decodes on the GPU into textures the renderer's D3D11 device can read, for
 // GpuDecoderSampleProvider. The decoder takes its output textures from the provider (GpuDecoderHost)
@@ -63,6 +64,13 @@ public:
     // Hands every frame in flight to the host. The decoder stays usable.
     virtual HRESULT Drain() = 0;
     virtual void Destroy() = 0;
+    // Text the decoder adds to the provider's periodic statistics line, for the time since the last
+    // call (e.g. the decoder's own per-frame timing). Called on the provider's sample thread, also
+    // while another thread decodes: it must not touch the decoding state. Default: nothing.
+    virtual void AppendStatistics(std::string& line)
+    {
+        UNREFERENCED_PARAMETER(line);
+    }
     // Media type attributes of the decoder's direct output (not of processed output). Default: none.
     virtual void DescribeOutput(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const
     {

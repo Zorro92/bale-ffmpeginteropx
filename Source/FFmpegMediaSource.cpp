@@ -1339,6 +1339,8 @@ namespace winrt::FFmpegInteropX::implementation
         auto provider = std::make_shared<GpuDecoderSampleProvider>(m_pReader, avFormatCtx, avCodecCtx,
             config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, useHdr, std::move(gpuDecoder), bitDepth,
             std::move(processor), baleToneMapOutputWidth, baleToneMapOutputHeight);
+        if (baleGpuDecodeInflight > 0) provider->SetDecodeInflight(static_cast<uint32_t>(baleGpuDecodeInflight));
+        if (baleDecodeThreadPriority > 0) provider->SetFeederThreadPriority(BaleThreadBoost::ToWin32(baleDecodeThreadPriority));
         auto hr = provider->Initialize();
         if (FAILED(hr))
         {
@@ -1354,6 +1356,34 @@ namespace winrt::FFmpegInteropX::implementation
         for (auto& pool : gpuDecoderPools)
         {
             pool->RequestCancel();
+        }
+    }
+
+    // Called with `mutex` held, from AheadPause/AheadResume: GPU decoder streams read packets on their
+    // own feeder threads, which pause whenever the decode-ahead worker does.
+    void FFmpegMediaSource::PauseGpuDecoderFeeders(bool pause)
+    {
+        for (auto& stream : videoStreams)
+        {
+            if (auto gpuStream = std::dynamic_pointer_cast<GpuDecoderSampleProvider>(stream))
+            {
+                if (pause)
+                {
+                    gpuStream->PauseFeeder();
+                }
+                else
+                {
+                    gpuStream->ResumeFeeder();
+                }
+            }
+        }
+    }
+
+    void FFmpegMediaSource::StopGpuDecoderFeeders()
+    {
+        for (auto& stream : videoStreams)
+        {
+            if (auto gpuStream = std::dynamic_pointer_cast<GpuDecoderSampleProvider>(stream)) gpuStream->StopFeeder();
         }
     }
 
@@ -2206,8 +2236,10 @@ namespace winrt::FFmpegInteropX::implementation
             playbackItemWeak = nullptr;
         }
 
-        // Bale: the decode-ahead worker uses the streams and reader cleared below.
+        // Bale: the decode-ahead worker and the GPU decoder feeders use the streams and reader cleared
+        // below.
         AheadShutdown();
+        StopGpuDecoderFeeders();
 
         // Clear our data
         currentAudioStream = nullptr;
@@ -2684,6 +2716,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_decoder_max_dpb_count") { target = &baleDecoderMaxDpbCount; minimum = 0; maximum = 16; }
         else if (key == "bale_compressed_color_info") { target = &baleCompressedColorInfo; minimum = 0; maximum = 1; }
         else if (key == "bale_rav1g_parse") { target = &baleRav1gParse; minimum = 0; maximum = 8; }
+        else if (key == "bale_gpu_decode_inflight") { target = &baleGpuDecodeInflight; minimum = 1; maximum = 8; }
         else if (key == "bale_fast_seek_without_session") { target = &baleFastSeekWithoutSession; minimum = 0; maximum = 1; }
         else if (key == "bale_system_decoder_dolby") { target = &baleSystemDecoderDolby; minimum = 0; maximum = 1; }
         else if (key == "bale_subtitle_stream") { target = &baleSubtitleStream; minimum = 0; maximum = 65535; }
@@ -2727,7 +2760,9 @@ namespace winrt::FFmpegInteropX::implementation
 
     bool FFmpegMediaSource::UseDecodeAhead()
     {
-        // GPU decoder streams too: the worker waits for their output images without `mutex`.
+        // GPU decoder streams too: their feeder thread keeps the decoder busy, and the worker turns
+        // decoded frames into finished samples (fence wait, copy or processing) ahead of MF's
+        // requests, so the request thread, which holds `mutex`, seldom waits for the GPU.
         return baleDecodeAheadFrames > 0 && currentVideoStream &&
             (currentVideoStream->Decoder() == DecoderEngine::FFmpegSoftwareDecoder ||
                 std::dynamic_pointer_cast<GpuDecoderSampleProvider>(currentVideoStream)) &&
@@ -2829,10 +2864,14 @@ namespace winrt::FFmpegInteropX::implementation
             aheadEnd = false;
         }
         aheadCv.wait(lock, [this] { return !aheadBusy; });
+        lock.unlock();
+        // After the worker: a sample request it is in may wait for a frame the feeder still decodes.
+        PauseGpuDecoderFeeders(true);
     }
 
     void FFmpegMediaSource::AheadResume()
     {
+        PauseGpuDecoderFeeders(false);
         std::lock_guard lock(aheadMutex);
         aheadPauses--;
         aheadCv.notify_all();
