@@ -353,6 +353,12 @@ Measured through Bale's debug server; full notes are in Bale's `docs/player-plan
 - Display-sized output (bale.38–40): 4K HDR tone-mapped and 4K SDR VP9 (unspecified tags)
   downscaled to 1920x1080 by the stage each survived 40 opens, where Media Foundation's own
   4K SDR downscale died at about 23.
+- rav1g AV1 (bale.54, rav1g v0.4.0-alpha.1, Bale 0.1.680, 1080p 23.976 10-bit film, 4 units in
+  flight): 23.95–23.99 fps, 0 dropped, delivery ~24.1/s; 40 back-to-back seeks in 46 s; 20
+  stop/start cycles, every pool released and every D3D11 device destroyed; clean end of stream;
+  memory 804 MiB playing, 338 MiB idle, no growth across 21 opens. Units in flight 2/3 gave
+  22.6–23.5/24.0–24.3 frames/s. First run (bale.44–45): a null codec descriptor crash and a pool
+  deadlock (MF held decoder images), both fixed.
 - GPU cost of the stage (slice copy included): about 20 points of 3D-engine use, about 8 ms per
   4K24 frame (HEVC and VP9 alike); CPU unchanged.
 - Stream side data (c3a9adb, 2c08f7c): MaxCLL/MaxFALL 4057/321 and mastering 1000/0.0001 nits
