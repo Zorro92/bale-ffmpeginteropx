@@ -2409,7 +2409,7 @@ namespace winrt::FFmpegInteropX::implementation
         {
             hardwareDecoderStatus = HardwareDecoderStatus::Available;
             auto processor = BaleToneMap::Create(baleToneMap, avStream->codecpar, baleToneMapOutputWidth, baleToneMapOutputHeight);
-            videoSampleProvider = std::shared_ptr<MediaSampleProvider>(new D3D11VideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr, std::move(processor), baleToneMapOutput, baleToneMapFormat, baleToneMapOutputWidth, baleToneMapOutputHeight));
+            videoSampleProvider = std::shared_ptr<MediaSampleProvider>(new D3D11VideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr, std::move(processor), baleToneMapOutputWidth, baleToneMapOutputHeight));
         }
         else
         {
@@ -2527,14 +2527,17 @@ namespace winrt::FFmpegInteropX::implementation
         int* target = nullptr;
         int minimum = 0;
         int maximum = 0;
+        int retired = 0;
         if (key == "bale_decode_ahead_frames") { target = &baleDecodeAheadFrames; minimum = 0; maximum = 64; }
         else if (key == "bale_dav1d_max_frame_delay") { target = &baleDav1dMaxFrameDelay; minimum = 0; maximum = 64; }
         else if (key == "bale_dav1d_export_film_grain") { target = &baleDav1dExportFilmGrain; minimum = 0; maximum = 1; }
         else if (key == "bale_film_grain_mode") { target = &baleFilmGrainMode; minimum = 0; maximum = 2; }
         else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 6; }
         else if (key == "bale_tonemap") { target = &baleToneMap; minimum = 0; maximum = 2; }
-        else if (key == "bale_tonemap_output") { target = &baleToneMapOutput; minimum = 0; maximum = 15; }
-        else if (key == "bale_tonemap_format") { target = &baleToneMapFormat; minimum = 0; maximum = 3; }
+        // Retired debug keys: still accepted (old ranges) so older apps that send them keep working,
+        // but ignored.
+        else if (key == "bale_tonemap_output") { target = &retired; minimum = 0; maximum = 15; }
+        else if (key == "bale_tonemap_format") { target = &retired; minimum = 0; maximum = 3; }
         else if (key == "bale_tonemap_output_width") { target = &baleToneMapOutputWidth; minimum = 0; maximum = 8192; }
         else if (key == "bale_tonemap_output_height") { target = &baleToneMapOutputHeight; minimum = 0; maximum = 8192; }
         else if (key == "bale_zero_copy") { target = &baleZeroCopy; minimum = 0; maximum = 1; }
@@ -2575,6 +2578,10 @@ namespace winrt::FFmpegInteropX::implementation
         }
 
         *target = parsed;
+        if (target == &retired)
+        {
+            av_log(nullptr, AV_LOG_INFO, "Bale option %s retired; ignored\n", key.c_str());
+        }
         return true;
     }
 

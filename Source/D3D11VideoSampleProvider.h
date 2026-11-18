@@ -31,34 +31,14 @@ public:
         HardwareDecoderStatus hardwareDecoderStatus,
         bool applyHdrColorInfo,
         std::unique_ptr<VideoFrameProcessor> processor = nullptr,
-        int processedOutputMode = 0,
-        int processedOutputFormat = 0,
         int targetOutputWidth = 0,
         int targetOutputHeight = 0)
         : UncompressedVideoSampleProvider(reader, avFormatCtx, avCodecCtx, config, streamIndex, hardwareDecoderStatus, applyHdrColorInfo)
     {
         frameProcessor = std::move(processor);
-        outputMode = frameProcessor ? processedOutputMode : 0;
-        // Output format: 10-bit P010 whenever the processor can write it (the Xbox video processor
-        // leaks driver state for every 4K NV12 stream it opens; P010 does not). NV12 otherwise or on
-        // request; BGRA8 only as a debug test with the processor bypassed.
-        outputFormat = FormatNv12;
-        if (frameProcessor)
-        {
-            bool bypass = (outputMode & OutputBypassProcessor) != 0;
-            bool p010 = bypass || frameProcessor->SupportsOutputFormat(DXGI_FORMAT_P010);
-            switch (processedOutputFormat)
-            {
-            case 0: outputFormat = p010 ? FormatP010 : FormatNv12; break;
-            case 1: outputFormat = p010 ? FormatP010 : FormatNv12; break;
-            case 2: outputFormat = bypass ? FormatBgra : FormatNv12; break;
-            default: outputFormat = FormatNv12; break;
-            }
-            if ((processedOutputFormat == 1 && outputFormat != FormatP010) || (processedOutputFormat == 2 && outputFormat != FormatBgra))
-            {
-                av_log(nullptr, AV_LOG_WARNING, "Bale tonemap format=%d not supported; using NV12\n", processedOutputFormat);
-            }
-        }
+        // Output P010 whenever the processor can write it, so processed video stays 10-bit; NV12
+        // only for a processor without P010 output.
+        outputP010 = frameProcessor && frameProcessor->SupportsOutputFormat(DXGI_FORMAT_P010);
         processorWidth = avCodecCtx->width;
         processorHeight = avCodecCtx->height;
         processedWidth = processorWidth;
@@ -339,7 +319,6 @@ public:
             texturePool.reset();
             texturePool = nullptr;
             processedTexturePool.reset();
-            processedRenderTarget = nullptr;
             processorInitialized = false;
         }
 
@@ -521,7 +500,6 @@ public:
 
 protected:
     bool HasProcessedOutput() const override { return frameProcessor != nullptr; }
-    bool ProcessedOutputSetsColorAttributes() const override { return (outputMode & OutputNoColorAttributes) == 0; }
     void ProcessedOutputSize(int& width, int& height) const override
     {
         width = processedWidth;
@@ -534,8 +512,7 @@ protected:
     {
         if (!frameProcessor || targetWidth <= 0 || targetHeight <= 0 || processorWidth <= 0 || processorHeight <= 0) return;
         if (processorWidth <= targetWidth && processorHeight <= targetHeight) return;
-        bool bypass = (outputMode & OutputBypassProcessor) != 0;
-        if (!bypass && !frameProcessor->SupportsDownscale())
+        if (!frameProcessor->SupportsDownscale())
         {
             av_log(nullptr, AV_LOG_WARNING, "Bale tonemap: downscale to %dx%d not supported; keeping %dx%d\n",
                 targetWidth, targetHeight, processorWidth, processorHeight);
@@ -556,19 +533,18 @@ protected:
 
     void AddProcessedOutputAttributes(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const override
     {
-        // A bypassed processor produced nothing; its output must not be described as processed.
-        if (frameProcessor && (outputMode & OutputBypassProcessor) == 0)
+        if (frameProcessor)
         {
             frameProcessor->DescribeOutput(properties);
         }
     }
     AVPixelFormat ProcessedOutputPixelFormat() const override
     {
-        return outputFormat == FormatP010 ? AV_PIX_FMT_P010LE : outputFormat == FormatBgra ? AV_PIX_FMT_BGRA : AV_PIX_FMT_NV12;
+        return outputP010 ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
     }
     DXGI_FORMAT ProcessedOutputDxgiFormat() const
     {
-        return outputFormat == FormatP010 ? DXGI_FORMAT_P010 : outputFormat == FormatBgra ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_NV12;
+        return outputP010 ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
     }
 
 private:
@@ -633,33 +609,17 @@ private:
             {
                 winrt::throw_hresult(E_INVALIDARG);
             }
-            // Debug variant (outputMode & OutputDecoderBinds): the processor renders into one internal
-            // target, and the player gets copies in textures bound like decoder output.
-            bool decoderBinds = (outputMode & OutputDecoderBinds) != 0;
             winrt::com_ptr<ID3D11Texture2D> output;
             {
                 std::lock_guard lock(samplesMutex);
                 if (!processedTexturePool) processedTexturePool = std::make_shared<TexturePool>(device, 5);
                 winrt::check_hresult(processedTexturePool->GetTexture(processedWidth, processedHeight, ProcessedOutputDxgiFormat(),
-                    decoderBinds ? (D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE) : (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE), output));
+                    D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, output));
             }
-            if (decoderBinds && !processedRenderTarget)
+            if (!outputFormatLogged)
             {
-                D3D11_TEXTURE2D_DESC targetDesc{};
-                targetDesc.Width = processedWidth;
-                targetDesc.Height = processedHeight;
-                targetDesc.MipLevels = 1;
-                targetDesc.ArraySize = 1;
-                targetDesc.Format = ProcessedOutputDxgiFormat();
-                targetDesc.SampleDesc.Count = 1;
-                targetDesc.Usage = D3D11_USAGE_DEFAULT;
-                targetDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-                winrt::check_hresult(device->CreateTexture2D(&targetDesc, nullptr, processedRenderTarget.put()));
-            }
-            if (!outputModeLogged)
-            {
-                outputModeLogged = true;
-                av_log(nullptr, AV_LOG_INFO, "Bale tonemap output mode=%d format=%s\n", outputMode, outputFormat == FormatP010 ? "P010" : outputFormat == FormatBgra ? "BGRA8" : "NV12");
+                outputFormatLogged = true;
+                av_log(nullptr, AV_LOG_INFO, "Bale tonemap output format=%s\n", outputP010 ? "P010" : "NV12");
             }
 
             auto multithread = device.try_as<ID3D10Multithread>();
@@ -678,25 +638,13 @@ private:
             {
                 // Never hold samplesMutex while entering the shared immediate context.
                 DeviceContextLock contextLock(hardwareContext, multithread.get());
-                bool bypass = (outputMode & OutputBypassProcessor) != 0;
-                if (!processorInitialized && !bypass)
+                if (!processorInitialized)
                 {
                     winrt::check_hresult(frameProcessor->Initialize(device.get(), processedWidth, processedHeight, processorWidth, processorHeight));
                     processorInitialized = true;
                 }
-                auto target = decoderBinds ? processedRenderTarget.get() : output.get();
-                if (!bypass)
-                {
-                    winrt::check_hresult(frameProcessor->Process(deviceContext.get(), input, static_cast<UINT>(subresource), target, colorInfo));
-                }
-                if (decoderBinds)
-                {
-                    deviceContext->CopyResource(output.get(), target);
-                }
-                if ((outputMode & OutputNoFlush) == 0)
-                {
-                    deviceContext->Flush();
-                }
+                winrt::check_hresult(frameProcessor->Process(deviceContext.get(), input, static_cast<UINT>(subresource), output.get(), colorInfo));
+                deviceContext->Flush();
                 auto removed = device->GetDeviceRemovedReason();
                 if (FAILED(removed))
                 {
@@ -715,18 +663,8 @@ private:
         }
     }
 
-    // Bale debug bitmask (bale_tonemap_output) to isolate how the player handles processed output.
-    static constexpr int OutputDecoderBinds = 1;
-    static constexpr int OutputNoColorAttributes = 2;
-    static constexpr int OutputNoFlush = 4;
-    static constexpr int OutputBypassProcessor = 8;
-    static constexpr int FormatNv12 = 0;
-    static constexpr int FormatP010 = 1;
-    static constexpr int FormatBgra = 2;
-    int outputMode = 0;
-    int outputFormat = 0;
-    bool outputModeLogged = false;
-    winrt::com_ptr<ID3D11Texture2D> processedRenderTarget;
+    bool outputP010 = false;
+    bool outputFormatLogged = false;
     std::unique_ptr<VideoFrameProcessor> frameProcessor;
     bool processorInitialized = false;
     bool poolLogged = false;

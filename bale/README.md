@@ -93,44 +93,13 @@ Foundation's video processor downscales 4K SDR to a smaller display (the process
 after ~23 opens, also with Windows' own decoder and no FFmpeg), while 4K HDR
 passthrough, 1080p SDR, and 4K SDR converted at native size all survived 40 opens.
 
-### Debug: tone-map output variants
+### Retired debug options
 
-`bale_tonemap_output` (`"0"`–`"15"`, default `"0"`) is a bitmask, only used while
-`bale_tonemap` is active, to isolate how the player's video processor handles the
-stage's output. On an Xbox Series X, 4K d3d11va with the stage removed the device
-at about the 22nd open (driver break in Media Foundation's msvproc), while the same
-file without the stage, or on the system decoder, survived 40 opens.
-
-- `1`: the stage renders into one internal NV12 render target, and each frame is
-  copied into an NV12 texture bound `DECODER | SHADER_RESOURCE`, like decoder output.
-- `2`: the output type carries no transfer/primaries/matrix/range attributes, so the
-  player uses its defaults (HDR attributes stay removed).
-- `4`: no context Flush after each frame.
-- `8`: bypass the processor: the stage, its pools and output type run as usual, but
-  bale_gpu is never created or called (the picture is undefined). Isolates the
-  fork-side stage from bale_gpu in opens-to-failure tests.
-
-`bale_tonemap_format` picks the stage's output: `"0"` auto (default: P010 when the
-loaded bale_gpu exports `bale_tonemap_output_formats` with P010, else NV12), `"1"`
-P010, `"2"` BGRA8 (debug, only with bypass bit 8; don't combine with bit 1), `"3"`
-NV12. P010 carries BT.709 limited-range SDR in 10 bits, with the same BT.709 media
-type as NV12. The processed media type also carries Bale's mark
-`{b41e6a52-3c9d-4f0b-8e7a-5d2c1f9a0b37}` = 1 ("tone-mapped output"), added by the
-processor through `VideoFrameProcessor::DescribeOutput`; it is absent on passthrough
-and with bypass bit 8. Bale accepts 10-bit SDR output only with it. Why P010: on the Xbox, Media Foundation's video processor leaks
-driver state for every 4K NV12 stream it opens (also with Windows' own decoder
-and no FFmpeg; the process dies after ~22–30 opens), while P010 survived 40/40.
-
-The stream logs `Bale tonemap output mode=N` once.
-
-## Software decoder output
-
-Software-decoded video keeps its bit depth (Bale's rule): with `VideoOutputAllow10bit`
-(default on), any input with more than 8 bits per component (10/12-bit, any chroma
-layout or colour model) is converted to P010, never down to 8 bits; 8-bit sources
-(4:2:0, 4:2:2, 4:4:4, full range, RGB, grey) are converted to 8-bit NV12. Hardware
-frame formats are not affected. The tone-map stage's SDR downscale is the one place
-an 8-bit source becomes P010.
+`bale_tonemap_output` (0–15) and `bale_tonemap_format` (0–3) were debug switches used to
+find the Xbox presentation leak. They are retired: still accepted with their old ranges
+(an unknown `bale_*` key would fail the open, and older Bale builds may still send
+them), ignored, and logged once as `Bale option <key> retired; ignored`. The stage now
+always outputs P010 when bale_gpu can write it (NV12 only for an older bale_gpu).
 
 ## Compressed video colour option
 

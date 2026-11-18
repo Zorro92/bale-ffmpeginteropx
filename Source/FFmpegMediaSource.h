@@ -349,10 +349,6 @@ namespace winrt::FFmpegInteropX::implementation
         int baleD3d11Upload = 0;
         // Opt-in D3D11 10-bit PQ -> NV12 BT.709: 0 = off, 1 = BT.2390, 2 = Hable.
         int baleToneMap = 0;
-        // Bale debug: tone-map output variants (bitmask), see bale/README.md.
-        int baleToneMapOutput = 0;
-        // Bale: processed output format (0 auto = P010 when the processor supports it, 1 P010, 2 BGRA8 debug, 3 NV12).
-        int baleToneMapFormat = 0;
         // Bale: target size of the processed output (0 = source size); fit inside, aspect kept.
         int baleToneMapOutputWidth = 0;
         int baleToneMapOutputHeight = 0;
