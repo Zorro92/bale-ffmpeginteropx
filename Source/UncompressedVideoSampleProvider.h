@@ -63,6 +63,7 @@ public:
     // Shared with the pre-open grain decision; no duplicate output-format policy.
     // eightBitZeroCopy (EightBitZeroCopy below) sends 8-bit 4:2:0 to P010 for the zero-copy direct write.
     static AVPixelFormat SelectOutputPixelFormat(AVPixelFormat input, bool direct, MediaSourceConfig const& config, bool eightBitZeroCopy = false);
+    static bool ConversionNeedsTenBitOutput(AVPixelFormat input);
     // Bale: 8-bit libdav1d pictures take zero-copy only as a direct write (bale_zc_repack_into_bits).
     // They then output P010 (samples << 8); otherwise NV12 as before.
     static bool EightBitZeroCopy(AVPixelFormat input, bool dav1d, bool hardware, int zeroCopy, MediaSourceConfig const& config);

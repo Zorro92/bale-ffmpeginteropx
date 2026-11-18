@@ -30,6 +30,7 @@ extern "C"
 {
 #include <libavutil/imgutils.h>
 #include <libavutil/mastering_display_metadata.h>
+#include <libavutil/pixdesc.h>
 }
 
 using namespace NativeBuffer;
@@ -102,12 +103,27 @@ UncompressedVideoSampleProvider::UncompressedVideoSampleProvider(
     this->applyHdrColorInfo = applyHdrColorInfo;
 }
 
+// True when swscale really converts the input (bit depth above 8, chroma other than 4:2:0, full
+// range, RGB, grey, ...) rather than only repacking 8-bit 4:2:0 into NV12. Such conversions output
+// 10-bit P010, so no precision or range is lost on the way (Bale's rule: processed video is 10-bit).
+// Hardware frame formats and NV12 itself are not conversions here.
+bool UncompressedVideoSampleProvider::ConversionNeedsTenBitOutput(AVPixelFormat input)
+{
+    if (input == AV_PIX_FMT_NONE || input == AV_PIX_FMT_YUV420P || input == AV_PIX_FMT_NV12 || input == AV_PIX_FMT_P010LE)
+    {
+        return false;
+    }
+    auto description = av_pix_fmt_desc_get(input);
+    return description && (description->flags & AV_PIX_FMT_FLAG_HWACCEL) == 0;
+}
+
 AVPixelFormat UncompressedVideoSampleProvider::SelectOutputPixelFormat(AVPixelFormat input, bool direct, MediaSourceConfig const& config, bool eightBitZeroCopy)
 {
     if (config.as<implementation::MediaSourceConfig>()->IsFrameGrabber) return AV_PIX_FMT_BGRA;
     if (eightBitZeroCopy && input == AV_PIX_FMT_YUV420P) return AV_PIX_FMT_P010LE;
     if (config.Video().VideoOutputAllowIyuv() && (input == AV_PIX_FMT_YUV420P || input == AV_PIX_FMT_YUVJ420P) && direct) return input;
     if (input == AV_PIX_FMT_YUV420P10LE && config.Video().VideoOutputAllow10bit()) return AV_PIX_FMT_P010LE;
+    if (config.Video().VideoOutputAllow10bit() && ConversionNeedsTenBitOutput(input)) return AV_PIX_FMT_P010LE;
     if (config.Video().VideoOutputAllowNv12()) return AV_PIX_FMT_NV12;
     if (config.Video().VideoOutputAllowIyuv()) return input == AV_PIX_FMT_YUVJ420P ? AV_PIX_FMT_YUVJ420P : AV_PIX_FMT_YUV420P;
     if (config.Video().VideoOutputAllowBgra8()) return AV_PIX_FMT_BGRA;

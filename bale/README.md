@@ -123,6 +123,14 @@ and no FFmpeg; the process dies after ~22–30 opens), while P010 survived 40/40
 
 The stream logs `Bale tonemap output mode=N` once.
 
+## Software decoder output
+
+With `VideoOutputAllow10bit` (default on), every software-decoded format that swscale
+really converts — more than 8 bits, chroma other than 4:2:0, full range, RGB, grey —
+is output as P010, not squeezed into 8-bit NV12. Plain 8-bit 4:2:0 (`yuv420p`) is
+still repacked to NV12, and 10-bit 4:2:0 was already P010. Hardware frame formats are
+not affected.
+
 ## Compressed video colour option
 
 `MediaSourceConfig.FFmpegOptions["bale_compressed_color_info"]` accepts decimal
