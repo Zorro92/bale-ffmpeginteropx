@@ -11,7 +11,10 @@
 // each request's size and format; images of an older size are released when they come back.
 //
 // Thread use: Acquire on the decoder's threads, Release on the sample thread or a Media Foundation
-// thread, RequestCancel from any thread (also without the media source's lock). A released image may
+// thread, RequestCancel from any thread (also without the media source's lock). A cancel ends waits
+// for a free image; an Acquire that finds one free still gets it, so a cancel that comes while the
+// pool has room (e.g. every Starting request) does not fail the decoder's work. A flush or a
+// shutdown fails every Acquire. A released image may
 // still be read by D3D11 work already submitted: the releaser signals the pool's D3D11 fence and
 // Acquire waits on the CPU until the fence has passed that value before the decoder writes again.
 class GpuDecoderImagePool
@@ -81,7 +84,7 @@ public:
             bool counted = false;
             while (!image)
             {
-                if (shutdown || cancelRequested || flushing)
+                if (shutdown || flushing)
                 {
                     cancelHits++;
                     return E_ABORT;
@@ -108,6 +111,12 @@ public:
                     auto hr = CreateImage(width, height, format, image);
                     if (FAILED(hr)) return hr;
                     break;
+                }
+                if (cancelRequested)
+                {
+                    // Only a wait is cancelled.
+                    cancelHits++;
+                    return E_ABORT;
                 }
                 if (!counted)
                 {
@@ -147,7 +156,7 @@ public:
         changed.notify_all();
     }
 
-    // Ends any Acquire wait and fails new ones until ClearCancel. Callable from any thread.
+    // Ends any Acquire wait and fails new ones that would wait, until ClearCancel. Any thread.
     void RequestCancel()
     {
         std::lock_guard lock(mutex);
@@ -175,7 +184,7 @@ public:
         changed.notify_all();
     }
 
-    // Requests that ended without an image because of a cancel, flush or shutdown.
+    // Requests that ended without an image because of a cancelled wait, a flush or a shutdown.
     uint32_t CancelHits()
     {
         std::lock_guard lock(mutex);
