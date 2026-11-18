@@ -81,7 +81,11 @@ Marks: direct rav1g output carries the private media-type attribute
 output on this route only with the rav1g mark, a subtype matching the source depth (8 → NV12,
 10 → P010) and the source colour attributes.
 
-The stage reads rav1g's texture directly (it has `SHADER_RESOURCE`), so no slice copy. Bit-depth
+The stage reads rav1g's texture directly (it has `SHADER_RESOURCE`), so no slice copy. Direct
+output is **copied** into a texture of a player-side pool (one GPU copy per frame, ~25 MB at 4K)
+and the rav1g image goes back to rav1g at once: the first console run showed that handing decoder
+images to Media Foundation deadlocks, because the player keeps samples until it has rendered them
+and fills its buffer before it starts, which drains rav1g's fixed pool (bale.45, 2026-11-18). Bit-depth
 rule holds: 8-bit stays NV12 unless the stage downscales; this also ends the accepted 8-bit
 AV1 → P010 exception of the zero-copy path.
 

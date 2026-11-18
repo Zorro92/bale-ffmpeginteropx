@@ -601,12 +601,19 @@ private:
             }
             auto color = MergeStreamColor(frame.color);
 
+            // The player always gets a texture of its own pool, never a decoder image: the player keeps
+            // samples until it has rendered them (and fills its buffer before it starts), so handing it
+            // decoder images would let it drain the decoder's fixed pool and deadlock the decoder.
+            D3D11_TEXTURE2D_DESC imageDesc{};
+            image->texture->GetDesc(&imageDesc);
+            UINT outputWidth = frameProcessor ? static_cast<UINT>(processedWidth) : imageDesc.Width;
+            UINT outputHeight = frameProcessor ? static_cast<UINT>(processedHeight) : imageDesc.Height;
+            DXGI_FORMAT outputFormat = frameProcessor ? OutputFormat() : imageDesc.Format;
             winrt::com_ptr<ID3D11Texture2D> output;
-            if (frameProcessor)
             {
                 std::lock_guard lock(samplesMutex);
                 if (!processedTexturePool) processedTexturePool = std::make_shared<TexturePool>(rendererDevice, 5);
-                winrt::check_hresult(processedTexturePool->GetTexture(processedWidth, processedHeight, OutputFormat(),
+                winrt::check_hresult(processedTexturePool->GetTexture(outputWidth, outputHeight, outputFormat,
                     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, output));
             }
 
@@ -624,9 +631,13 @@ private:
                         processorInitialized = true;
                     }
                     winrt::check_hresult(frameProcessor->Process(rendererContext.get(), image->texture.get(), 0, output.get(), color));
-                    releaseValue = ++releaseFenceValue;
-                    winrt::check_hresult(rendererContext4->Signal(releaseFence.get(), releaseValue));
                 }
+                else
+                {
+                    rendererContext->CopyResource(output.get(), image->texture.get());
+                }
+                releaseValue = ++releaseFenceValue;
+                winrt::check_hresult(rendererContext4->Signal(releaseFence.get(), releaseValue));
                 rendererContext->Flush();
                 auto removed = rendererDevice->GetDeviceRemovedReason();
                 if (FAILED(removed))
@@ -641,20 +652,11 @@ private:
             frameDuration = timing.duration;
             sampleColor = frameProcessor ? color : frame.color;
             sampleColor.chromaLocation = color.chromaLocation;
-            if (frameProcessor)
-            {
-                // The processor has read the image (fenced); the sample carries the processed texture.
-                pool->Release(image, releaseValue);
-                image = nullptr;
-                pendingOutput = output;
-                *surface = DirectXInteropHelper::GetSurface(output.as<IDXGISurface>());
-            }
-            else
-            {
-                pendingImage = image;
-                image = nullptr;
-                *surface = DirectXInteropHelper::GetSurface(pendingImage->texture.as<IDXGISurface>());
-            }
+            // The processor or the copy has read the image (fenced); the sample carries the output.
+            pool->Release(image, releaseValue);
+            image = nullptr;
+            pendingOutput = output;
+            *surface = DirectXInteropHelper::GetSurface(output.as<IDXGISurface>());
             framesOut++;
             return S_OK;
         }
