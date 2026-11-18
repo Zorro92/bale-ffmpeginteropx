@@ -195,6 +195,12 @@ Measured through Bale's debug server; full notes are in Bale's `docs/player-plan
   0/9/32/147/164, 0.62 vs 0/9/32/149/166, 0.61. Hable (`2`) is darker (max 198). bale_gpu's
   self-test passes on the console. Other sources (e.g. BT.709 SDR) log `request ignored` and play unchanged.
 - HLG (frame transfer 18 on BT.2020) through the same stage looks correct on the console (bale.29).
+- Bit depth (bale.42, Bale 0.1.659): 10-bit 4:2:2 and 4:2:0 software decode → P010; 8-bit
+  4:2:2 and full-range → NV12; the tone-map and SDR downscale routes deliver marked P010
+  1920x1080 at 4K sources, accepted by Bale's guard, 0 drops.
+- Display-sized output (bale.38–40): 4K HDR tone-mapped and 4K SDR VP9 (unspecified tags)
+  downscaled to 1920x1080 by the stage each survived 40 opens, where Media Foundation's own
+  4K SDR downscale died at about 23.
 - GPU cost of the stage (slice copy included): about 20 points of 3D-engine use, about 8 ms per
   4K24 frame (HEVC and VP9 alike); CPU unchanged.
 - Stream side data (c3a9adb, 2c08f7c): MaxCLL/MaxFALL 4057/321 and mastering 1000/0.0001 nits
