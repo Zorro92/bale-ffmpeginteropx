@@ -19,6 +19,7 @@
 #pragma once
 
 #include "FFmpegReader.h"
+#include <functional>
 #include "MediaSourceConfig.h"
 #include "MediaSampleProvider.h"
 
@@ -42,11 +43,11 @@ public:
         bufferSize += packet->size;
     }
 
-    bool ReadUntilNotEmpty(std::shared_ptr<FFmpegReader> reader)
+    bool ReadUntilNotEmpty(std::shared_ptr<FFmpegReader> reader, const std::function<bool()>& shouldStop = nullptr)
     {
         while (IsEmpty())
         {
-            if (reader->ReadPacketForStream(this) < 0)
+            if (reader->ReadPacketForStream(this, shouldStop) < 0)
             {
                 DebugMessage(L"GetNextPacket reaching EOF\n");
                 break;

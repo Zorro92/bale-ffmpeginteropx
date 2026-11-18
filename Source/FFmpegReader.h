@@ -19,6 +19,7 @@
 #pragma once
 
 #include <agents.h>
+#include <functional>
 
 #include "MediaSourceConfig.h"
 #include "MediaSampleProvider.h"
@@ -34,7 +35,9 @@ public:
     virtual ~FFmpegReader();
 
     int ReadPacket();
-    int ReadPacketForStream(StreamBuffer* buffer);
+    // shouldStop (optional): checked before each packet; when it returns true the read stops with
+    // AVERROR_EXIT. Without it, the read runs until the buffer has a packet or the input ends.
+    int ReadPacketForStream(StreamBuffer* buffer, const std::function<bool()>& shouldStop = nullptr);
     void Start();
     void Stop();
     void Flush();

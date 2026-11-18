@@ -596,7 +596,7 @@ int FFmpegReader::ReadPacket()
 }
 
 
-int FFmpegReader::ReadPacketForStream(StreamBuffer* buffer)
+int FFmpegReader::ReadPacketForStream(StreamBuffer* buffer, const std::function<bool()>& shouldStop)
 {
     if (!(buffer->IsEmpty()))
     {
@@ -618,6 +618,9 @@ int FFmpegReader::ReadPacketForStream(StreamBuffer* buffer)
         // no read-ahead used
         while (!isEof)
         {
+            // A disabled stream's packets are dropped, so its buffer would never fill: let the
+            // caller stop a read it no longer needs instead of reading to the end of the input.
+            if (shouldStop && shouldStop()) return AVERROR_EXIT;
             ReadPacket();
 
             if (!(buffer->IsEmpty()))
@@ -631,6 +634,7 @@ int FFmpegReader::ReadPacketForStream(StreamBuffer* buffer)
         // read-ahead active
         while (true)
         {
+            if (shouldStop && shouldStop()) return AVERROR_EXIT;
             task<void> waitStreamTask;
             {
                 std::lock_guard lock(mutex);

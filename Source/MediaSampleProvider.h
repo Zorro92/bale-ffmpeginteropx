@@ -18,6 +18,7 @@
 
 #pragma once
 #include "pch.h"
+#include <functional>
 
 
 using namespace winrt::Windows::Storage::Streams;
@@ -109,6 +110,8 @@ public:
     virtual void InitializeStreamInfo();
     virtual void QueuePacket(AVPacket* packet);
     HRESULT GetNextPacket(AVPacket** avPacket, LONGLONG& packetPts, LONGLONG& packetDuration);
+    // As above, but the read stops when shouldStop returns true: E_PENDING, no packet taken.
+    HRESULT GetNextPacket(AVPacket** avPacket, LONGLONG& packetPts, LONGLONG& packetDuration, const std::function<bool()>& shouldStop);
     bool IsBufferFull();
     virtual HRESULT CreateNextSampleBuffer(winrt::Windows::Storage::Streams::IBuffer* pBuffer, int64_t& samplePts, int64_t& sampleDuration, winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface* surface) = 0;
     HRESULT GetNextPacketTimestamp(TimeSpan& timestamp, TimeSpan& packetDuration);

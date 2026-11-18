@@ -141,6 +141,11 @@ frame is a player-side texture (1080p P010 ≈ 6 MiB, 4K ≈ 25 MiB).
 each unit inside the decode call on the feeder thread; the "decode call" timing shows that cost.
 rav1g's budget guard may still create fewer.
 
+The feeder's packet reads are interruptible: a disabled stream's packets are dropped by the reader,
+so a read for it would otherwise run to the end of the input. The feeder stops a read when it is
+paused (seek, Starting, stream switch), stopped, or its stream is disabled (bale.53; on bale.52 a
+seek right after another seek could read the rest of the file and stall the seek).
+
 ### rav1g prewarm and threading notes
 
 `FFmpegInteropX.dll` exports a plain C function, `int bale_rav1g_prewarm(void)` (no WinRT API

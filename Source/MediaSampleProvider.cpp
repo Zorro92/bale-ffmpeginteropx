@@ -275,9 +275,14 @@ MediaStreamSample MediaSampleProvider::GetNextSample()
 
 HRESULT MediaSampleProvider::GetNextPacket(AVPacket** avPacket, LONGLONG& packetPts, LONGLONG& packetDuration)
 {
+    return GetNextPacket(avPacket, packetPts, packetDuration, nullptr);
+}
+
+HRESULT MediaSampleProvider::GetNextPacket(AVPacket** avPacket, LONGLONG& packetPts, LONGLONG& packetDuration, const std::function<bool()>& shouldStop)
+{
     HRESULT hr = S_OK;
 
-    if (packetBuffer->ReadUntilNotEmpty(m_pReader))
+    if (packetBuffer->ReadUntilNotEmpty(m_pReader, shouldStop))
     {
         auto packet = packetBuffer->PopPacket();
 
@@ -306,7 +311,8 @@ HRESULT MediaSampleProvider::GetNextPacket(AVPacket** avPacket, LONGLONG& packet
     }
     else
     {
-        hr = S_FALSE;
+        // Stopped by the caller (no packet taken), or the end of the input.
+        hr = shouldStop && shouldStop() ? E_PENDING : S_FALSE;
     }
 
     return hr;

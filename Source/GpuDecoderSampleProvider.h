@@ -864,7 +864,18 @@ private:
                 AVPacket* packet = nullptr;
                 LONGLONG pts = 0;
                 LONGLONG duration = 0;
-                hr = GetNextPacket(&packet, pts, duration);
+                // Interruptible: a seek or stop disables the stream (whose packets are then dropped) or
+                // pauses the feeder, and must not wait for a read that would run to the end of the input.
+                hr = GetNextPacket(&packet, pts, duration, [this]
+                {
+                    std::lock_guard lock(framesMutex);
+                    return feederStop || feederPauses > 0 || !feedEnabled;
+                });
+                if (hr == E_PENDING)
+                {
+                    // Nothing was taken; the feeder waits until it may feed again.
+                    return;
+                }
                 if (hr == S_FALSE)
                 {
                     inputEnded = true;
