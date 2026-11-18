@@ -169,6 +169,15 @@ public:
         return LogFailure(FAILED(hr) ? hr : E_UNEXPECTED, "apply failed");
     }
 
+    // Bale's player accepts 10-bit SDR output only when it carries this mark: a declined stage can
+    // pass P010 through with BT.709 container tags, so BT.709 alone proves nothing.
+    static constexpr winrt::guid ToneMappedOutputMark{ 0xb41e6a52, 0x3c9d, 0x4f0b, { 0x8e, 0x7a, 0x5d, 0x2c, 0x1f, 0x9a, 0x0b, 0x37 } };
+
+    void DescribeOutput(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const override
+    {
+        properties.Insert(ToneMappedOutputMark, winrt::Windows::Foundation::PropertyValue::CreateUInt32(1));
+    }
+
     bool SupportsOutputFormat(DXGI_FORMAT format) const override
     {
         if (format == DXGI_FORMAT_NV12) return true;

@@ -517,6 +517,14 @@ public:
 protected:
     bool HasProcessedOutput() const override { return frameProcessor != nullptr; }
     bool ProcessedOutputSetsColorAttributes() const override { return (outputMode & OutputNoColorAttributes) == 0; }
+    void AddProcessedOutputAttributes(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const override
+    {
+        // A bypassed processor produced nothing; its output must not be described as processed.
+        if (frameProcessor && (outputMode & OutputBypassProcessor) == 0)
+        {
+            frameProcessor->DescribeOutput(properties);
+        }
+    }
     AVPixelFormat ProcessedOutputPixelFormat() const override
     {
         return outputFormat == FormatP010 ? AV_PIX_FMT_P010LE : outputFormat == FormatBgra ? AV_PIX_FMT_BGRA : AV_PIX_FMT_NV12;

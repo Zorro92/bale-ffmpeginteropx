@@ -226,6 +226,7 @@ IMediaStreamDescriptor UncompressedVideoSampleProvider::CreateStreamDescriptor()
             if (properties.HasKey(key)) properties.Remove(key);
         }
         isHdrActive = false;
+        AddProcessedOutputAttributes(properties);
     }
 
     videoProperties.Properties().Insert(MF_MT_INTERLACE_MODE, winrt::box_value((UINT32)_MFVideoInterlaceMode::MFVideoInterlace_MixedInterlaceOrProgressive));

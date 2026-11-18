@@ -115,4 +115,10 @@ public:
     virtual void NotifyError(HRESULT hr) noexcept { UNREFERENCED_PARAMETER(hr); }
     // Output texture formats Process can write. NV12 is the baseline every processor supports.
     virtual bool SupportsOutputFormat(DXGI_FORMAT format) const { return format == DXGI_FORMAT_NV12; }
+    // Adds processor-specific attributes to the processed stream's media type (after the colour
+    // description). Default: none.
+    virtual void DescribeOutput(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const
+    {
+        UNREFERENCED_PARAMETER(properties);
+    }
 };

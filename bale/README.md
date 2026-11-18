@@ -89,7 +89,10 @@ file without the stage, or on the system decoder, survived 40 opens.
 loaded bale_gpu exports `bale_tonemap_output_formats` with P010, else NV12), `"1"`
 P010, `"2"` BGRA8 (debug, only with bypass bit 8; don't combine with bit 1), `"3"`
 NV12. P010 carries BT.709 limited-range SDR in 10 bits, with the same BT.709 media
-type as NV12. Why P010: on the Xbox, Media Foundation's video processor leaks
+type as NV12. The processed media type also carries Bale's mark
+`{b41e6a52-3c9d-4f0b-8e7a-5d2c1f9a0b37}` = 1 ("tone-mapped output"), added by the
+processor through `VideoFrameProcessor::DescribeOutput`; it is absent on passthrough
+and with bypass bit 8. Bale accepts 10-bit SDR output only with it. Why P010: on the Xbox, Media Foundation's video processor leaks
 driver state for every 4K NV12 stream it opens (also with Windows' own decoder
 and no FFmpeg; the process dies after ~22–30 opens), while P010 survived 40/40.
 
