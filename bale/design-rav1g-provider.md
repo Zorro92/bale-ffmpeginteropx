@@ -1,7 +1,7 @@
 # Design: rav1g AV1 provider (draft for review)
 
-Status: proposal, 2026-11-18. Nothing is implemented. Owner, Bale and rav1g review this before
-any code. Goal: real-world testing of [rav1g](https://github.com/Zorro92/rav1g) (GPU AV1 decoding in
+Status: approved by the owner, 2026-11-18 (pool N = 8 to start; HDR on an HDR display passes
+rav1g's P010 through). Reviewed by Bale and rav1g. Goal: real-world testing of [rav1g](https://github.com/Zorro92/rav1g) (GPU AV1 decoding in
 D3D12 compute) inside Bale, **behind a debug switch**. Production keeps dav1d zero-copy until rav1g
 has proven itself; then dav1d becomes a software fallback limited to 1080p.
 
@@ -69,8 +69,8 @@ the new size, old ones are released when they come back.
 | HDR (PQ/HLG) | SDR display | stage, tone map (+ downscale when larger), P010, marked |
 | HDR | HDR display | rav1g's P010 directly, with HDR attributes, rav1g mark |
 
-Marks: direct rav1g output carries a new private media-type attribute (GUID chosen by Bale, value
-1, like the tone-map mark); stage output keeps the tone-map mark. Bale's guard accepts direct
+Marks: direct rav1g output carries the private media-type attribute
+`{6d553633-9287-4856-bc9f-0c23af00e184}` = UINT32 1 (Bale's rav1g mark); stage output keeps the tone-map mark. Bale's guard accepts direct
 output on this route only with the rav1g mark, a subtype matching the source depth (8 → NV12,
 10 → P010) and the source colour attributes.
 
@@ -80,8 +80,9 @@ AV1 → P010 exception of the zero-copy path.
 
 ## 5. Texture pool, seeking, memory
 
-- **Pool:** fixed size N = rav1g's images in flight (slots + 2, i.e. 5 at 4K) + MF's queue (~4) +
-  1 in our queue, so about 10 at 4K. Pairs of a D3D11
+- **Pool:** fixed size N = 8 to start (owner). rav1g holds up to slots + 2 images (5 at 4K), so
+  with MF's queue `get_image` may block at times; the pool counters will show whether N should
+  grow toward ~10. Pairs of a D3D11
   texture (`RENDER_TARGET | SHADER_RESOURCE | UNORDERED_ACCESS`, `MISC_SHARED_NTHANDLE |
   MISC_SHARED` — the flags MF already accepts on the zero-copy path, plus UAV for rav1g's direct
   write) opened in D3D12. Returned to the pool on the sample's `Processed` (stored texture, as in
@@ -123,8 +124,8 @@ AV1 → P010 exception of the zero-copy path.
 2. ~~rav1g: get_image with no free image~~ — answered: block; non-zero fails the temporal unit (§3).
 3. ~~rav1g: device reuse~~ — answered: nothing to reset; re-open each decoder's fence (§2).
 4. ~~Bale: guard rule for direct rav1g output~~ — answered: a rav1g mark (§4).
-5. Owner: pool size N (now ≈ 10 at 4K from rav1g's numbers; Bale suggested 8), and whether HDR → HDR display passes rav1g's
-   P010 straight through with HDR attributes (Bale recommends yes; untestable on the SDR monitor).
+5. ~~Owner: pool size, HDR passthrough~~ — decided: N = 8 to start; HDR on an HDR display passes
+   rav1g's P010 through with HDR attributes.
 
 ## 9. Test plan (console, debug switch on)
 
