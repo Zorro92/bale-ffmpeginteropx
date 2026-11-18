@@ -73,7 +73,7 @@ public:
 
     static void LogIneligible()
     {
-        av_log(nullptr, AV_LOG_INFO, "Bale tonemap: request ignored; not a D3D11 10-bit PQ, HLG or BT.2020 SDR stream.\n");
+        av_log(nullptr, AV_LOG_INFO, "Bale tonemap: request ignored; not a D3D11 PQ, HLG, BT.2020 SDR or downscaled BT.709 SDR stream.\n");
     }
 
     // Called only for a stream that will use D3D11VideoSampleProvider, before its descriptor exists.
@@ -90,18 +90,48 @@ public:
         return bt2020Transfer && parameters->color_primaries == AVCOL_PRI_BT2020 && parameters->color_space == AVCOL_SPC_BT2020_NCL;
     }
 
-    static std::unique_ptr<VideoFrameProcessor> Create(int curve, const AVCodecParameters* parameters)
+    // bale_gpu's optional capability bits; NV12 output only without the export.
+    static uint32_t Capabilities()
+    {
+        auto& api = BaleToneMapExports::Get();
+        return SUCCEEDED(api.status) && api.outputFormats ? api.outputFormats() : BALE_TONEMAP_OUTPUT_NV12;
+    }
+
+    // BT.709 SDR needs no tone map; it is processed only to downscale it before the player does
+    // (the Xbox player's downscale of 4K SDR leaks driver state per open).
+    static bool IsSdr709(const AVCodecParameters* parameters)
+    {
+        bool sdrTransfer = parameters->color_trc == AVCOL_TRC_BT709 || parameters->color_trc == AVCOL_TRC_SMPTE170M ||
+            parameters->color_trc == AVCOL_TRC_BT2020_10 || parameters->color_trc == AVCOL_TRC_BT2020_12;
+        return sdrTransfer && parameters->color_primaries == AVCOL_PRI_BT709 && parameters->color_space == AVCOL_SPC_BT709;
+    }
+
+    // targetWidth/Height: the requested output size (0 = none); BT.709 SDR is eligible only when the
+    // video is larger than it, i.e. when the stage downscales.
+    static std::unique_ptr<VideoFrameProcessor> Create(int curve, const AVCodecParameters* parameters, int targetWidth = 0, int targetHeight = 0)
     {
         if (curve == 0) return nullptr;
         auto description = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(parameters->format));
-        bool tenBit = description && description->nb_components > 0
-            ? description->comp[0].depth == 10 : parameters->bits_per_raw_sample == 10;
-        if (!tenBit || !IsSupportedSource(parameters))
+        int depth = description && description->nb_components > 0 ? description->comp[0].depth : parameters->bits_per_raw_sample;
+        bool downscale = targetWidth > 0 && targetHeight > 0 && (parameters->width > targetWidth || parameters->height > targetHeight);
+        bool supported = IsSupportedSource(parameters);
+        uint32_t capabilities = 0;
+        bool sdr709 = !supported && downscale && IsSdr709(parameters);
+        if (sdr709 || depth == 8)
+        {
+            // Inspect exports only when the decision needs them, before the stream declares its output.
+            capabilities = Capabilities();
+        }
+        if (sdr709)
+        {
+            sdr709 = (capabilities & BALE_TONEMAP_SDR709) && (capabilities & BALE_TONEMAP_OUTPUT_DOWNSCALE);
+        }
+        bool depthOk = depth == 10 || (depth == 8 && (capabilities & BALE_TONEMAP_INPUT_NV12));
+        if (!depthOk || !(supported || sdr709))
         {
             LogIneligible();
             return nullptr;
         }
-        // Do not inspect exports here: an eligible stream always declares processed SDR output.
         // Missing ABI/create/self-test failures latch on the first frame, with the MSS device ready.
         return std::make_unique<BaleToneMap>(curve);
     }
@@ -183,6 +213,11 @@ public:
     void DescribeOutput(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const override
     {
         properties.Insert(ToneMappedOutputMark, winrt::Windows::Foundation::PropertyValue::CreateUInt32(1));
+    }
+
+    bool SupportsInputFormat(DXGI_FORMAT format) const override
+    {
+        return format == DXGI_FORMAT_P010 || (format == DXGI_FORMAT_NV12 && (Capabilities() & BALE_TONEMAP_INPUT_NV12));
     }
 
     bool SupportsDownscale() const override

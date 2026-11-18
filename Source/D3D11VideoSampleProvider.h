@@ -628,7 +628,7 @@ private:
             D3D11_TEXTURE2D_DESC desc{};
             input->GetDesc(&desc);
             auto subresource = reinterpret_cast<uintptr_t>(frame->data[1]);
-            if (desc.Format != DXGI_FORMAT_P010 || desc.Width < static_cast<UINT>(processorWidth) ||
+            if (!frameProcessor->SupportsInputFormat(desc.Format) || desc.Width < static_cast<UINT>(processorWidth) ||
                 desc.Height < static_cast<UINT>(processorHeight) || subresource >= desc.ArraySize || desc.MipLevels != 1)
             {
                 winrt::throw_hresult(E_INVALIDARG);

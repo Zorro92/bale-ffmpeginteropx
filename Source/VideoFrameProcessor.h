@@ -112,6 +112,8 @@ public:
     // than the output only when SupportsDownscale() (the processor then downscales).
     virtual HRESULT Initialize(ID3D11Device* device, UINT outputWidth, UINT outputHeight, UINT sourceWidth, UINT sourceHeight) = 0;
     virtual bool SupportsDownscale() const { return false; }
+    // Input texture formats Process can read. P010 is the baseline.
+    virtual bool SupportsInputFormat(DXGI_FORMAT format) const { return format == DXGI_FORMAT_P010; }
     virtual HRESULT Process(ID3D11DeviceContext* context, ID3D11Texture2D* input, UINT inputSubresource,
         ID3D11Texture2D* output, const VideoFrameColorInfo& colorInfo) = 0;
     // Includes failures in the surrounding output stage (allocation, surface creation, fallback).

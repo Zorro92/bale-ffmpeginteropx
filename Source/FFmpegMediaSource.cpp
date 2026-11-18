@@ -2408,7 +2408,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (avVideoCodecCtx->hw_device_ctx)
         {
             hardwareDecoderStatus = HardwareDecoderStatus::Available;
-            auto processor = BaleToneMap::Create(baleToneMap, avStream->codecpar);
+            auto processor = BaleToneMap::Create(baleToneMap, avStream->codecpar, baleToneMapOutputWidth, baleToneMapOutputHeight);
             videoSampleProvider = std::shared_ptr<MediaSampleProvider>(new D3D11VideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr, std::move(processor), baleToneMapOutput, baleToneMapFormat, baleToneMapOutputWidth, baleToneMapOutputHeight));
         }
         else
