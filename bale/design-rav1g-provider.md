@@ -26,13 +26,18 @@ has proven itself; then dav1d becomes a software fallback limited to 1080p.
 |---|---|---|
 | D3D12 device + queue | first rav1g stream of the process, on the adapter of MF's D3D11 device (`IDXGIDevice::GetAdapter`) | process exit (shared) |
 | `Rav1gDevice` | with the D3D12 device (`rav1g_device_create`) | process exit |
-| `Rav1gDecoder` | first frame of a stream (MF device known), and after each seek (see §5) | stream end / seek |
+| `Rav1gDecoder` | first frame of a stream (MF device known); recreated only when rav1g reports `NEEDS_RECONFIGURE` (~0.11 s create + 0.04 s destroy at 4K) | stream end |
 
 Settings: `rav1g_settings_default`, then only `output_kind = RAV1G_OUTPUT_SEMI_PLANAR`,
 `shared_fence = true`, the output callbacks and `memory_available` (= `AppMemoryUsageLimit −
 AppMemoryUsage`, read in-process from `Windows.System.MemoryManager`; 3328 MiB limit on Series X
-with `hevcPlayback`; no app callback, since FFmpegOptions can't carry one). `low_memory` stays at rav1g's default (16: 4K device buffers ≈ 538 MiB).
-After create: `rav1g_decoder_output_fence` → `CreateSharedHandle` → `ID3D11Device5::OpenSharedFence`.
+with `hevcPlayback`; no app callback, since FFmpegOptions can't carry one). `low_memory` stays at rav1g's default (39: 4K device buffers ≈ 501.5 MiB). Width, height and bit
+depth come from `rav1g_peek_stream_info` on the first temporal unit (max frame size). The pool is
+created after the decoder, so `memory_available` also holds back the pool's bytes.
+After create: `rav1g_decoder_output_fence` → `CreateSharedHandle` → `ID3D11Device5::OpenSharedFence`
+(each decoder has its own fence: re-open it after a recreate). `rav1g_set_*` are process-global:
+the provider never calls them. One `Rav1gDevice` serves every stream of the process; a removed
+device means recreating device, decoder and pool (the stream fails, §6).
 
 ## 3. Packet → frame flow
 
@@ -48,8 +53,11 @@ Pull model on the MSS sample-request thread, like the other providers:
    hand the texture to MF as the sample, or run the stage (§4) and hand its output. Timestamps from
    the `user_data` table.
 
-`get_image` (decode thread or a rav1g thread): take a free pair from the pool, return its D3D12
-side; if none is free, return failure so rav1g waits (rav1g retries / reports; to confirm with rav1g).
+`get_image` (decode thread or a rav1g thread): take a free pair from the pool and return its D3D12
+side. If none is free it **blocks** until MF returns one: a non-zero return fails the temporal unit
+(references break until the next key frame), so it returns non-zero only to cancel on stop or seek.
+Pairs match the request (size and NV12/P010 by bit depth); streams that change size get pairs of
+the new size, old ones are released when they come back.
 
 ## 4. Output path
 
@@ -72,18 +80,19 @@ AV1 → P010 exception of the zero-copy path.
 
 ## 5. Texture pool, seeking, memory
 
-- **Pool:** fixed size N (proposal: frames in flight in rav1g + 4 for MF, e.g. 8). Pairs of a D3D11
+- **Pool:** fixed size N = rav1g's images in flight (slots + 2, i.e. 5 at 4K) + MF's queue (~4) +
+  1 in our queue, so about 10 at 4K. Pairs of a D3D11
   texture (`RENDER_TARGET | SHADER_RESOURCE | UNORDERED_ACCESS`, `MISC_SHARED_NTHANDLE |
   MISC_SHARED` — the flags MF already accepts on the zero-copy path, plus UAV for rav1g's direct
   write) opened in D3D12. Returned to the pool on the sample's `Processed` (stored texture, as in
   565ee8c). **Never grows**: an exhausted pool makes rav1g wait instead of allocating, which avoids
   the zero-copy seek out-of-memory (`known issue`, full seeks of 4K software AV1).
-- **Seek:** rav1g's public API has no flush. Proposal: drain and destroy the decoder, recreate on
-  the next frame (device stays). Bale keeps FastSeek for AV1 (keyframe landing), so no frames
-  before the target need dropping; if exact seeks are used, frames whose pts ends before the target
-  are returned to the pool without being sent. **Question for rav1g:** a flush/reset call, and the
-  cost of recreate.
-- **Memory at 4K:** rav1g ≈ 538 MiB + pool 8 × 4K P010 ≈ 200 MiB + stage output (display-sized)
+- **Seek:** no flush or recreate. Bump a generation counter (part of `user_data`), cancel any blocked
+  `get_image`, `rav1g_decoder_drain` (the decoder stays usable), return every frame of an older
+  generation to the pool unsent, then feed from the key frame FFmpeg's seek landed on. Bale keeps
+  FastSeek for AV1 (keyframe landing); with exact seeks, frames ending before the target are also
+  returned unsent.
+- **Memory at 4K:** rav1g ≈ 502 MiB + pool 10 × 4K P010 ≈ 250 MiB + stage output (display-sized)
   ≈ 30 MiB + Bale/FFmpeg ≈ 0.6 GiB → about 1.4–1.8 GiB of 3328 MiB. `memory_available` lets rav1g
   pick fewer slots when tight.
 
@@ -110,11 +119,11 @@ AV1 → P010 exception of the zero-copy path.
 
 ## 8. Open questions
 
-1. rav1g: flush/reset for seeks, or is drain + destroy + recreate the intended path (cost)?
-2. rav1g: `get_image` returning "no image" — does the decoder wait and retry, or fail?
-3. rav1g: one `Rav1gDevice` per process for successive streams — any state to reset between them?
+1. ~~rav1g: seeks~~ — answered: drain + generation, no recreate (§5; rav1g docs/integration.md, 52d43ea).
+2. ~~rav1g: get_image with no free image~~ — answered: block; non-zero fails the temporal unit (§3).
+3. ~~rav1g: device reuse~~ — answered: nothing to reset; re-open each decoder's fence (§2).
 4. ~~Bale: guard rule for direct rav1g output~~ — answered: a rav1g mark (§4).
-5. Owner: pool size N (Bale recommends 8 to start), and whether HDR → HDR display passes rav1g's
+5. Owner: pool size N (now ≈ 10 at 4K from rav1g's numbers; Bale suggested 8), and whether HDR → HDR display passes rav1g's
    P010 straight through with HDR attributes (Bale recommends yes; untestable on the SDR monitor).
 
 ## 9. Test plan (console, debug switch on)
