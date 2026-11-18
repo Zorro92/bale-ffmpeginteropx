@@ -5,6 +5,13 @@ rav1g's P010 through). Reviewed by Bale and rav1g. Goal: real-world testing of [
 D3D12 compute) inside Bale, **behind a debug switch**. Production keeps dav1d zero-copy until rav1g
 has proven itself; then dav1d becomes a software fallback limited to 1080p.
 
+Implemented in 8058dc1, f0a8d55, 33e7cbc, b5e0a82, eda69d6 and 07a32bb (build fix), behind
+`bale_av1_decoder=1`; not console-tested yet. Where the code differs from this draft, and why,
+is in [README.md](README.md#gpu-av1-decoder-option-rav1g): rav1g creates the D3D12 device on
+the first hardware adapter (checked against MF's adapter), the decoder is created on the first
+temporal unit (only the library, profile, sequence header and device are checked at open), and
+the stream uses the decode-ahead worker when `bale_decode_ahead_frames` is set.
+
 ## 1. Where it sits
 
 - New generic provider `GpuDecoderSampleProvider` (no rav1g names): takes demuxed packets from

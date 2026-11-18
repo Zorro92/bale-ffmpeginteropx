@@ -151,6 +151,102 @@ skip heuristic, which needs the session position, is off in this mode. A session
 when set, keeps upstream behaviour. Each such seek logs
 `Bale seek: sessionless fast seek target=.. landed=.. ms`.
 
+## GPU AV1 decoder option (rav1g)
+
+`MediaSourceConfig.FFmpegOptions["bale_av1_decoder"]` accepts decimal strings: `"0"` =
+today's paths (default), `"1"` = decode AV1 with [rav1g](https://github.com/Zorro92/rav1g)
+(AV1 in D3D12 compute shaders) on `GpuDecoderSampleProvider`. The wrapper consumes the key;
+it is never passed to FFmpeg. Design and review: [design-rav1g-provider.md](design-rav1g-provider.md).
+Frame grabbers never use it. With `"1"`, `bale_zero_copy`, `bale_d3d11_upload` and
+`bale_film_grain_mode` do not apply to the stream (rav1g applies film grain itself).
+
+Code: generic `GpuVideoDecoder.h` (decoder interface), `GpuDecoderImagePool.h` (output
+images), `GpuDecoderSampleProvider.h` (the provider); all rav1g glue in `BaleRav1g.h`.
+`Source/rav1g.h` is rav1g's `crates/rav1g/include/rav1g.h`, copied verbatim (rav1g
+`eebfbd7`, interface version 1; copy it again, unchanged, when rav1g changes it). No new
+native FFmpeg build is needed; Bale ships `rav1g.dll` in its package.
+
+**Fallback at open.** `BaleRav1gDecoder::TryOpen` checks: `rav1g.dll` loads
+(`LoadPackagedLibrary`, no import library), every export it uses is there,
+`rav1g_abi_version()` equals the header's `RAV1G_ABI_VERSION`, the profile is Main (4:2:0 or
+monochrome), `rav1g_peek_stream_info` reads the container's sequence header (av1C config
+OBUs; without one, the probed pixel format) with depth 8 or 10, and the process device
+exists. Any failure logs `Bale rav1g: fallback to dav1d (reason, status=0x..)` and the
+stream opens on today's dav1d path with the keys above honoured. The decoder itself is
+created on the first temporal unit, after Media Foundation's device is known; a failure
+from then on (creation refused, decode or drain status, device removed, fence wait, a
+frame the declared type can't carry) latches a fatal stream error, logged once as
+`Bale rav1g: stream failed (reason, hr=0x..)` and raised through `NotifyError` (status
+`0x80042B2N` = rav1g status N; `E_INVALIDARG` → unsupported media format).
+
+**Device.** One `Rav1gDevice` per process, created on the first rav1g stream, never reset.
+rav1g creates the D3D12 device and queue itself on the first hardware adapter (this DLL has
+no `d3d12.lib` import and a UWP app cannot load `d3d12.dll` by name); the stream checks
+that Media Foundation's D3D11 device is on the same adapter (LUID) and fails otherwise.
+Each decoder's output fence is opened on the D3D11 device (`OpenSharedFence`), again after
+a recreate. Settings: `rav1g_settings_default`, the sequence size and depth from
+`rav1g_peek_stream_info`, `RAV1G_OUTPUT_SEMI_PLANAR`, `shared_fence`, the output callbacks
+and `memory_available` = `AppMemoryUsageLimit − AppMemoryUsage` minus the bytes of output
+images not created yet. `low_memory`, slots, threads and the process-global `rav1g_set_*`
+switches are never touched. The device handle comes from the MSS device manager at the
+first Starting request; a lost device fails the stream.
+
+**Flow and threads.** The sample thread (the decode-ahead worker when
+`bale_decode_ahead_frames` > 0, as Bale sets for AV1, else the MSS request thread) reads a
+packet, calls `rav1g_decoder_decode` with user data = index into a table of {pts,
+duration, generation}, and repeats until a frame is queued. rav1g's `frame` callback
+(completion thread) only queues the frame. The sample thread has the immediate context
+wait for the frame's fence (`ID3D11DeviceContext4::Wait`, on the GPU), under the device's
+`ID3D10Multithread` protection, then hands the texture to MF or runs the stage. End of
+stream drains. `NEEDS_RECONFIGURE` drains, recreates the decoder and decodes the unit again.
+Matroska may leave the sequence header out of blocks: a decoder created from the
+container's header gets it in front of its first unit.
+
+**Images.** 8 per stream, never more: D3D11 textures (`RENDER_TARGET | SHADER_RESOURCE |
+UNORDERED_ACCESS`, `MISC_SHARED_NTHANDLE | MISC_SHARED`; without unordered access if the
+driver refuses, then rav1g copies) opened in D3D12 once. `get_image` waits for a free
+image of the request's size (rounded to even) and format (NV12 for 8-bit, P010 for
+10-bit); images of an older size are released as they come back. It returns non-zero only
+to cancel (stop, seek) or on failure. Images return on the sample's `Processed` (texture
+stored per sample) or, for processed output, right after the stage; the releaser signals a
+D3D11 fence that `get_image` waits for before rav1g writes the image again. A flush also
+takes back the images of samples MF still holds, as the D3D11 path does.
+
+**Seek, stop.** MSS Starting and Close first cancel any `get_image` wait without taking
+the source lock (a wait can last a whole pause and the waiting thread may hold it).
+Flush bumps the generation, drains rav1g (image requests fail meanwhile; drain errors are
+part of the seek), returns older frames unsent and skips packets until a key frame; the
+decoder is kept. Starting ends the cancel and, if the cancel failed a decode, drains and
+waits for a key frame too. Exact (non-fast) seeks deliver frames from the key frame on, as
+the other FFmpeg paths do; Bale uses fast seek for AV1.
+
+**Output.** Fixed at stream creation:
+
+| Source | Output | Mark |
+|---|---|---|
+| SDR, no larger than `bale_tonemap_output_width/height` (or no target) | rav1g's texture: NV12 (8-bit) or P010 (10-bit), visible size rounded to even, source colour attributes | rav1g |
+| SDR larger than the target, not BT.2020 (also without `bale_tonemap`) | stage, downscale only, P010 at the display size (as `BaleToneMap::Create` decides) | tone map |
+| PQ/HLG/BT.2020 with `bale_tonemap` | stage, tone map (+ downscale), P010 | tone map |
+| HDR without `bale_tonemap` | rav1g's P010 with HDR attributes (useHdr policy) and per-sample HDR metadata | rav1g |
+
+The rav1g mark is the media-type attribute `{6d553633-9287-4856-bc9f-0c23af00e184}` =
+UINT32 1 (`BaleRav1gDecoder::OutputMark`); stage output carries the tone-map mark. When
+the stage declines (no bale_gpu capability, odd size), the stream stays on direct output.
+Colour per frame: rav1g's description, the container's where the bitstream has none.
+
+**Logs.** `Bale rav1g: loaded <rav1g_version> (interface 1)`, `Bale rav1g: output WxH
+NV12|P010 direct|processed hdr=N`, `Bale rav1g: active WxH bits=N slots=S parse=P threads=T
+device=X MiB`, `Bale rav1g: destroyed (frames=.. discarded=.. images created=.. peak in
+use=.. blocked=.. output created=..)`, plus the fallback and failure lines above. The
+stream reports `DecoderEngine::FFmpegD3D11HardwareDecoder` (no new engine value: the API is
+frozen).
+
+Evidence/limits: compiled in CI only; not console-tested. To check on the console: real-time
+4K, md5/visual parity with dav1d, pool counters over seeks and stop/start cycles, that
+Media Foundation releases enough samples for 8 images (MSS `BufferTime` on this route
+should stay below 8 frames), the direct-write path (`OUTPUT ... direct` in rav1g's log) and
+both fallbacks.
+
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
 Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.

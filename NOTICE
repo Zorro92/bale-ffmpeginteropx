@@ -11,10 +11,15 @@ Modifications by the Bale project, starting from upstream commit
 
   Added:     Source/BaleD3D11Upload.h
              Source/BaleFilmGrain.h
+             Source/BaleRav1g.h
              Source/BaleSubtitleSink.h
              Source/BaleThreadBoost.h
              Source/BaleToneMap.h
              Source/bale_tonemap.h (copied from Bale)
+             Source/GpuDecoderImagePool.h
+             Source/GpuDecoderSampleProvider.h
+             Source/GpuVideoDecoder.h
+             Source/rav1g.h (copied unchanged from rav1g; licence below)
              Source/VideoFrameProcessor.h
              Source/VideoColorAttributes.h
              bale/ (fork-owned build scripts, pins and documentation)
@@ -30,3 +35,31 @@ Modifications by the Bale project, starting from upstream commit
              Source/UncompressedSampleProvider.cpp, Source/UncompressedSampleProvider.h
              Source/UncompressedVideoSampleProvider.cpp, Source/UncompressedVideoSampleProvider.h
              README.md (this fork's section), NOTICE (this file)
+
+Source/rav1g.h is the C interface of rav1g (https://github.com/Zorro92/rav1g), copied
+unchanged. It is licensed under the BSD 2-Clause License and the Alliance for Open Media
+Patent License 1.0 (https://www.aomedia.org/license/patent), as its own header states:
+
+  Copyright (c) 2016, Alliance for Open Media. All rights reserved.
+  Copyright 2020 Google LLC
+
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met:
+
+  1. Redistributions of source code must retain the above copyright notice, this list of
+     conditions and the following disclaimer.
+  2. Redistributions in binary form must reproduce the above copyright notice, this list of
+     conditions and the following disclaimer in the documentation and/or other materials
+     provided with the distribution.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY
+  EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+  COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+  EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+  HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+rav1g.dll itself is not part of this package; the app that ships it carries its notices.
