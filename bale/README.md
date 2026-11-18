@@ -104,9 +104,10 @@ always outputs P010 when bale_gpu can write it (NV12 only for an older bale_gpu)
 ### rav1g delivery diagnostics
 
 Every 240 delivered samples (and at a seek and at stream end) the rav1g route logs
-`Bale rav1g: delivery samples=N latency avg=.. max=.. ms pts step min=.. max=.. ms
-backwards=N gaps=N queue max=N`: decode-to-deliver latency (from feeding a temporal unit to
-handing its frame to the player), the timestamp steps between delivered samples, steps that
+`Bale rav1g: delivery samples=N rate=../s latency avg=.. max=.. ms pts step min=.. max=.. ms
+backwards=N gaps=N queue max=N`: samples delivered per wall-clock second, decode-to-deliver latency (from feeding a temporal unit to
+handing its frame to the player), the timestamp steps between delivered samples (in sample
+time, as the player receives them; bale.49 printed stream time-base units by mistake), steps that
 went backwards, gaps over 1.5 sample durations, and the deepest ready-frame queue. The first 24
 samples after an open or seek are also listed: `first samples pts ms=a,b,c,...`.
 

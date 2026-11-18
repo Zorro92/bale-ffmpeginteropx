@@ -448,6 +448,7 @@ private:
         uint32_t backwards = 0;
         uint32_t gaps = 0;
         size_t queueMax = 0;
+        std::chrono::steady_clock::time_point windowStart{};
     };
     DeliveryStats stats;
     uint32_t listedSinceStart = 0;
@@ -457,22 +458,28 @@ private:
     {
         try
         {
-            auto latencyMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - timing.decodeStart).count();
+            auto now = std::chrono::steady_clock::now();
+            auto latencyMs = std::chrono::duration<double, std::milli>(now - timing.decodeStart).count();
+            if (stats.samples == 0) stats.windowStart = now;
+            // In sample time (100 ns), as the player receives it: the packets carry stream time-base
+            // units, which GetNextSample converts.
+            int64_t samplePts = ConvertPosition(timing.pts).count();
+            int64_t sampleDuration = ConvertDuration(timing.duration).count();
             stats.samples++;
             stats.latencySumMs += latencyMs;
             stats.latencyMaxMs = (std::max)(stats.latencyMaxMs, latencyMs);
             if (stats.lastPts != INT64_MIN)
             {
-                auto delta = timing.pts - stats.lastPts;
+                auto delta = samplePts - stats.lastPts;
                 if (delta < 0) stats.backwards++;
                 // A gap: more than 1.5 sample durations (or 1.5x the smallest step seen when the
                 // container gives no duration).
-                auto expected = timing.duration > 0 ? timing.duration : (stats.deltaMin != INT64_MAX ? stats.deltaMin : 0);
+                auto expected = sampleDuration > 0 ? sampleDuration : (stats.deltaMin != INT64_MAX ? stats.deltaMin : 0);
                 if (expected > 0 && delta > expected * 3 / 2) stats.gaps++;
                 stats.deltaMin = (std::min)(stats.deltaMin, delta);
                 stats.deltaMax = (std::max)(stats.deltaMax, delta);
             }
-            stats.lastPts = timing.pts;
+            stats.lastPts = samplePts;
             {
                 std::lock_guard lock(framesMutex);
                 stats.queueMax = (std::max)(stats.queueMax, readyFrames.size());
@@ -480,7 +487,7 @@ private:
             if (listedSinceStart < ListedSamples)
             {
                 listedSinceStart++;
-                listedPts += std::to_string(timing.pts / 10000);
+                listedPts += std::to_string(samplePts / 10000);
                 listedPts += listedSinceStart < ListedSamples ? "," : "";
                 if (listedSinceStart == ListedSamples)
                 {
@@ -498,9 +505,10 @@ private:
     void LogDeliveryStats() noexcept
     {
         if (stats.samples == 0) return;
+        auto elapsedS = std::chrono::duration<double>(std::chrono::steady_clock::now() - stats.windowStart).count();
         av_log(nullptr, AV_LOG_INFO,
-            "%s: delivery samples=%u latency avg=%.1f max=%.1f ms pts step min=%.1f max=%.1f ms backwards=%u gaps=%u queue max=%u\n",
-            logName, stats.samples, stats.latencySumMs / stats.samples, stats.latencyMaxMs,
+            "%s: delivery samples=%u rate=%.2f/s latency avg=%.1f max=%.1f ms pts step min=%.1f max=%.1f ms backwards=%u gaps=%u queue max=%u\n",
+            logName, stats.samples, elapsedS > 0 ? stats.samples / elapsedS : 0.0, stats.latencySumMs / stats.samples, stats.latencyMaxMs,
             stats.deltaMin == INT64_MAX ? 0.0 : stats.deltaMin / 10000.0, stats.deltaMax == INT64_MIN ? 0.0 : stats.deltaMax / 10000.0,
             stats.backwards, stats.gaps, static_cast<unsigned>(stats.queueMax));
         auto lastPts = stats.lastPts;
