@@ -64,6 +64,9 @@ public:
     // Hands every frame in flight to the host. The decoder stays usable.
     virtual HRESULT Drain() = 0;
     virtual void Destroy() = 0;
+    // GPU memory the decoder allocated for its own work (not the output images); 0 if unknown.
+    virtual uint64_t DeviceBytes() const { return 0; }
+
     // Text the decoder adds to the provider's periodic statistics line, for the time since the last
     // call (e.g. the decoder's own per-frame timing). Called on the provider's sample thread, also
     // while another thread decodes: it must not touch the decoding state. Default: nothing.

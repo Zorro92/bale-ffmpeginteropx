@@ -136,6 +136,17 @@ With the player-side pool (bale.46+), the decoder's fixed pool no longer limits 
 buffer, so decode-ahead and BufferTime can be set as for dav1d. Mind the memory: each buffered
 frame is a player-side texture (1080p P010 ≈ 6 MiB, 4K ≈ 25 MiB).
 
+After each delivery line and at stream end (bale.55) the route also logs where the stream's GPU
+memory goes: `Bale rav1g: memory (delivery|destroy) decoder=.. MiB images=N x .. = .. MiB player=N x
+.. = .. MiB stream total=.. MiB app=.. MiB`. `decoder` is rav1g's `device_size` (its own buffers,
+from `rav1g_decoder_configuration`); `images` the decoder's output images that exist now (the
+fixed pool, created on demand); `player` the player-side textures created so far (direct copies,
+or the stage's display-sized output), each the size the player receives; `app` is
+`AppMemoryUsage` for the whole process. Not counted: the process-wide rav1g device and its
+pipelines (shared by every stream, created by the prewarm) and the stage's internal resources in
+`bale_gpu.dll`. Sizes are computed from format and dimensions (NV12 1.5, P010 3 bytes a pixel),
+not queried from the driver, so alignment padding is not included.
+
 `bale_rav1g_parse` (0–8, default 0 = rav1g's choice: 1 frame in parse and 1 parse thread up to
 1440p) asks rav1g for N frames in parse and N parse threads. With one frame in parse, rav1g parses
 each unit inside the decode call on the feeder thread; the "decode call" timing shows that cost.

@@ -110,6 +110,7 @@ public:
         pool->Statistics(created, peak, blocked);
         av_log(nullptr, AV_LOG_INFO, "%s: destroyed (frames=%u discarded=%u images created=%u peak in use=%u blocked=%u output created=%u)\n",
             logName, framesOut, framesDiscarded, created, peak, blocked, processedTexturePool ? processedTexturePool->CreatedCount() : 0u);
+        LogMemory("destroy");
         pool->Clear();
     }
 
@@ -526,12 +527,43 @@ private:
     static constexpr uint32_t ExpectedPlayerTextures = 8;
     std::atomic<uint32_t> playerTexturesCreated{ 0 };
 
-    uint64_t PendingPlayerPoolBytes() noexcept
+    uint64_t PlayerTextureBytes() noexcept
     {
         uint64_t width = frameProcessor ? static_cast<uint64_t>(processedWidth) : static_cast<uint64_t>((sourceWidth + 1) & ~1);
         uint64_t height = frameProcessor ? static_cast<uint64_t>(processedHeight) : static_cast<uint64_t>((sourceHeight + 1) & ~1);
         // P010: 2 bytes per luma sample plus half as many chroma bytes = 3 bytes a pixel; NV12: 1.5.
-        uint64_t bytesPerTexture = OutputFormat() == DXGI_FORMAT_P010 ? width * height * 3 : width * height * 3 / 2;
+        return OutputFormat() == DXGI_FORMAT_P010 ? width * height * 3 : width * height * 3 / 2;
+    }
+
+    // Where this stream's GPU memory goes: the decoder's own buffers, its output images and the
+    // player-side textures handed to Media Foundation (direct copies or stage output). Not counted:
+    // the process-wide decoder device and the stage's internal resources; app is the whole process.
+    void LogMemory(const char* when) noexcept
+    {
+        try
+        {
+            uint32_t images = 0;
+            uint64_t imageBytes = 0;
+            pool->Footprint(images, imageBytes);
+            uint32_t player = playerTexturesCreated.load();
+            uint64_t playerBytes = player * PlayerTextureBytes();
+            uint64_t decoderBytes = gpuDecoder ? gpuDecoder->DeviceBytes() : 0;
+            uint64_t app = 0;
+            try { app = winrt::Windows::System::MemoryManager::AppMemoryUsage(); } catch (...) {}
+            constexpr double MiB = 1024.0 * 1024.0;
+            av_log(nullptr, AV_LOG_INFO,
+                "%s: memory (%s) decoder=%.1f MiB images=%u x %.1f = %.1f MiB player=%u x %.1f = %.1f MiB stream total=%.1f MiB app=%.1f MiB\n",
+                logName, when, decoderBytes / MiB, images, images ? imageBytes / MiB / images : 0.0, imageBytes / MiB,
+                player, PlayerTextureBytes() / MiB, playerBytes / MiB, (decoderBytes + imageBytes + playerBytes) / MiB, app / MiB);
+        }
+        catch (...)
+        {
+        }
+    }
+
+    uint64_t PendingPlayerPoolBytes() noexcept
+    {
+        uint64_t bytesPerTexture = PlayerTextureBytes();
         // Called on decoder threads: read the count without the samples lock.
         uint32_t created = playerTexturesCreated.load();
         return created >= ExpectedPlayerTextures ? 0 : (ExpectedPlayerTextures - created) * bytesPerTexture;
@@ -677,6 +709,7 @@ private:
             static_cast<double>(stats.inFlightSum) / stats.samples, stats.inFlightMax, target,
             stats.waitSumMs / stats.samples, stats.waitMaxMs, stats.outputSumMs / stats.samples, stats.outputMaxMs,
             blockedDelta, decoderText.c_str());
+        LogMemory("delivery");
         auto lastPts = stats.lastPts;
         stats = DeliveryStats{};
         stats.lastPts = lastPts;

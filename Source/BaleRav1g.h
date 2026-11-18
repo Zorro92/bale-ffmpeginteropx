@@ -443,6 +443,7 @@ public:
 
         Rav1gConfiguration configuration{};
         api.decoderConfiguration(decoder, &configuration);
+        deviceBytes = configuration.device_size;
         av_log(nullptr, AV_LOG_INFO, "Bale rav1g: active %ux%u bits=%u slots=%u parse=%u threads=%u device=%.1f MiB\n",
             info.width, info.height, settings.bit_depth, configuration.frame_slots, configuration.frames_in_parse,
             configuration.threads, configuration.device_size / (1024.0 * 1024.0));
@@ -501,6 +502,8 @@ public:
     {
         if (!perfStatistics) perfStatistics = BaleRav1gPerf::Get().Acquire();
     }
+
+    uint64_t DeviceBytes() const override { return deviceBytes; }
 
     void AppendStatistics(std::string& line) override
     {
@@ -657,6 +660,7 @@ private:
 
 private:
     std::vector<uint8_t> configObus;
+    uint64_t deviceBytes = 0;
     Rav1gDecoder* decoder = nullptr;
     GpuDecoderHost* host = nullptr;
     winrt::com_ptr<ID3D11Device5> device11;

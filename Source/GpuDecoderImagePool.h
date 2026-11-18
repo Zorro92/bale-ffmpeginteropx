@@ -210,6 +210,15 @@ public:
         openView = nullptr;
     }
 
+    // Images that exist now and their total size.
+    void Footprint(uint32_t& count, uint64_t& bytes)
+    {
+        std::lock_guard lock(mutex);
+        count = static_cast<uint32_t>(images.size());
+        bytes = 0;
+        for (auto& image : images) bytes += ImageBytes(image.width, image.height, image.format);
+    }
+
     void Statistics(uint32_t& created, uint32_t& peak, uint32_t& blocked)
     {
         std::lock_guard lock(mutex);
