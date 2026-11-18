@@ -127,6 +127,16 @@ public:
         inflightTarget = (std::max)(1u, (std::min)(units, OutputImages - 1));
     }
 
+    // At most this many player-side textures exist at once (0 = no limit, the default). When all of them
+    // are with the player, the next frame waits up to OutputTextureWaitMs for one to come back and
+    // only then grows the pool, so a limit below what the player holds costs a short wait, never a
+    // stall. Values below 4 act as 4. Before the first sample.
+    void SetOutputTextureLimit(uint32_t textures)
+    {
+        std::lock_guard lock(samplesMutex);
+        outputTextureLimit = textures == 0 ? 0 : (std::max)(4u, textures);
+    }
+
     // Win32 priority of the feeder thread. Before the first sample.
     void SetFeederThreadPriority(int priority)
     {
@@ -545,16 +555,23 @@ private:
             uint32_t images = 0;
             uint64_t imageBytes = 0;
             pool->Footprint(images, imageBytes);
-            uint32_t player = playerTexturesCreated.load();
+            uint32_t player = 0, limit = 0, overruns = 0;
+            {
+                std::lock_guard lock(samplesMutex);
+                // Textures that exist now: with the player plus kept for reuse.
+                player = OutputTexturesHeld() + (processedTexturePool ? static_cast<uint32_t>(processedTexturePool->PooledTextureCount()) : 0u);
+                limit = outputTextureLimit;
+                overruns = outputTextureOverruns;
+            }
             uint64_t playerBytes = player * PlayerTextureBytes();
             uint64_t decoderBytes = gpuDecoder ? gpuDecoder->DeviceBytes() : 0;
             uint64_t app = 0;
             try { app = winrt::Windows::System::MemoryManager::AppMemoryUsage(); } catch (...) {}
             constexpr double MiB = 1024.0 * 1024.0;
             av_log(nullptr, AV_LOG_INFO,
-                "%s: memory (%s) decoder=%.1f MiB images=%u x %.1f = %.1f MiB player=%u x %.1f = %.1f MiB stream total=%.1f MiB app=%.1f MiB\n",
+                "%s: memory (%s) decoder=%.1f MiB images=%u x %.1f = %.1f MiB player=%u x %.1f = %.1f MiB (limit=%u overruns=%u) stream total=%.1f MiB app=%.1f MiB\n",
                 logName, when, decoderBytes / MiB, images, images ? imageBytes / MiB / images : 0.0, imageBytes / MiB,
-                player, PlayerTextureBytes() / MiB, playerBytes / MiB, (decoderBytes + imageBytes + playerBytes) / MiB, app / MiB);
+                player, PlayerTextureBytes() / MiB, playerBytes / MiB, limit, overruns, (decoderBytes + imageBytes + playerBytes) / MiB, app / MiB);
         }
         catch (...)
         {
@@ -1099,8 +1116,14 @@ private:
             DXGI_FORMAT outputFormat = frameProcessor ? OutputFormat() : imageDesc.Format;
             winrt::com_ptr<ID3D11Texture2D> output;
             {
-                std::lock_guard lock(samplesMutex);
+                std::unique_lock lock(samplesMutex);
                 if (!processedTexturePool) processedTexturePool = std::make_shared<TexturePool>(rendererDevice, 5);
+                if (outputTextureLimit > 0 && processedTexturePool->PooledTextureCount() == 0 && OutputTexturesHeld() >= outputTextureLimit)
+                {
+                    auto returned = outputTextureReturned.wait_for(lock, std::chrono::milliseconds(OutputTextureWaitMs),
+                        [this] { return processedTexturePool->PooledTextureCount() > 0 || OutputTexturesHeld() < outputTextureLimit; });
+                    if (!returned) outputTextureOverruns++;
+                }
                 winrt::check_hresult(processedTexturePool->GetTexture(outputWidth, outputHeight, outputFormat,
                     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, output));
                 playerTexturesCreated.store(processedTexturePool->CreatedCount());
@@ -1215,8 +1238,11 @@ private:
             std::lock_guard lock(samplesMutex);
             // A replacement pool must never receive textures of an earlier one.
             auto outputPool = tracked.outputPool.lock();
-            if (outputPool && outputPool == processedTexturePool) outputPool->ReturnTexture(tracked.output);
+            // Over the limit (after an overrun): let the texture go instead of keeping it.
+            bool keep = outputTextureLimit == 0 || (outputPool && OutputTexturesHeld() + outputPool->PooledTextureCount() < outputTextureLimit);
+            if (keep && outputPool && outputPool == processedTexturePool) outputPool->ReturnTexture(tracked.output);
             tracked.output = nullptr;
+            outputTextureReturned.notify_all();
         }
     }
 
@@ -1285,6 +1311,18 @@ private:
         trackedSamples.clear();
     }
 
+    // Player-side textures out of the pool: with samples the player has, or about to be. Caller holds
+    // samplesMutex.
+    uint32_t OutputTexturesHeld() const
+    {
+        uint32_t held = pendingOutput ? 1u : 0u;
+        for (auto& entry : trackedSamples)
+        {
+            if (entry.second.output) held++;
+        }
+        return held;
+    }
+
     // Output of CreateNextSampleBuffer that never reached SetSampleProperties.
     void ReleasePending()
     {
@@ -1301,6 +1339,10 @@ private:
     std::shared_ptr<GpuDecoderImagePool> pool;
     std::unique_ptr<VideoFrameProcessor> frameProcessor;
     std::shared_ptr<TexturePool> processedTexturePool;
+    static constexpr uint32_t OutputTextureWaitMs = 150;
+    uint32_t outputTextureLimit = 0;                  // guarded by samplesMutex
+    uint32_t outputTextureOverruns = 0;               // guarded by samplesMutex
+    std::condition_variable outputTextureReturned;    // with samplesMutex
     bool processorInitialized = false;
     bool outputP010 = false;
     bool applyHdrColorInfo = false;

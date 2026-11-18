@@ -140,12 +140,23 @@ After each delivery line and at stream end (bale.55) the route also logs where t
 memory goes: `Bale rav1g: memory (delivery|destroy) decoder=.. MiB images=N x .. = .. MiB player=N x
 .. = .. MiB stream total=.. MiB app=.. MiB`. `decoder` is rav1g's `device_size` (its own buffers,
 from `rav1g_decoder_configuration`); `images` the decoder's output images that exist now (the
-fixed pool, created on demand); `player` the player-side textures created so far (direct copies,
+fixed pool, created on demand); `player` the player-side textures that exist now (bale.56; created so far on bale.55) (direct copies,
 or the stage's display-sized output), each the size the player receives; `app` is
 `AppMemoryUsage` for the whole process. Not counted: the process-wide rav1g device and its
 pipelines (shared by every stream, created by the prewarm) and the stage's internal resources in
 `bale_gpu.dll`. Sizes are computed from format and dimensions (NV12 1.5, P010 3 bytes a pixel),
 not queried from the driver, so alignment padding is not included.
+
+`bale_gpu_output_textures` (0–64, default 0 = no limit; 1–3 act as 4, bale.56) caps the
+player-side textures of a GPU decoder stream. Without it the pool grows to whatever the player and
+the decode-ahead queue hold at once: 25 textures with BufferTime 500 ms and 19 with 250 ms on 4K
+AV1 → 1080p stage output (bale.55, Series X), 5.9 MiB each. With a limit, a frame that finds all
+textures out waits up to 150 ms for the player to return one, then grows the pool anyway and
+counts an overrun; textures above the limit are let go when they come back, so the pool shrinks
+again after an overrun. The memory line shows `player=` as the textures that exist now and
+`(limit=N overruns=N)`. A limit below what the player needs to start (its BufferTime in frames plus
+a few for rendering) costs a 150 ms wait per frame while it fills, so keep it above that and check
+overruns stay 0.
 
 `bale_rav1g_parse` (0–8, default 0 = rav1g's choice: 1 frame in parse and 1 parse thread up to
 1440p) asks rav1g for N frames in parse and N parse threads. With one frame in parse, rav1g parses
