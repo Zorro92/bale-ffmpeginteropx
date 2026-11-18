@@ -171,10 +171,12 @@ void MediaSampleProvider::InitializeNameLanguageCodec()
     if (m_streamDescriptor)
         m_streamDescriptor.Name(Name);
 
-    auto codec = m_pAvCodecCtx->codec_descriptor->name;
-    if (codec)
+    // codec_descriptor is only set by avcodec_open2; a codec context that only describes a stream
+    // decoded elsewhere (e.g. by a GPU decoder) has none, so look it up by codec id.
+    auto descriptor = m_pAvCodecCtx->codec_descriptor ? m_pAvCodecCtx->codec_descriptor : avcodec_descriptor_get(m_pAvCodecCtx->codec_id);
+    if (descriptor && descriptor->name)
     {
-        CodecName = StringUtils::Utf8ToPlatformString(codec);
+        CodecName = StringUtils::Utf8ToPlatformString(descriptor->name);
     }
 }
 
