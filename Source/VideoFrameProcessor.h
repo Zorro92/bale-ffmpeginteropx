@@ -1,5 +1,6 @@
 #pragma once
 #include "pch.h"
+#include <algorithm>
 #include <cstdint>
 
 extern "C"
@@ -125,5 +126,34 @@ public:
     virtual void DescribeOutput(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const
     {
         UNREFERENCED_PARAMETER(properties);
+    }
+
+    // The processed size for a visible source of sourceWidth x sourceHeight and a target size (0 =
+    // none): the source fitted inside the target, aspect kept, even sizes, at most 4x smaller per
+    // axis; only when the processor downscales. Otherwise width/height stay the source size.
+    static void SelectOutputSize(const VideoFrameProcessor& processor, int sourceWidth, int sourceHeight,
+        int targetWidth, int targetHeight, int& width, int& height)
+    {
+        width = sourceWidth;
+        height = sourceHeight;
+        if (targetWidth <= 0 || targetHeight <= 0 || sourceWidth <= 0 || sourceHeight <= 0) return;
+        if (sourceWidth <= targetWidth && sourceHeight <= targetHeight) return;
+        if (!processor.SupportsDownscale())
+        {
+            av_log(nullptr, AV_LOG_WARNING, "Bale tonemap: downscale to %dx%d not supported; keeping %dx%d\n",
+                targetWidth, targetHeight, sourceWidth, sourceHeight);
+            return;
+        }
+        double scale = (std::min)(static_cast<double>(targetWidth) / sourceWidth, static_cast<double>(targetHeight) / sourceHeight);
+        scale = (std::max)(scale, 0.25);
+        int fitWidth = (std::max)(2, static_cast<int>(sourceWidth * scale) & ~1);
+        int fitHeight = (std::max)(2, static_cast<int>(sourceHeight * scale) & ~1);
+        // Keep within the processor's 4x limit after rounding down to even sizes.
+        while (fitWidth * 4 < sourceWidth) fitWidth += 2;
+        while (fitHeight * 4 < sourceHeight) fitHeight += 2;
+        width = fitWidth;
+        height = fitHeight;
+        av_log(nullptr, AV_LOG_INFO, "Bale tonemap downscale %dx%d -> %dx%d (target %dx%d)\n",
+            sourceWidth, sourceHeight, width, height, targetWidth, targetHeight);
     }
 };

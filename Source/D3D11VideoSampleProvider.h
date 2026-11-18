@@ -506,29 +506,12 @@ protected:
         height = processedHeight;
     }
 
-    // Fit the visible source inside the target, aspect kept, even sizes, at most 4x smaller per
-    // axis; only when the processor downscales. The size is fixed for the stream's lifetime.
+    // The size is fixed for the stream's lifetime.
     void SelectProcessedSize(int targetWidth, int targetHeight)
     {
-        if (!frameProcessor || targetWidth <= 0 || targetHeight <= 0 || processorWidth <= 0 || processorHeight <= 0) return;
-        if (processorWidth <= targetWidth && processorHeight <= targetHeight) return;
-        if (!frameProcessor->SupportsDownscale())
-        {
-            av_log(nullptr, AV_LOG_WARNING, "Bale tonemap: downscale to %dx%d not supported; keeping %dx%d\n",
-                targetWidth, targetHeight, processorWidth, processorHeight);
-            return;
-        }
-        double scale = (std::min)(static_cast<double>(targetWidth) / processorWidth, static_cast<double>(targetHeight) / processorHeight);
-        scale = (std::max)(scale, 0.25);
-        int width = (std::max)(2, static_cast<int>(processorWidth * scale) & ~1);
-        int height = (std::max)(2, static_cast<int>(processorHeight * scale) & ~1);
-        // Keep within the processor's 4x limit after rounding down to even sizes.
-        while (width * 4 < processorWidth) width += 2;
-        while (height * 4 < processorHeight) height += 2;
-        processedWidth = width;
-        processedHeight = height;
-        av_log(nullptr, AV_LOG_INFO, "Bale tonemap downscale %dx%d -> %dx%d (target %dx%d)\n",
-            processorWidth, processorHeight, width, height, targetWidth, targetHeight);
+        if (!frameProcessor) return;
+        VideoFrameProcessor::SelectOutputSize(*frameProcessor, processorWidth, processorHeight, targetWidth, targetHeight,
+            processedWidth, processedHeight);
     }
 
     void AddProcessedOutputAttributes(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const override
