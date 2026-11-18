@@ -49,7 +49,8 @@ public:
     static constexpr uint32_t OutputImages = 8;
     // Access units in flight (fed to the decoder and not yet delivered) unless SetDecodeInflight says
     // otherwise. Each needs an output image, so the target stays below OutputImages.
-    static constexpr uint32_t DefaultInflight = 3;
+    // 4: smooth 1080p 23.976 on a Series X (3 left little margin, 2 fell short).
+    static constexpr uint32_t DefaultInflight = 4;
 
     GpuDecoderSampleProvider(
         std::shared_ptr<FFmpegReader> reader,

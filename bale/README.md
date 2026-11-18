@@ -118,7 +118,7 @@ the time the sample thread waited for a decoded frame (0 when one was queued); `
 (GPU fence wait, copy or stage, release signal and flush); and how often `get_image` had to wait
 for a free image in the window. The decode call is timed on the feeder thread.
 
-`bale_gpu_decode_inflight` (1–8, default 3; values above 7 act as 7, one below the 8 images)
+`bale_gpu_decode_inflight` (1–8, default 4; values above 7 act as 7, one below the 8 images)
 sets how many temporal units the feeder keeps in flight.
 
 `bale_rav1g_perf` (0/1, default 0) appends rav1g's own timing run to the delivery line:
