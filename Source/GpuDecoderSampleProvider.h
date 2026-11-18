@@ -386,8 +386,10 @@ public:
             using winrt::Windows::System::MemoryManager;
             auto limit = MemoryManager::AppMemoryUsageLimit();
             auto usage = MemoryManager::AppMemoryUsage();
-            // Output images that do not exist yet are this stream's to allocate, not the decoder's.
-            auto pending = pool->PendingBytes();
+            // Textures that do not exist yet are this stream's to allocate, not the decoder's: the
+            // decoder's own image pool, and the player-side pool its output is copied or processed
+            // into (sized for the player's usual buffer; it can grow beyond it).
+            auto pending = pool->PendingBytes() + PendingPlayerPoolBytes();
             int64_t available = limit > usage ? static_cast<int64_t>(limit - usage) : 0;
             available -= static_cast<int64_t>(pending);
             return available > 0 ? available : 0;
@@ -399,6 +401,21 @@ public:
     }
 
 private:
+    // Player-side textures expected in use at once (the player's buffer and renderer queue).
+    static constexpr uint32_t ExpectedPlayerTextures = 8;
+    std::atomic<uint32_t> playerTexturesCreated{ 0 };
+
+    uint64_t PendingPlayerPoolBytes() noexcept
+    {
+        uint64_t width = frameProcessor ? static_cast<uint64_t>(processedWidth) : static_cast<uint64_t>((sourceWidth + 1) & ~1);
+        uint64_t height = frameProcessor ? static_cast<uint64_t>(processedHeight) : static_cast<uint64_t>((sourceHeight + 1) & ~1);
+        // P010: 2 bytes per luma sample plus half as many chroma bytes = 3 bytes a pixel; NV12: 1.5.
+        uint64_t bytesPerTexture = OutputFormat() == DXGI_FORMAT_P010 ? width * height * 3 : width * height * 3 / 2;
+        // Called on decoder threads: read the count without the samples lock.
+        uint32_t created = playerTexturesCreated.load();
+        return created >= ExpectedPlayerTextures ? 0 : (ExpectedPlayerTextures - created) * bytesPerTexture;
+    }
+
     struct FrameTiming
     {
         uint64_t userData = UINT64_MAX;
@@ -615,6 +632,7 @@ private:
                 if (!processedTexturePool) processedTexturePool = std::make_shared<TexturePool>(rendererDevice, 5);
                 winrt::check_hresult(processedTexturePool->GetTexture(outputWidth, outputHeight, outputFormat,
                     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, output));
+                playerTexturesCreated.store(processedTexturePool->CreatedCount());
             }
 
             uint64_t releaseValue = 0;
