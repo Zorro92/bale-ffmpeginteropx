@@ -103,18 +103,21 @@ UncompressedVideoSampleProvider::UncompressedVideoSampleProvider(
     this->applyHdrColorInfo = applyHdrColorInfo;
 }
 
-// True when swscale really converts the input (bit depth above 8, chroma other than 4:2:0, full
-// range, RGB, grey, ...) rather than only repacking 8-bit 4:2:0 into NV12. Such conversions output
-// 10-bit P010, so no precision or range is lost on the way (Bale's rule: processed video is 10-bit).
-// Hardware frame formats and NV12 itself are not conversions here.
+// True when a software-decoded input carries more than 8 bits per component (10/12-bit, any
+// chroma layout or colour model). Its conversion outputs P010 so it never drops to 8 bits; 8-bit
+// sources keep 8-bit NV12 (Bale's rule: keep the source's bit depth, never 10 to 8).
+// Hardware frame formats are not conversions here.
 bool UncompressedVideoSampleProvider::ConversionNeedsTenBitOutput(AVPixelFormat input)
 {
-    if (input == AV_PIX_FMT_NONE || input == AV_PIX_FMT_YUV420P || input == AV_PIX_FMT_NV12 || input == AV_PIX_FMT_P010LE)
-    {
-        return false;
-    }
+    if (input == AV_PIX_FMT_NONE || input == AV_PIX_FMT_P010LE) return false;
     auto description = av_pix_fmt_desc_get(input);
-    return description && (description->flags & AV_PIX_FMT_FLAG_HWACCEL) == 0;
+    if (!description || (description->flags & AV_PIX_FMT_FLAG_HWACCEL)) return false;
+    int depth = 0;
+    for (int i = 0; i < description->nb_components; i++)
+    {
+        depth = (std::max)(depth, description->comp[i].depth);
+    }
+    return depth > 8;
 }
 
 AVPixelFormat UncompressedVideoSampleProvider::SelectOutputPixelFormat(AVPixelFormat input, bool direct, MediaSourceConfig const& config, bool eightBitZeroCopy)

@@ -125,11 +125,12 @@ The stream logs `Bale tonemap output mode=N` once.
 
 ## Software decoder output
 
-With `VideoOutputAllow10bit` (default on), every software-decoded format that swscale
-really converts — more than 8 bits, chroma other than 4:2:0, full range, RGB, grey —
-is output as P010, not squeezed into 8-bit NV12. Plain 8-bit 4:2:0 (`yuv420p`) is
-still repacked to NV12, and 10-bit 4:2:0 was already P010. Hardware frame formats are
-not affected.
+Software-decoded video keeps its bit depth (Bale's rule): with `VideoOutputAllow10bit`
+(default on), any input with more than 8 bits per component (10/12-bit, any chroma
+layout or colour model) is converted to P010, never down to 8 bits; 8-bit sources
+(4:2:0, 4:2:2, 4:4:4, full range, RGB, grey) are converted to 8-bit NV12. Hardware
+frame formats are not affected. The tone-map stage's SDR downscale is the one place
+an 8-bit source becomes P010.
 
 ## Compressed video colour option
 
