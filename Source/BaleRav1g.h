@@ -290,6 +290,13 @@ public:
         settings.output.frame = &Frame;
         settings.output.unused = &Unused;
         settings.output.end_of_frames = nullptr;
+        if (parseFrames > 0)
+        {
+            // Frames in parse and parse threads (rav1g: frames in parse never exceed the threads; the
+            // budget guard may still give fewer). 0 keeps rav1g's defaults (1 and 1 up to 1440p).
+            settings.frames_in_parse = parseFrames;
+            settings.threads = parseFrames;
+        }
         auto status = api.decoderCreate(shared.device, &settings, &decoder);
         if (status != RAV1G_STATUS_OK || !decoder)
         {
@@ -500,6 +507,11 @@ private:
         return self->host ? self->host->MemoryAvailable() : -1;
     }
 
+public:
+    // bale_rav1g_parse: frames in parse and parse threads for this stream's decoder (0 = rav1g's choice).
+    uint32_t parseFrames = 0;
+
+private:
     std::vector<uint8_t> configObus;
     Rav1gDecoder* decoder = nullptr;
     GpuDecoderHost* host = nullptr;

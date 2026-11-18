@@ -449,6 +449,11 @@ private:
         uint32_t gaps = 0;
         size_t queueMax = 0;
         std::chrono::steady_clock::time_point windowStart{};
+        // Time spent inside the decoder's decode call (on the sample thread): with one frame in
+        // parse it includes the CPU parse of the unit.
+        uint32_t decodeCalls = 0;
+        double decodeSumMs = 0;
+        double decodeMaxMs = 0;
     };
     DeliveryStats stats;
     uint32_t listedSinceStart = 0;
@@ -507,8 +512,9 @@ private:
         if (stats.samples == 0) return;
         auto elapsedS = std::chrono::duration<double>(std::chrono::steady_clock::now() - stats.windowStart).count();
         av_log(nullptr, AV_LOG_INFO,
-            "%s: delivery samples=%u rate=%.2f/s latency avg=%.1f max=%.1f ms pts step min=%.1f max=%.1f ms backwards=%u gaps=%u queue max=%u\n",
+            "%s: delivery samples=%u rate=%.2f/s latency avg=%.1f max=%.1f ms decode call avg=%.1f max=%.1f ms pts step min=%.1f max=%.1f ms backwards=%u gaps=%u queue max=%u\n",
             logName, stats.samples, elapsedS > 0 ? stats.samples / elapsedS : 0.0, stats.latencySumMs / stats.samples, stats.latencyMaxMs,
+            stats.decodeCalls ? stats.decodeSumMs / stats.decodeCalls : 0.0, stats.decodeMaxMs,
             stats.deltaMin == INT64_MAX ? 0.0 : stats.deltaMin / 10000.0, stats.deltaMax == INT64_MIN ? 0.0 : stats.deltaMax / 10000.0,
             stats.backwards, stats.gaps, static_cast<unsigned>(stats.queueMax));
         auto lastPts = stats.lastPts;
@@ -624,7 +630,14 @@ private:
         auto cancelHits = pool->CancelHits();
         auto userData = nextUserData++;
         timings[userData % timings.size()] = FrameTiming{ userData, pts, duration, generation, std::chrono::steady_clock::now() };
+        auto decodeStart = std::chrono::steady_clock::now();
         auto hr = gpuDecoder->Decode(packet->data, static_cast<size_t>(packet->size), userData);
+        {
+            auto decodeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - decodeStart).count();
+            stats.decodeCalls++;
+            stats.decodeSumMs += decodeMs;
+            stats.decodeMaxMs = (std::max)(stats.decodeMaxMs, decodeMs);
+        }
         if (hr == GpuVideoDecoder::ReconfigureRequired)
         {
             // A new sequence the decoder was not created for: its frames in flight are queued by the

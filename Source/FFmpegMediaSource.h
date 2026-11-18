@@ -361,6 +361,8 @@ namespace winrt::FFmpegInteropX::implementation
         int baleDecoderMaxDpbCount = 0;
         // 1 = propagate container colour/static HDR attributes to system video decoders.
         int baleCompressedColorInfo = 0;
+        // Bale: rav1g frames in parse and parse threads (0 = rav1g's defaults).
+        int baleRav1gParse = 0;
         // Bale: fast seek without a MediaPlaybackSession (e.g. IMFMediaEngine), backward-only.
         int baleFastSeekWithoutSession = 0;
         // 1 = AC-3/E-AC-3 packets go undecoded to the system Dolby decoder (keeps E-AC-3 JOC/Atmos).

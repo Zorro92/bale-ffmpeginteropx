@@ -104,7 +104,7 @@ always outputs P010 when bale_gpu can write it (NV12 only for an older bale_gpu)
 ### rav1g delivery diagnostics
 
 Every 240 delivered samples (and at a seek and at stream end) the rav1g route logs
-`Bale rav1g: delivery samples=N rate=../s latency avg=.. max=.. ms pts step min=.. max=.. ms
+`Bale rav1g: delivery samples=N rate=../s latency avg=.. max=.. ms decode call avg=.. max=.. ms pts step min=.. max=.. ms
 backwards=N gaps=N queue max=N`: samples delivered per wall-clock second, decode-to-deliver latency (from feeding a temporal unit to
 handing its frame to the player), the timestamp steps between delivered samples (in sample
 time, as the player receives them; bale.49 printed stream time-base units by mistake), steps that
@@ -114,6 +114,11 @@ samples after an open or seek are also listed: `first samples pts ms=a,b,c,...`.
 With the player-side pool (bale.46+), the decoder's fixed pool no longer limits the player's
 buffer, so decode-ahead and BufferTime can be set as for dav1d. Mind the memory: each buffered
 frame is a player-side texture (1080p P010 ≈ 6 MiB, 4K ≈ 25 MiB).
+
+`bale_rav1g_parse` (0–8, default 0 = rav1g's choice: 1 frame in parse and 1 parse thread up to
+1440p) asks rav1g for N frames in parse and N parse threads. With one frame in parse, rav1g parses
+each unit inside the decode call on the sample thread; the "decode call" timing shows that cost.
+rav1g's budget guard may still create fewer.
 
 ### rav1g prewarm and threading notes
 
