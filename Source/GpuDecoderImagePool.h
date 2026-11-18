@@ -216,7 +216,7 @@ public:
         std::lock_guard lock(mutex);
         count = static_cast<uint32_t>(images.size());
         bytes = 0;
-        for (auto& image : images) bytes += ImageBytes(image.width, image.height, image.format);
+        for (auto& image : images) bytes += ImageBytes(image->width, image->height, image->format);
     }
 
     void Statistics(uint32_t& created, uint32_t& peak, uint32_t& blocked)
