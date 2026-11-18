@@ -20,6 +20,7 @@ Modifications by the Bale project, starting from upstream commit
              Source/GpuDecoderSampleProvider.h
              Source/GpuVideoDecoder.h
              Source/rav1g.h (copied unchanged from rav1g; licence below)
+             Source/av1_perf.h (copied unchanged from rav1g; licence below)
              Source/VideoFrameProcessor.h
              Source/VideoColorAttributes.h
              bale/ (fork-owned build scripts, pins and documentation)
@@ -61,5 +62,11 @@ Patent License 1.0 (https://www.aomedia.org/license/patent), as its own header s
   HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
   TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Source/av1_perf.h is the record of rav1g's timing run (libav1/dx/av1_perf.h of
+https://github.com/Zorro92/rav1g at tag v0.4.0-alpha.1), copied unchanged. rav1g's
+LICENSE.txt places it under the same BSD 2-Clause License and Alliance for Open Media
+Patent License 1.0 as Source/rav1g.h above (copyright 2016 Alliance for Open Media,
+2020 Google LLC).
 
 rav1g.dll itself is not part of this package; the app that ships it carries its notices.

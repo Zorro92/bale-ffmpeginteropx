@@ -121,6 +121,17 @@ for a free image in the window. The decode call is timed on the feeder thread.
 `bale_gpu_decode_inflight` (1–8, default 3; values above 7 act as 7, one below the 8 images)
 sets how many temporal units the feeder keeps in flight.
 
+`bale_rav1g_perf` (0/1, default 0) appends rav1g's own timing run to the delivery line:
+` rav1g perf records=N decode thread avg=.. max=.. ms gpu avg=.. max=.. ms shown=N showable=N
+sef=N` (rav1g's decode thread from frame setup to submit, `AV1_PERF_CPU_FRAME`; the GPU span of
+the frame's command list; records with `show_frame`, `showable_frame` and `is_sef`). It installs
+the process-wide `rav1g_set_perf_callback` while at least one stream with the key is open (with
+several, their frames mix) and removes it when the last one closes; a library without that export
+logs `Bale rav1g: perf statistics unavailable` once and the stream plays without it. The record
+layout (`Source/av1_perf.h`, rav1g v0.4.0-alpha.1, 592 bytes) is not covered by rav1g's interface
+version: copy it again from the rav1g release Bale ships. Diagnostic only; production never sets
+it.
+
 With the player-side pool (bale.46+), the decoder's fixed pool no longer limits the player's
 buffer, so decode-ahead and BufferTime can be set as for dav1d. Mind the memory: each buffered
 frame is a player-side texture (1080p P010 ≈ 6 MiB, 4K ≈ 25 MiB).
@@ -207,7 +218,9 @@ Frame grabbers never use it. With `"1"`, `bale_zero_copy`, `bale_d3d11_upload` a
 Code: generic `GpuVideoDecoder.h` (decoder interface), `GpuDecoderImagePool.h` (output
 images), `GpuDecoderSampleProvider.h` (the provider); all rav1g glue in `BaleRav1g.h`.
 `Source/rav1g.h` is rav1g's `crates/rav1g/include/rav1g.h`, copied verbatim (rav1g
-`eebfbd7`, interface version 1; copy it again, unchanged, when rav1g changes it). No new
+`eebfbd7`, interface version 1; copy it again, unchanged, when rav1g changes it).
+`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.4.0-alpha.1, copied verbatim
+(only for `bale_rav1g_perf`). No new
 native FFmpeg build is needed; Bale ships `rav1g.dll` in its package.
 
 **Fallback at open.** `BaleRav1gDecoder::TryOpen` checks: `rav1g.dll` loads
@@ -232,9 +245,9 @@ a recreate. Settings: `rav1g_settings_default`, the sequence size and depth from
 `rav1g_peek_stream_info`, `RAV1G_OUTPUT_SEMI_PLANAR`, `shared_fence`, the output callbacks
 and `memory_available` = `AppMemoryUsageLimit − AppMemoryUsage` minus the bytes of output
 images not created yet. `low_memory`, slots and threads stay rav1g's (unless
-`bale_rav1g_parse`); the process-global `rav1g_set_*` switches are never touched. The device
-handle comes from the MSS device manager at the first Starting request; a lost device fails the
-stream.
+`bale_rav1g_parse`); of the process-global `rav1g_set_*` switches only the perf callback is set,
+and only with `bale_rav1g_perf`. The device handle comes from the MSS device manager at the first
+Starting request; a lost device fails the stream.
 
 **Flow and threads.** Since bale.52 the provider has its own feeder thread (started at the
 first sample request, priority from `bale_decode_thread_priority`): it reads packets

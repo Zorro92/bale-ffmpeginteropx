@@ -3,12 +3,22 @@
 #include <d3d11_4.h>
 #include <d3d12.h>
 #include <dxgi1_2.h>
+#include <cstdio>
+#include <mutex>
 #include "GpuVideoDecoder.h"
 
 extern "C"
 {
 #include <libavutil/pixdesc.h>
 }
+
+// The record of rav1g's timing run (av1_perf_frame, for rav1g_set_perf_callback), copied verbatim
+// from Zorro92/rav1g libav1/dx/av1_perf.h at tag v0.4.0-alpha.1 (commit 3f330a1). The record is not
+// covered by rav1g's interface version: copy it again, unchanged, from the rav1g release Bale ships,
+// and check its size below against rav1g's (crates/rav1g-sys/src/perf.rs). Included before rav1g.h,
+// which then takes the full definition instead of declaring the struct.
+#include "av1_perf.h"
+static_assert(sizeof(void*) != 8 || sizeof(av1_perf_frame) == 592, "av1_perf_frame differs from rav1g v0.4.0-alpha.1's");
 
 // rav1g's C interface, copied verbatim from Zorro92/rav1g crates/rav1g/include/rav1g.h (commit
 // eebfbd7, interface version 1). rav1g owns the header: copy it again, unchanged, whenever rav1g
@@ -37,6 +47,8 @@ struct BaleRav1gExports
     decltype(&rav1g_decoder_configuration) decoderConfiguration = nullptr;
     decltype(&rav1g_decoder_output_fence) decoderOutputFence = nullptr;
     decltype(&rav1g_decoder_destroy) decoderDestroy = nullptr;
+    // Optional (diagnostics only): null when the library does not export it.
+    decltype(&rav1g_set_perf_callback) setPerfCallback = nullptr;
     HRESULT status = HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
     const char* failure = "library not loaded";
 
@@ -66,6 +78,7 @@ struct BaleRav1gExports
             api.decoderConfiguration = Resolve<decltype(api.decoderConfiguration)>(module, "rav1g_decoder_configuration");
             api.decoderOutputFence = Resolve<decltype(api.decoderOutputFence)>(module, "rav1g_decoder_output_fence");
             api.decoderDestroy = Resolve<decltype(api.decoderDestroy)>(module, "rav1g_decoder_destroy");
+            api.setPerfCallback = Resolve<decltype(api.setPerfCallback)>(module, "rav1g_set_perf_callback");
             if (!api.abiVersion || !api.version || !api.peekStreamInfo || !api.deviceCreate || !api.deviceD3D12Device ||
                 !api.settingsDefault || !api.decoderCreate || !api.decoderDecode || !api.decoderDrain ||
                 !api.decoderConfiguration || !api.decoderOutputFence || !api.decoderDestroy)
@@ -157,10 +170,113 @@ struct BaleRav1gDevice
     }
 };
 
+// bale_rav1g_perf: rav1g's timing run (rav1g_set_perf_callback), summarised for the provider's
+// delivery line. Diagnostic only. The callback is process-wide: it is installed while at least one
+// stream asks for it and removed when the last such stream ends; with several such streams at once
+// the summary mixes their frames. Records arrive on the decoders' completion threads.
+class BaleRav1gPerf
+{
+public:
+    struct Window
+    {
+        uint32_t records = 0;
+        double decodeSumMs = 0;  // decode thread: frame setup start to submit done (AV1_PERF_CPU_FRAME)
+        double decodeMaxMs = 0;
+        uint32_t gpuRecords = 0; // records with GPU timestamps
+        double gpuSumMs = 0;     // first to last GPU timestamp of the command list
+        double gpuMaxMs = 0;
+        uint32_t shown = 0;
+        uint32_t showable = 0;
+        uint32_t showExisting = 0;
+    };
+
+    // Never destroyed: rav1g's threads may still call the callback after it was replaced.
+    static BaleRav1gPerf& Get()
+    {
+        static auto instance = new BaleRav1gPerf();
+        return *instance;
+    }
+
+    // True when the callback is installed for the caller; a library without the export logs once.
+    bool Acquire()
+    {
+        std::lock_guard lock(installMutex);
+        const auto& api = BaleRav1gExports::Get();
+        if (FAILED(api.status) || !api.setPerfCallback)
+        {
+            if (!missingLogged)
+            {
+                missingLogged = true;
+                av_log(nullptr, AV_LOG_WARNING, "Bale rav1g: perf statistics unavailable (no rav1g_set_perf_callback)\n");
+            }
+            return false;
+        }
+        if (users++ == 0)
+        {
+            {
+                std::lock_guard dataLock(dataMutex);
+                window = Window{};
+            }
+            api.setPerfCallback(&OnFrame, this);
+            av_log(nullptr, AV_LOG_INFO, "Bale rav1g: perf statistics on\n");
+        }
+        return true;
+    }
+
+    void Release()
+    {
+        std::lock_guard lock(installMutex);
+        if (users == 0 || --users > 0) return;
+        BaleRav1gExports::Get().setPerfCallback(nullptr, nullptr);
+        av_log(nullptr, AV_LOG_INFO, "Bale rav1g: perf statistics off\n");
+    }
+
+    // The records since the last call.
+    Window TakeWindow()
+    {
+        std::lock_guard lock(dataMutex);
+        auto result = window;
+        window = Window{};
+        return result;
+    }
+
+private:
+    BaleRav1gPerf() = default;
+
+    // Reads only fields of av1_perf_frame as av1_perf.h defines them.
+    static void OnFrame(void* context, const av1_perf_frame* frame)
+    {
+        if (!context || !frame) return;
+        auto self = static_cast<BaleRav1gPerf*>(context);
+        std::lock_guard lock(self->dataMutex);
+        auto& window = self->window;
+        window.records++;
+        auto decodeMs = frame->cpu_ms[AV1_PERF_CPU_FRAME];
+        window.decodeSumMs += decodeMs;
+        window.decodeMaxMs = (std::max)(window.decodeMaxMs, decodeMs);
+        if (frame->gpu_valid)
+        {
+            window.gpuRecords++;
+            window.gpuSumMs += frame->gpu_span_ms;
+            window.gpuMaxMs = (std::max)(window.gpuMaxMs, frame->gpu_span_ms);
+        }
+        if (frame->show_frame) window.shown++;
+        if (frame->showable_frame) window.showable++;
+        if (frame->is_sef) window.showExisting++;
+    }
+
+    std::mutex installMutex; // users and the install calls (never held by the callback)
+    uint32_t users = 0;
+    bool missingLogged = false;
+    std::mutex dataMutex;
+    Window window;
+};
+
 // GpuVideoDecoder on rav1g, semi-planar output (one NV12 or P010 texture a frame) into the provider's
 // images, with a shared output fence the D3D11 side waits on. Settings are rav1g's defaults plus the
 // output, the shared fence and the budget callback: low_memory, slots, threads and frames in parse stay
-// rav1g's choice, and the process-global rav1g_set_* switches are never called.
+// rav1g's choice (unless bale_rav1g_parse), and of the process-global rav1g_set_* switches only the
+// diagnostic perf callback is ever set (bale_rav1g_perf, BaleRav1gPerf).
 class BaleRav1gDecoder final : public GpuVideoDecoder
 {
 public:
@@ -169,7 +285,11 @@ public:
     static constexpr winrt::guid OutputMark{ 0x6d553633, 0x9287, 0x4856, { 0xbc, 0x9f, 0x0c, 0x23, 0xaf, 0x00, 0xe1, 0x84 } };
 
     BaleRav1gDecoder() = default;
-    ~BaleRav1gDecoder() override { Destroy(); }
+    ~BaleRav1gDecoder() override
+    {
+        Destroy();
+        if (perfStatistics) BaleRav1gPerf::Get().Release();
+    }
     BaleRav1gDecoder(const BaleRav1gDecoder&) = delete;
     BaleRav1gDecoder& operator=(const BaleRav1gDecoder&) = delete;
 
@@ -375,6 +495,26 @@ public:
         properties.Insert(OutputMark, winrt::Windows::Foundation::PropertyValue::CreateUInt32(1));
     }
 
+    // bale_rav1g_perf=1: rav1g's per-frame timing on the provider's delivery line. Before the first
+    // decode of the stream.
+    void EnablePerfStatistics()
+    {
+        if (!perfStatistics) perfStatistics = BaleRav1gPerf::Get().Acquire();
+    }
+
+    void AppendStatistics(std::string& line) override
+    {
+        if (!perfStatistics) return;
+        auto window = BaleRav1gPerf::Get().TakeWindow();
+        char text[256];
+        auto length = snprintf(text, sizeof(text),
+            " rav1g perf records=%u decode thread avg=%.1f max=%.1f ms gpu avg=%.1f max=%.1f ms shown=%u showable=%u sef=%u",
+            window.records, window.records ? window.decodeSumMs / window.records : 0.0, window.decodeMaxMs,
+            window.gpuRecords ? window.gpuSumMs / window.gpuRecords : 0.0, window.gpuMaxMs,
+            window.shown, window.showable, window.showExisting);
+        if (length > 0) line.append(text, (std::min)(static_cast<size_t>(length), sizeof(text) - 1));
+    }
+
 private:
     // A rav1g status as an HRESULT: 0x80042B20 + status.
     static HRESULT StatusError(Rav1gStatus status)
@@ -510,6 +650,10 @@ private:
 public:
     // bale_rav1g_parse: frames in parse and parse threads for this stream's decoder (0 = rav1g's choice).
     uint32_t parseFrames = 0;
+
+private:
+    // bale_rav1g_perf: this decoder holds a use of the process-wide perf callback.
+    bool perfStatistics = false;
 
 private:
     std::vector<uint8_t> configObus;

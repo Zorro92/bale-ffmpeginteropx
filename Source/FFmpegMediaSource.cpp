@@ -1302,7 +1302,11 @@ namespace winrt::FFmpegInteropX::implementation
     {
         int bitDepth = 0;
         auto rav1gDecoder = BaleRav1gDecoder::TryOpen(avStream->codecpar, bitDepth);
-        if (rav1gDecoder) rav1gDecoder->parseFrames = static_cast<uint32_t>(baleRav1gParse);
+        if (rav1gDecoder)
+        {
+            rav1gDecoder->parseFrames = static_cast<uint32_t>(baleRav1gParse);
+            if (baleRav1gPerf > 0) rav1gDecoder->EnablePerfStatistics();
+        }
         std::unique_ptr<GpuVideoDecoder> gpuDecoder = std::move(rav1gDecoder);
         if (!gpuDecoder)
         {
@@ -2716,6 +2720,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_decoder_max_dpb_count") { target = &baleDecoderMaxDpbCount; minimum = 0; maximum = 16; }
         else if (key == "bale_compressed_color_info") { target = &baleCompressedColorInfo; minimum = 0; maximum = 1; }
         else if (key == "bale_rav1g_parse") { target = &baleRav1gParse; minimum = 0; maximum = 8; }
+        else if (key == "bale_rav1g_perf") { target = &baleRav1gPerf; minimum = 0; maximum = 1; }
         else if (key == "bale_gpu_decode_inflight") { target = &baleGpuDecodeInflight; minimum = 1; maximum = 8; }
         else if (key == "bale_fast_seek_without_session") { target = &baleFastSeekWithoutSession; minimum = 0; maximum = 1; }
         else if (key == "bale_system_decoder_dolby") { target = &baleSystemDecoderDolby; minimum = 0; maximum = 1; }

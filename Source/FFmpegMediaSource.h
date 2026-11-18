@@ -363,6 +363,8 @@ namespace winrt::FFmpegInteropX::implementation
         int baleCompressedColorInfo = 0;
         // Bale: rav1g frames in parse and parse threads (0 = rav1g's defaults).
         int baleRav1gParse = 0;
+        // Bale: 1 = rav1g's per-frame timing on the delivery line (diagnostic; process-wide callback).
+        int baleRav1gPerf = 0;
         // Bale: access units a GPU decoder stream keeps in flight (0 = the provider's default, 3).
         int baleGpuDecodeInflight = 0;
         // Bale: fast seek without a MediaPlaybackSession (e.g. IMFMediaEngine), backward-only.
