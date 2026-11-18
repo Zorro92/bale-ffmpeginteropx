@@ -21,6 +21,9 @@
 #include "BaleRav1g.h"
 // Bale: Media Foundation error codes for streams zero-copy refuses at open.
 #include <mferror.h>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 #ifdef Win32
 #include <winrt/Microsoft.Graphics.Display.h>
@@ -3569,4 +3572,39 @@ namespace winrt::FFmpegInteropX::implementation
         }
         return 0;
     }
+}
+
+// Bale: plain C export (no WinRT API change) so the app can create rav1g's process-wide device and
+// compile its pipeline states before the first AV1 stream opens. Returns at once; idempotent.
+// 0: started now, 1: already started earlier. The adapter is rav1g's choice (the first hardware
+// adapter, the only one on Xbox); a stream whose MF device is on another adapter fails as before.
+extern "C" __declspec(dllexport) int bale_rav1g_prewarm(void)
+{
+    static std::atomic<bool> started{ false };
+    if (started.exchange(true)) return 1;
+    try
+    {
+        std::thread([]
+        {
+            auto start = std::chrono::steady_clock::now();
+            av_log(nullptr, AV_LOG_INFO, "Bale rav1g: prewarm started\n");
+            const auto& device = BaleRav1gDevice::Get(6);
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+            if (SUCCEEDED(device.status))
+            {
+                av_log(nullptr, AV_LOG_INFO, "Bale rav1g: prewarm ready ms=%lld\n", static_cast<long long>(ms));
+            }
+            else
+            {
+                av_log(nullptr, AV_LOG_WARNING, "Bale rav1g: prewarm failed (status=0x%08X) ms=%lld\n",
+                    static_cast<unsigned>(device.status), static_cast<long long>(ms));
+            }
+        }).detach();
+    }
+    catch (...)
+    {
+        started = false;
+        return -1;
+    }
+    return 0;
 }

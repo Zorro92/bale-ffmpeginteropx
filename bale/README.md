@@ -101,6 +101,21 @@ find the Xbox presentation leak. They are retired: still accepted with their old
 them), ignored, and logged once as `Bale option <key> retired; ignored`. The stage now
 always outputs P010 when bale_gpu can write it (NV12 only for an older bale_gpu).
 
+### rav1g prewarm and threading notes
+
+`FFmpegInteropX.dll` exports a plain C function, `int bale_rav1g_prewarm(void)` (no WinRT API
+change). It creates rav1g's process-wide D3D12 device and starts compiling its pipeline states
+(~99, about 6.5 s on a Series X) on a background thread with 6 compile threads, and returns at
+once: 0 = started, 1 = already started, -1 = could not start a thread. Logs `Bale rav1g: prewarm
+started` and `prewarm ready ms=N` (or `prewarm failed (status=..)`). The adapter is rav1g's choice,
+the first hardware adapter (the only one, and Media Foundation's, on Xbox); each stream still
+checks it against MF's. Without prewarm, the first stream creates the device with 2 threads.
+
+`FFmpegMediaSource` members that take the source lock can block while the sample thread waits on
+a decoder: `CurrentVideoStream`, `CurrentAudioStream`, `MetadataTags`, `PlaybackItem`,
+`GetMediaStreamSource`, `CreateMediaPlaybackItem`, `StartBuffering`, `ExtractThumbnail`, the
+filter setters and `Close`. Don't call them on the UI thread during playback.
+
 ## Compressed video colour option
 
 `MediaSourceConfig.FFmpegOptions["bale_compressed_color_info"]` accepts decimal

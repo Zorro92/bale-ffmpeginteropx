@@ -120,9 +120,12 @@ struct BaleRav1gDevice
     LUID adapter{};
     HRESULT status = E_FAIL;
 
-    static const BaleRav1gDevice& Get()
+    // pipelineThreads: threads that compile rav1g's pipeline states (~99, about 6.5 s on a Series X
+    // with 6) while the call returns. The first caller decides; the device is created once per
+    // process. Prewarming (bale_rav1g_prewarm) asks for 6; a first stream without it uses 2.
+    static const BaleRav1gDevice& Get(uint32_t pipelineThreads = 2)
     {
-        static const BaleRav1gDevice shared = []
+        static const BaleRav1gDevice shared = [pipelineThreads]
         {
             BaleRav1gDevice result;
             const auto& api = BaleRav1gExports::Get();
@@ -131,9 +134,10 @@ struct BaleRav1gDevice
                 result.status = api.status;
                 return result;
             }
-            // Two threads compile the pipeline states while playback opens; the first decoder
-            // creation waits for whatever is left.
-            result.device = api.deviceCreate(nullptr, nullptr, 2);
+            // The decoder's first creation waits for whatever compile work is left. With a null device
+            // rav1g uses the first hardware adapter, the only one (and MF's) on Xbox; every stream
+            // still compares the adapter with MF's.
+            result.device = api.deviceCreate(nullptr, nullptr, pipelineThreads);
             if (!result.device)
             {
                 av_log(nullptr, AV_LOG_WARNING, "Bale rav1g: device creation failed\n");
