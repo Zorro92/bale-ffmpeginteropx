@@ -101,6 +101,19 @@ find the Xbox presentation leak. They are retired: still accepted with their old
 them), ignored, and logged once as `Bale option <key> retired; ignored`. The stage now
 always outputs P010 when bale_gpu can write it (NV12 only for an older bale_gpu).
 
+### rav1g delivery diagnostics
+
+Every 240 delivered samples (and at a seek and at stream end) the rav1g route logs
+`Bale rav1g: delivery samples=N latency avg=.. max=.. ms pts step min=.. max=.. ms
+backwards=N gaps=N queue max=N`: decode-to-deliver latency (from feeding a temporal unit to
+handing its frame to the player), the timestamp steps between delivered samples, steps that
+went backwards, gaps over 1.5 sample durations, and the deepest ready-frame queue. The first 24
+samples after an open or seek are also listed: `first samples pts ms=a,b,c,...`.
+
+With the player-side pool (bale.46+), the decoder's fixed pool no longer limits the player's
+buffer, so decode-ahead and BufferTime can be set as for dav1d. Mind the memory: each buffered
+frame is a player-side texture (1080p P010 ≈ 6 MiB, 4K ≈ 25 MiB).
+
 ### rav1g prewarm and threading notes
 
 `FFmpegInteropX.dll` exports a plain C function, `int bale_rav1g_prewarm(void)` (no WinRT API

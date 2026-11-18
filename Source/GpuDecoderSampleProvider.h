@@ -11,6 +11,8 @@
 #include <d3d10.h>
 #include <d3d11_4.h>
 #include <atomic>
+#include <chrono>
+#include <string>
 #include <cmath>
 
 // Video decoded on the GPU by a GpuVideoDecoder into textures shared with the renderer's D3D11 device.
@@ -84,6 +86,7 @@ public:
         ReturnQueuedFrames();
         ReleaseTrackedSamples();
         ReleasePending();
+        LogDeliveryStats();
         uint32_t created = 0, peak = 0, blocked = 0;
         pool->Statistics(created, peak, blocked);
         av_log(nullptr, AV_LOG_INFO, "%s: destroyed (frames=%u discarded=%u images created=%u peak in use=%u blocked=%u output created=%u)\n",
@@ -178,6 +181,10 @@ public:
 
         // Frames decoded before this point are never sent; decoding resumes at a key frame.
         generation++;
+        LogDeliveryStats();
+        stats = DeliveryStats{};
+        listedSinceStart = 0;
+        listedPts.clear();
         DrainDecoder();
         ReturnTrackedSamples();
         ReleasePending();
@@ -422,7 +429,84 @@ private:
         int64_t pts = 0;
         int64_t duration = 0;
         uint64_t generation = 0;
+        std::chrono::steady_clock::time_point decodeStart{};
     };
+
+    // Delivery diagnostics (Bale reads them from the log): decode-to-deliver latency and the
+    // timestamp steps between delivered samples, summarised every StatsInterval samples; the first
+    // samples after an open or seek are also listed one by one.
+    static constexpr uint32_t StatsInterval = 240;
+    static constexpr uint32_t ListedSamples = 24;
+    struct DeliveryStats
+    {
+        uint32_t samples = 0;
+        double latencySumMs = 0;
+        double latencyMaxMs = 0;
+        int64_t lastPts = INT64_MIN;
+        int64_t deltaMin = INT64_MAX;
+        int64_t deltaMax = INT64_MIN;
+        uint32_t backwards = 0;
+        uint32_t gaps = 0;
+        size_t queueMax = 0;
+    };
+    DeliveryStats stats;
+    uint32_t listedSinceStart = 0;
+    std::string listedPts;
+
+    void RecordDelivery(const FrameTiming& timing) noexcept
+    {
+        try
+        {
+            auto latencyMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - timing.decodeStart).count();
+            stats.samples++;
+            stats.latencySumMs += latencyMs;
+            stats.latencyMaxMs = (std::max)(stats.latencyMaxMs, latencyMs);
+            if (stats.lastPts != INT64_MIN)
+            {
+                auto delta = timing.pts - stats.lastPts;
+                if (delta < 0) stats.backwards++;
+                // A gap: more than 1.5 sample durations (or 1.5x the smallest step seen when the
+                // container gives no duration).
+                auto expected = timing.duration > 0 ? timing.duration : (stats.deltaMin != INT64_MAX ? stats.deltaMin : 0);
+                if (expected > 0 && delta > expected * 3 / 2) stats.gaps++;
+                stats.deltaMin = (std::min)(stats.deltaMin, delta);
+                stats.deltaMax = (std::max)(stats.deltaMax, delta);
+            }
+            stats.lastPts = timing.pts;
+            {
+                std::lock_guard lock(framesMutex);
+                stats.queueMax = (std::max)(stats.queueMax, readyFrames.size());
+            }
+            if (listedSinceStart < ListedSamples)
+            {
+                listedSinceStart++;
+                listedPts += std::to_string(timing.pts / 10000);
+                listedPts += listedSinceStart < ListedSamples ? "," : "";
+                if (listedSinceStart == ListedSamples)
+                {
+                    av_log(nullptr, AV_LOG_INFO, "%s: first samples pts ms=%s\n", logName, listedPts.c_str());
+                    listedPts.clear();
+                }
+            }
+            if (stats.samples >= StatsInterval) LogDeliveryStats();
+        }
+        catch (...)
+        {
+        }
+    }
+
+    void LogDeliveryStats() noexcept
+    {
+        if (stats.samples == 0) return;
+        av_log(nullptr, AV_LOG_INFO,
+            "%s: delivery samples=%u latency avg=%.1f max=%.1f ms pts step min=%.1f max=%.1f ms backwards=%u gaps=%u queue max=%u\n",
+            logName, stats.samples, stats.latencySumMs / stats.samples, stats.latencyMaxMs,
+            stats.deltaMin == INT64_MAX ? 0.0 : stats.deltaMin / 10000.0, stats.deltaMax == INT64_MIN ? 0.0 : stats.deltaMax / 10000.0,
+            stats.backwards, stats.gaps, static_cast<unsigned>(stats.queueMax));
+        auto lastPts = stats.lastPts;
+        stats = DeliveryStats{};
+        stats.lastPts = lastPts;
+    }
 
     struct TrackedSample
     {
@@ -531,7 +615,7 @@ private:
 
         auto cancelHits = pool->CancelHits();
         auto userData = nextUserData++;
-        timings[userData % timings.size()] = FrameTiming{ userData, pts, duration, generation };
+        timings[userData % timings.size()] = FrameTiming{ userData, pts, duration, generation, std::chrono::steady_clock::now() };
         auto hr = gpuDecoder->Decode(packet->data, static_cast<size_t>(packet->size), userData);
         if (hr == GpuVideoDecoder::ReconfigureRequired)
         {
@@ -668,6 +752,7 @@ private:
             auto& timing = timings[frame.userData % timings.size()];
             framePts = timing.pts;
             frameDuration = timing.duration;
+            RecordDelivery(timing);
             sampleColor = frameProcessor ? color : frame.color;
             sampleColor.chromaLocation = color.chromaLocation;
             // The processor or the copy has read the image (fenced); the sample carries the output.
