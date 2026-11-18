@@ -17,6 +17,8 @@ has proven itself; then dav1d becomes a software fallback limited to 1080p.
   interface.
 - Selected in `FFmpegMediaSource::CreateVideoSampleProvider` for AV1 when
   `bale_av1_decoder=1` (new opt-in key; 0 = today's dav1d path). Production never sets it.
+  With it set, `bale_zero_copy`, `bale_d3d11_upload` and `bale_film_grain_mode` are ignored for that
+  stream (rav1g applies film grain itself); they still apply if it falls back to dav1d.
 
 ## 2. rav1g lifecycle
 
@@ -28,8 +30,8 @@ has proven itself; then dav1d becomes a software fallback limited to 1080p.
 
 Settings: `rav1g_settings_default`, then only `output_kind = RAV1G_OUTPUT_SEMI_PLANAR`,
 `shared_fence = true`, the output callbacks and `memory_available` (= `AppMemoryUsageLimit −
-AppMemoryUsage`, from a callback the app registers; 3328 MiB limit on Series X with
-`hevcPlayback`). `low_memory` stays at rav1g's default (16: 4K device buffers ≈ 538 MiB).
+AppMemoryUsage`, read in-process from `Windows.System.MemoryManager`; 3328 MiB limit on Series X
+with `hevcPlayback`; no app callback, since FFmpegOptions can't carry one). `low_memory` stays at rav1g's default (16: 4K device buffers ≈ 538 MiB).
 After create: `rav1g_decoder_output_fence` → `CreateSharedHandle` → `ID3D11Device5::OpenSharedFence`.
 
 ## 3. Packet → frame flow
@@ -53,11 +55,16 @@ side; if none is free, return failure so rav1g waits (rav1g retries / reports; t
 
 | Source | Display | Output to MF |
 |---|---|---|
-| 8-bit SDR | ≥ video size | rav1g's NV12 texture directly (source depth) |
-| 10-bit SDR | ≥ video size | rav1g's P010 texture directly |
+| 8-bit SDR | ≥ video size | rav1g's NV12 texture directly (source depth), rav1g mark |
+| 10-bit SDR | ≥ video size | rav1g's P010 texture directly, rav1g mark |
 | SDR | smaller than video | stage, downscale only (`BALE_TONEMAP_SDR709`), P010 at display size, marked |
 | HDR (PQ/HLG) | SDR display | stage, tone map (+ downscale when larger), P010, marked |
-| HDR | HDR display | rav1g's P010 directly, with HDR attributes |
+| HDR | HDR display | rav1g's P010 directly, with HDR attributes, rav1g mark |
+
+Marks: direct rav1g output carries a new private media-type attribute (GUID chosen by Bale, value
+1, like the tone-map mark); stage output keeps the tone-map mark. Bale's guard accepts direct
+output on this route only with the rav1g mark, a subtype matching the source depth (8 → NV12,
+10 → P010) and the source colour attributes.
 
 The stage reads rav1g's texture directly (it has `SHADER_RESOURCE`), so no slice copy. Bit-depth
 rule holds: 8-bit stays NV12 unless the stage downscales; this also ends the accepted 8-bit
@@ -83,9 +90,10 @@ AV1 → P010 exception of the zero-copy path.
 ## 6. Failure and fallback
 
 - `rav1g.dll` missing, ABI mismatch, device or decoder creation refused at open → no rav1g
-  provider; the stream falls back to today's dav1d path (logged once).
+  provider; the stream falls back to today's dav1d path (logged once). Bale shows it in stats.
 - Error during a stream (`rav1g_decoder_decode`/`drain` status, device removed, fence timeout) →
-  fatal latch → `NotifyError` → Bale replans (dav1d ≤1080p or server).
+  fatal latch → `NotifyError`. Today Bale's single replan withdraws all software claims (server
+  transcode); for testing Bale adds a one-time same-plan remount on dav1d instead.
 - Logs: `Bale rav1g: active WxH bits=N slots=S`, `Bale rav1g: fallback to dav1d (reason, status)`,
   `Bale rav1g: stream failed (status/hr)`, pool counters at destroy.
 
@@ -93,10 +101,11 @@ AV1 → P010 exception of the zero-copy path.
 
 - **Fork (this repo, Codex):** `GpuDecoderSampleProvider`, `BaleRav1g.h`, option, pool, stage reuse,
   logs; one release behind `bale_av1_decoder`.
-- **Bale:** ship `rav1g.dll` in the package; debug switch setting `bale_av1_decoder=1`; register
-  the memory callback; output guard rules for the rav1g route (direct NV12/P010 SDR is not
-  tone-mapped, so it carries no tone-map mark — the guard needs a rule for it); console tests;
-  later the policy (dav1d capped at 1080p as fallback).
+- **Bale:** ship `rav1g.dll` pinned by release tag + SHA256 (like ffmpeg-native), with a CI
+  export/version check and a THIRD_PARTY_NOTICES entry; debug switch setting `bale_av1_decoder=1`
+  (skipping its zero-copy registration requirement); the rav1g mark GUID and guard rule (§4); the
+  same-plan dav1d remount (§6); console tests; later the policy (dav1d capped at 1080p as fallback).
+- **rav1g:** a release asset for `rav1g.dll` that Bale can pin.
 - **rav1g:** API stability; answers to the questions below.
 
 ## 8. Open questions
@@ -104,8 +113,9 @@ AV1 → P010 exception of the zero-copy path.
 1. rav1g: flush/reset for seeks, or is drain + destroy + recreate the intended path (cost)?
 2. rav1g: `get_image` returning "no image" — does the decoder wait and retry, or fail?
 3. rav1g: one `Rav1gDevice` per process for successive streams — any state to reset between them?
-4. Bale: guard rule for direct (unmarked) rav1g NV12/P010 SDR output.
-5. Owner: pool size N, and whether HDR → HDR display should pass rav1g's P010 straight through.
+4. ~~Bale: guard rule for direct rav1g output~~ — answered: a rav1g mark (§4).
+5. Owner: pool size N (Bale recommends 8 to start), and whether HDR → HDR display passes rav1g's
+   P010 straight through with HDR attributes (Bale recommends yes; untestable on the SDR monitor).
 
 ## 9. Test plan (console, debug switch on)
 
