@@ -115,6 +115,8 @@ public:
     HRESULT SkipPacketsUntilTimestamp(TimeSpan const& timestamp);
     virtual winrt::Windows::Media::Core::IMediaStreamDescriptor CreateStreamDescriptor() = 0;
     virtual HRESULT SetSampleProperties(winrt::Windows::Media::Core::MediaStreamSample const& sample) { UNREFERENCED_PARAMETER(sample); return S_OK; }; // can be overridded for setting extended properties
+    // Bale: a latched stream failure (S_OK until then); the media source raises it once.
+    virtual HRESULT FatalError() const { return S_OK; }
     virtual void EnableStream();
     virtual void DisableStream();
     virtual void SetFFmpegFilters(winrt::hstring ffmpegFilters) { UNREFERENCED_PARAMETER(ffmpegFilters); };// override for setting effects in sample providers

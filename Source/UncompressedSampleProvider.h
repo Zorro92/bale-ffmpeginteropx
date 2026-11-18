@@ -46,8 +46,6 @@ public:
     }; // must be overridden by specific decoders
     // Bale: CreateBufferFromFrame skipped this frame (no sample); decode the next one.
     static constexpr HRESULT BaleFrameDropped = static_cast<HRESULT>(0x00042B01L);
-    // Bale: a latched stream failure; no further decode-error retries once it is set.
-    virtual HRESULT FatalError() const { return S_OK; }
     virtual HRESULT GetFrameFromFFmpegDecoder(AVFrame** avFrame, int64_t& framePts, int64_t& frameDuration, int64_t& firstPacketPos);
     virtual HRESULT FeedPacketToDecoder(int64_t& firstPacketPos);
 
