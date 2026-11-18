@@ -99,11 +99,19 @@ public:
 
     // BT.709 SDR needs no tone map; it is processed only to downscale it before the player does
     // (the Xbox player's downscale of 4K SDR leaks driver state per open).
-    static bool IsSdr709(const AVCodecParameters* parameters)
+    // Unspecified tags count as BT.709 only for video of 720p and larger (owner's rule); any other
+    // explicit value (BT.601, a BT.2020 matrix with BT.709 primaries, ...) is declined.
+    static bool IsSdr709(const AVCodecParameters* parameters, bool& assumed)
     {
-        bool sdrTransfer = parameters->color_trc == AVCOL_TRC_BT709 || parameters->color_trc == AVCOL_TRC_SMPTE170M ||
-            parameters->color_trc == AVCOL_TRC_BT2020_10 || parameters->color_trc == AVCOL_TRC_BT2020_12;
-        return sdrTransfer && parameters->color_primaries == AVCOL_PRI_BT709 && parameters->color_space == AVCOL_SPC_BT709;
+        auto trc = parameters->color_trc;
+        bool sdrTransfer = trc == AVCOL_TRC_UNSPECIFIED || trc == AVCOL_TRC_BT709 || trc == AVCOL_TRC_SMPTE170M ||
+            trc == AVCOL_TRC_BT2020_10 || trc == AVCOL_TRC_BT2020_12;
+        bool primaries = parameters->color_primaries == AVCOL_PRI_BT709 || parameters->color_primaries == AVCOL_PRI_UNSPECIFIED;
+        bool matrix = parameters->color_space == AVCOL_SPC_BT709 || parameters->color_space == AVCOL_SPC_UNSPECIFIED;
+        assumed = trc == AVCOL_TRC_UNSPECIFIED || parameters->color_primaries == AVCOL_PRI_UNSPECIFIED ||
+            parameters->color_space == AVCOL_SPC_UNSPECIFIED;
+        bool largeEnough = parameters->width >= 1280 || parameters->height >= 720;
+        return sdrTransfer && primaries && matrix && (!assumed || largeEnough);
     }
 
     // targetWidth/Height: the requested output size (0 = none); BT.709 SDR is eligible only when the
@@ -116,7 +124,8 @@ public:
         bool downscale = targetWidth > 0 && targetHeight > 0 && (parameters->width > targetWidth || parameters->height > targetHeight);
         bool supported = IsSupportedSource(parameters);
         uint32_t capabilities = 0;
-        bool sdr709 = !supported && downscale && IsSdr709(parameters);
+        bool assumeBt709 = false;
+        bool sdr709 = !supported && downscale && IsSdr709(parameters, assumeBt709);
         if (sdr709 || depth == 8)
         {
             // Inspect exports only when the decision needs them, before the stream declares its output.
@@ -133,7 +142,13 @@ public:
             return nullptr;
         }
         // Missing ABI/create/self-test failures latch on the first frame, with the MSS device ready.
-        return std::make_unique<BaleToneMap>(curve);
+        auto processor = std::make_unique<BaleToneMap>(curve);
+        if (sdr709 && assumeBt709)
+        {
+            processor->assumeBt709 = true;
+            av_log(nullptr, AV_LOG_INFO, "Bale tonemap: unspecified colour tags treated as BT.709 SDR\n");
+        }
+        return processor;
     }
 
     HRESULT Initialize(ID3D11Device* device, UINT width, UINT height, UINT sourceWidth, UINT sourceHeight) override
@@ -179,6 +194,13 @@ public:
         frame.transfer = colorInfo.transfer;
         frame.primaries = colorInfo.primaries;
         frame.matrix = colorInfo.matrix;
+        if (assumeBt709)
+        {
+            // bale_gpu needs explicit code points; this stream was accepted as BT.709 SDR.
+            if (frame.transfer == AVCOL_TRC_UNSPECIFIED) frame.transfer = AVCOL_TRC_BT709;
+            if (frame.primaries == AVCOL_PRI_UNSPECIFIED) frame.primaries = AVCOL_PRI_BT709;
+            if (frame.matrix == AVCOL_SPC_UNSPECIFIED) frame.matrix = AVCOL_SPC_BT709;
+        }
         frame.full_range = colorInfo.range == AVCOL_RANGE_JPEG;
         frame.chroma_location = colorInfo.chromaLocation;
         frame.has_mastering = colorInfo.hasMasteringPrimaries || colorInfo.hasMasteringLuminance;
@@ -261,6 +283,7 @@ private:
     }
 
     void* handle = nullptr;
+    bool assumeBt709 = false;
     int curve;
     bool activeLogged = false;
     bool failureLogged = false;

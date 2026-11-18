@@ -30,8 +30,10 @@ eligible only when `bale_tonemap_output_width/height` asks for a smaller size an
 bale_gpu exports `BALE_TONEMAP_SDR709` and `BALE_TONEMAP_OUTPUT_DOWNSCALE`: the stage
 then only downscales (no tone curve, no gamut change) and outputs P010. 8-bit sources
 are eligible when bale_gpu exports `BALE_TONEMAP_INPUT_NV12` (NV12 decoder slices are
-read as 10-bit codes); otherwise 10-bit input is required. Streams with unspecified
-colour tags are not treated as BT.709. Unset/zero does not load the tone-map ABI or process frames.
+read as 10-bit codes); otherwise 10-bit input is required. Unspecified tags (2) count as BT.709 on this route
+(transfer unspecified or 1/6/14/15, primaries and matrix unspecified or 1) for video of
+720p and larger, and are sent to bale_gpu as BT.709; other explicit tags (BT.601, a
+BT.2020 matrix with BT.709 primaries, mixes) are declined. Unset/zero does not load the tone-map ABI or process frames.
 
 Active output is fixed-size NV12 with BT.709 transfer, primaries and matrix,
 limited range (16–235), and no stream/sample HDR mastering or content-light
