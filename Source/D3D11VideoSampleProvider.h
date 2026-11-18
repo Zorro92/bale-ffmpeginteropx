@@ -32,7 +32,9 @@ public:
         bool applyHdrColorInfo,
         std::unique_ptr<VideoFrameProcessor> processor = nullptr,
         int processedOutputMode = 0,
-        int processedOutputFormat = 0)
+        int processedOutputFormat = 0,
+        int targetOutputWidth = 0,
+        int targetOutputHeight = 0)
         : UncompressedVideoSampleProvider(reader, avFormatCtx, avCodecCtx, config, streamIndex, hardwareDecoderStatus, applyHdrColorInfo)
     {
         frameProcessor = std::move(processor);
@@ -59,6 +61,9 @@ public:
         }
         processorWidth = avCodecCtx->width;
         processorHeight = avCodecCtx->height;
+        processedWidth = processorWidth;
+        processedHeight = processorHeight;
+        SelectProcessedSize(targetOutputWidth, targetOutputHeight);
         decoder = DecoderEngine::FFmpegD3D11HardwareDecoder;
         hwCodec = avCodecCtx->codec;
 
@@ -517,6 +522,38 @@ public:
 protected:
     bool HasProcessedOutput() const override { return frameProcessor != nullptr; }
     bool ProcessedOutputSetsColorAttributes() const override { return (outputMode & OutputNoColorAttributes) == 0; }
+    void ProcessedOutputSize(int& width, int& height) const override
+    {
+        width = processedWidth;
+        height = processedHeight;
+    }
+
+    // Fit the visible source inside the target, aspect kept, even sizes, at most 4x smaller per
+    // axis; only when the processor downscales. The size is fixed for the stream's lifetime.
+    void SelectProcessedSize(int targetWidth, int targetHeight)
+    {
+        if (!frameProcessor || targetWidth <= 0 || targetHeight <= 0 || processorWidth <= 0 || processorHeight <= 0) return;
+        if (processorWidth <= targetWidth && processorHeight <= targetHeight) return;
+        bool bypass = (outputMode & OutputBypassProcessor) != 0;
+        if (!bypass && !frameProcessor->SupportsDownscale())
+        {
+            av_log(nullptr, AV_LOG_WARNING, "Bale tonemap: downscale to %dx%d not supported; keeping %dx%d\n",
+                targetWidth, targetHeight, processorWidth, processorHeight);
+            return;
+        }
+        double scale = (std::min)(static_cast<double>(targetWidth) / processorWidth, static_cast<double>(targetHeight) / processorHeight);
+        scale = (std::max)(scale, 0.25);
+        int width = (std::max)(2, static_cast<int>(processorWidth * scale) & ~1);
+        int height = (std::max)(2, static_cast<int>(processorHeight * scale) & ~1);
+        // Keep within the processor's 4x limit after rounding down to even sizes.
+        while (width * 4 < processorWidth) width += 2;
+        while (height * 4 < processorHeight) height += 2;
+        processedWidth = width;
+        processedHeight = height;
+        av_log(nullptr, AV_LOG_INFO, "Bale tonemap downscale %dx%d -> %dx%d (target %dx%d)\n",
+            processorWidth, processorHeight, width, height, targetWidth, targetHeight);
+    }
+
     void AddProcessedOutputAttributes(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const override
     {
         // A bypassed processor produced nothing; its output must not be described as processed.
@@ -603,14 +640,14 @@ private:
             {
                 std::lock_guard lock(samplesMutex);
                 if (!processedTexturePool) processedTexturePool = std::make_shared<TexturePool>(device, 5);
-                winrt::check_hresult(processedTexturePool->GetTexture(processorWidth, processorHeight, ProcessedOutputDxgiFormat(),
+                winrt::check_hresult(processedTexturePool->GetTexture(processedWidth, processedHeight, ProcessedOutputDxgiFormat(),
                     decoderBinds ? (D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE) : (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE), output));
             }
             if (decoderBinds && !processedRenderTarget)
             {
                 D3D11_TEXTURE2D_DESC targetDesc{};
-                targetDesc.Width = processorWidth;
-                targetDesc.Height = processorHeight;
+                targetDesc.Width = processedWidth;
+                targetDesc.Height = processedHeight;
                 targetDesc.MipLevels = 1;
                 targetDesc.ArraySize = 1;
                 targetDesc.Format = ProcessedOutputDxgiFormat();
@@ -644,7 +681,7 @@ private:
                 bool bypass = (outputMode & OutputBypassProcessor) != 0;
                 if (!processorInitialized && !bypass)
                 {
-                    winrt::check_hresult(frameProcessor->Initialize(device.get(), processorWidth, processorHeight));
+                    winrt::check_hresult(frameProcessor->Initialize(device.get(), processedWidth, processedHeight, processorWidth, processorHeight));
                     processorInitialized = true;
                 }
                 auto target = decoderBinds ? processedRenderTarget.get() : output.get();
@@ -693,8 +730,10 @@ private:
     std::unique_ptr<VideoFrameProcessor> frameProcessor;
     bool processorInitialized = false;
     bool poolLogged = false;
-    int processorWidth = 0;
+    int processorWidth = 0;   // visible decoded (source) size
     int processorHeight = 0;
+    int processedWidth = 0;   // processed output size (smaller when downscaling)
+    int processedHeight = 0;
     std::shared_ptr<TexturePool> processedTexturePool;
     std::shared_ptr<TexturePool> texturePool;
     std::map<winrt::Windows::Foundation::IUnknown, TrackedSample> trackedSamples;

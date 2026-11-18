@@ -108,7 +108,10 @@ class VideoFrameProcessor
 {
 public:
     virtual ~VideoFrameProcessor() = default;
-    virtual HRESULT Initialize(ID3D11Device* device, UINT width, UINT height) = 0;
+    // outputWidth/Height: the processed frame size; sourceWidth/Height: the visible input size, larger
+    // than the output only when SupportsDownscale() (the processor then downscales).
+    virtual HRESULT Initialize(ID3D11Device* device, UINT outputWidth, UINT outputHeight, UINT sourceWidth, UINT sourceHeight) = 0;
+    virtual bool SupportsDownscale() const { return false; }
     virtual HRESULT Process(ID3D11DeviceContext* context, ID3D11Texture2D* input, UINT inputSubresource,
         ID3D11Texture2D* output, const VideoFrameColorInfo& colorInfo) = 0;
     // Includes failures in the surrounding output stage (allocation, surface creation, fallback).

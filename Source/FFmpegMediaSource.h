@@ -353,6 +353,9 @@ namespace winrt::FFmpegInteropX::implementation
         int baleToneMapOutput = 0;
         // Bale: processed output format (0 auto = P010 when the processor supports it, 1 P010, 2 BGRA8 debug, 3 NV12).
         int baleToneMapFormat = 0;
+        // Bale: target size of the processed output (0 = source size); fit inside, aspect kept.
+        int baleToneMapOutputWidth = 0;
+        int baleToneMapOutputHeight = 0;
         // 1 = software libdav1d decodes into bale_gpu zero-copy buffers (needs the D3D11 upload).
         // Zero-copy only: a stream it cannot take is refused or fails (no CPU fallback).
         int baleZeroCopy = 0;

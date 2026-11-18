@@ -125,6 +125,8 @@ protected:
     // False: leave the processed output colour description to the player's defaults.
     virtual bool ProcessedOutputSetsColorAttributes() const { return true; }
     virtual AVPixelFormat ProcessedOutputPixelFormat() const { return AV_PIX_FMT_NV12; }
+    // Processed output size; default: the decoded size (unchanged).
+    virtual void ProcessedOutputSize(int& width, int& height) const { UNREFERENCED_PARAMETER(width); UNREFERENCED_PARAMETER(height); }
     virtual void AddProcessedOutputAttributes(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const
     {
         UNREFERENCED_PARAMETER(properties);

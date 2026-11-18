@@ -106,7 +106,7 @@ public:
         return std::make_unique<BaleToneMap>(curve);
     }
 
-    HRESULT Initialize(ID3D11Device* device, UINT width, UINT height) override
+    HRESULT Initialize(ID3D11Device* device, UINT width, UINT height, UINT sourceWidth, UINT sourceHeight) override
     {
         Destroy();
         const auto& api = BaleToneMapExports::Get();
@@ -119,6 +119,12 @@ public:
         config.source_peak_nits = 1000.0f;
         config.target_white_nits = 100.0f;
         config.desat = 0.0f;
+        if (sourceWidth != width || sourceHeight != height)
+        {
+            // DOWNSCALE (optional capability): visible source size in reserved[0..1].
+            config.reserved[0] = sourceWidth;
+            config.reserved[1] = sourceHeight;
+        }
         auto hr = api.create(device, &config, &handle);
         if (hr != S_OK || !handle)
         {
@@ -129,7 +135,8 @@ public:
         if (!activeLogged)
         {
             activeLogged = true;
-            av_log(nullptr, AV_LOG_INFO, "Bale tonemap active: curve=%d %dx%d\n", curve, static_cast<int>(width), static_cast<int>(height));
+            av_log(nullptr, AV_LOG_INFO, "Bale tonemap active: curve=%d %dx%d from %dx%d\n", curve, static_cast<int>(width), static_cast<int>(height),
+                static_cast<int>(sourceWidth), static_cast<int>(sourceHeight));
         }
         return S_OK;
     }
@@ -176,6 +183,12 @@ public:
     void DescribeOutput(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const override
     {
         properties.Insert(ToneMappedOutputMark, winrt::Windows::Foundation::PropertyValue::CreateUInt32(1));
+    }
+
+    bool SupportsDownscale() const override
+    {
+        auto& api = BaleToneMapExports::Get();
+        return SUCCEEDED(api.status) && api.outputFormats && (api.outputFormats() & BALE_TONEMAP_OUTPUT_DOWNSCALE) != 0;
     }
 
     bool SupportsOutputFormat(DXGI_FORMAT format) const override

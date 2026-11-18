@@ -68,6 +68,23 @@ not console-confirmed. No console testing was performed for these changes.
 Runtime shader correctness/performance and compatibility with the final ABI
 header still require review and console validation.
 
+### Display-sized output
+
+`bale_tonemap_output_width` / `bale_tonemap_output_height` (decimal, 0 = off) give a
+target size for the stage's output. When the visible video is larger and the loaded
+bale_gpu exports `BALE_TONEMAP_OUTPUT_DOWNSCALE`, the stage fits the video inside the
+target with its aspect kept, at even sizes and at most 4x smaller per axis (e.g.
+3840x1600 into 1920x1080 gives 1920x800). bale_gpu then area-downscales in
+display-linear light while tone mapping, and the media type reports that size. The
+size is fixed when the stream is created. Without the capability the output stays at
+the source size, with a warning. Logs: `Bale tonemap downscale WxH -> wxh (target ..)`,
+`Bale tonemap active: curve=N wxh from WxH`.
+
+Why: on the Xbox, the presentation path leaks driver state each time Media
+Foundation's video processor downscales 4K SDR to a smaller display (the process dies
+after ~23 opens, also with Windows' own decoder and no FFmpeg), while 4K HDR
+passthrough, 1080p SDR, and 4K SDR converted at native size all survived 40 opens.
+
 ### Debug: tone-map output variants
 
 `bale_tonemap_output` (`"0"`–`"15"`, default `"0"`) is a bitmask, only used while

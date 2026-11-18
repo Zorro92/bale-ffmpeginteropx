@@ -143,6 +143,12 @@ void UncompressedVideoSampleProvider::SelectOutputFormat()
 
     outputWidth = outputFrameWidth = m_pAvCodecCtx->width;
     outputHeight = outputFrameHeight = m_pAvCodecCtx->height;
+    if (HasProcessedOutput())
+    {
+        ProcessedOutputSize(outputWidth, outputHeight);
+        outputFrameWidth = outputWidth;
+        outputFrameHeight = outputHeight;
+    }
 
     if (m_OutputPixelFormat != AV_PIX_FMT_BGRA && !HasProcessedOutput())
     {
