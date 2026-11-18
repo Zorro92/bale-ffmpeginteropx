@@ -1,6 +1,7 @@
 #pragma once
 #include "pch.h"
 #include "MediaSampleProvider.h"
+#include "StreamBuffer.h"
 #include "GpuVideoDecoder.h"
 #include "GpuDecoderImagePool.h"
 #include "TexturePool.h"
