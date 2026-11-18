@@ -44,9 +44,10 @@
 class GpuDecoderSampleProvider : public MediaSampleProvider, public GpuDecoderHost, public std::enable_shared_from_this<GpuDecoderSampleProvider>
 {
 public:
-    // Output images per stream. The decoder holds up to its pipeline slots + 2; the rest are queued or
-    // held by Media Foundation. The pool never grows: the decoder waits for an image instead.
-    static constexpr uint32_t OutputImages = 8;
+    // Output images per stream, created on demand. The decoder holds up to its pipeline slots + 2 (6 for
+    // rav1g's 4 slots above 2560x1440); the rest wait in the ready queue or are being copied, and go
+    // back right after. The pool never grows past this: the decoder waits for an image instead.
+    static constexpr uint32_t OutputImages = 10;
     // Access units in flight (fed to the decoder and not yet delivered) unless SetDecodeInflight says
     // otherwise. Each needs an output image, so the target stays below OutputImages.
     // 4: smooth 1080p 23.976 on a Series X (3 left little margin, 2 fell short).

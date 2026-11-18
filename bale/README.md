@@ -118,8 +118,14 @@ the time the sample thread waited for a decoded frame (0 when one was queued); `
 (GPU fence wait, copy or stage, release signal and flush); and how often `get_image` had to wait
 for a free image in the window. The decode call is timed on the feeder thread.
 
-`bale_gpu_decode_inflight` (1–8, default 4; values above 7 act as 7, one below the 8 images)
-sets how many temporal units the feeder keeps in flight.
+`bale_gpu_decode_inflight` (1–8, default 4) sets how many temporal units the feeder keeps in
+flight; it stays below the stream's output images (8 up to bale.56, where 8 acted as 7).
+
+The output images are created on demand up to 10 per stream (bale.57; 8 before). rav1g holds up to
+its pipeline slots + 2 (rav1g main 40e38ec uses 4 slots above 2560x1440, so up to 6); frames in
+the ready queue and the one being copied or staged hold the rest, and every image goes back right
+after its copy or stage. On 4K with 3 slots, 4 were created and `get_image` never waited (bale.55).
+Images not created yet still count against `memory_available` (up to 10 × 23.7 MiB at 4K 10-bit).
 
 `bale_rav1g_perf` (0/1, default 0) appends rav1g's own timing run to the delivery line:
 ` rav1g perf records=N decode thread avg=.. max=.. ms gpu avg=.. max=.. ms shown=N showable=N
