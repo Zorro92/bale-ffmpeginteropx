@@ -158,6 +158,19 @@ again after an overrun. The memory line shows `player=` as the textures that exi
 a few for rendering) costs a 150 ms wait per frame while it fills, so keep it above that and check
 overruns stay 0.
 
+Console, Series X, 4K AV1 10-bit SDR → 1080p stage, rav1g `slots=3 parse=2 device=501.5 MiB`,
+inflight 4 (bale.55/56, 2026-11-18; idle app baseline 228 MiB, 275 MiB after prewarm):
+
+| BufferTime | limit | player textures | stream total | app | fps | start |
+|---|---|---|---|---|---|---|
+| 500 ms | none | 25 × 5.9 = 148.3 MiB | 744.7 MiB | 1225 MiB | 23.92–24.20 | |
+| 250 ms | none | 19 × 5.9 = 112.7 MiB | 709.1 MiB | 1190–1197 MiB | 23.74–24.06 | |
+| 500 ms | 16 | 94.9 MiB, 0 overruns | 691.3 MiB | 1179–1205 MiB | 23.69–23.98 | 9.9 s (during prewarm) |
+| 250 ms | 12 | 71.2 MiB, 0 overruns | 667.6 MiB | 1157–1182 MiB | 23.92–23.99 | 5.5 s |
+
+No dropped frames in any run. Seeks took 0.8–1.3 s with a limit, and app memory rises about 25 MiB around a seek. Inflight 3 saves one
+decoder image (23.7 MiB) at a small cost in steadiness.
+
 `bale_rav1g_parse` (0–8, default 0 = rav1g's choice: 1 frame in parse and 1 parse thread up to
 1440p) asks rav1g for N frames in parse and N parse threads. With one frame in parse, rav1g parses
 each unit inside the decode call on the feeder thread; the "decode call" timing shows that cost.
