@@ -17,6 +17,8 @@
 #include "PlatformInfo.h"
 #include "BaleThreadBoost.h"
 #include "BaleToneMap.h"
+#include "GpuDecoderSampleProvider.h"
+#include "BaleRav1g.h"
 // Bale: Media Foundation error codes for streams zero-copy refuses at open.
 #include <mferror.h>
 
@@ -1092,6 +1094,17 @@ namespace winrt::FFmpegInteropX::implementation
         bool eightBitZeroCopy = false;
         bool zeroCopyStream = false;
         baleZeroCopyRefused = false;
+        // Bale: opt-in GPU AV1 decoding. bale_zero_copy, bale_d3d11_upload and bale_film_grain_mode do
+        // not apply to it (the decoder applies film grain); when it cannot take the stream, the
+        // paths below do, with those keys.
+        if (baleAv1Decoder > 0 && avStream->codecpar->codec_id == AV_CODEC_ID_AV1 && !config->IsFrameGrabber)
+        {
+            result = CreateGpuDecoderStream(avStream, index);
+            if (result)
+            {
+                return result;
+            }
+        }
         // Find the video stream and its decoder
         auto avVideoCodec = avcodec_find_decoder(avStream->codecpar->codec_id);
 
@@ -1278,6 +1291,123 @@ namespace winrt::FFmpegInteropX::implementation
     }
 
 
+
+    // Bale: an AV1 stream on GpuDecoderSampleProvider with rav1g, or null (logged as a fallback to
+    // dav1d) when rav1g cannot take it. The codec context is only a description: no FFmpeg decoder
+    // is opened.
+    std::shared_ptr<MediaSampleProvider> FFmpegMediaSource::CreateGpuDecoderStream(AVStream* avStream, int index)
+    {
+        int bitDepth = 0;
+        std::unique_ptr<GpuVideoDecoder> gpuDecoder = BaleRav1gDecoder::TryOpen(avStream->codecpar, bitDepth);
+        if (!gpuDecoder)
+        {
+            return nullptr;
+        }
+
+        auto avCodecCtx = avcodec_alloc_context3(avcodec_find_decoder(avStream->codecpar->codec_id));
+        if (!avCodecCtx || avcodec_parameters_to_context(avCodecCtx, avStream->codecpar) < 0)
+        {
+            avcodec_free_context(&avCodecCtx);
+            BaleRav1gDecoder::Fallback("codec context", E_OUTOFMEMORY);
+            return nullptr;
+        }
+
+        // The stage (tone map/downscale) as on the D3D11 path: HDR with bale_tonemap, SDR larger than
+        // the target size. Its eligibility needs the decoder's depth, which the container may omit.
+        std::unique_ptr<VideoFrameProcessor> processor;
+        auto parameters = avcodec_parameters_alloc();
+        if (parameters && avcodec_parameters_copy(parameters, avStream->codecpar) >= 0)
+        {
+            parameters->format = bitDepth > 8 ? AV_PIX_FMT_YUV420P10LE : AV_PIX_FMT_YUV420P;
+            int curve = baleToneMap;
+            bool larger = baleToneMapOutputWidth > 0 && baleToneMapOutputHeight > 0 &&
+                (parameters->width > baleToneMapOutputWidth || parameters->height > baleToneMapOutputHeight);
+            if (curve == 0 && larger && !BaleToneMap::IsSupportedSource(parameters))
+            {
+                // SDR larger than the display is downscaled by the stage, which applies no curve to it.
+                curve = 1;
+            }
+            processor = BaleToneMap::Create(curve, parameters, baleToneMapOutputWidth, baleToneMapOutputHeight);
+        }
+        avcodec_parameters_free(&parameters);
+
+        auto provider = std::make_shared<GpuDecoderSampleProvider>(m_pReader, avFormatCtx, avCodecCtx,
+            config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, useHdr, std::move(gpuDecoder), bitDepth,
+            std::move(processor), baleToneMapOutputWidth, baleToneMapOutputHeight);
+        auto hr = provider->Initialize();
+        if (FAILED(hr))
+        {
+            BaleRav1gDecoder::Fallback("stream descriptor", hr);
+            return nullptr;
+        }
+        gpuDecoderPools.push_back(provider->OutputPool());
+        return provider;
+    }
+
+    void FFmpegMediaSource::CancelGpuDecoderWaits()
+    {
+        for (auto& pool : gpuDecoderPools)
+        {
+            pool->RequestCancel();
+        }
+    }
+
+    bool FFmpegMediaSource::HasGpuDecoderStream()
+    {
+        for (auto& stream : videoStreams)
+        {
+            if (std::dynamic_pointer_cast<GpuDecoderSampleProvider>(stream)) return true;
+        }
+        return false;
+    }
+
+    void FFmpegMediaSource::InitializeGpuDecoderDevice(MediaStreamSource const& sender)
+    {
+        HRESULT hr = S_OK;
+        com_ptr<ID3D11Device> rendererDevice;
+        com_ptr<ID3D11DeviceContext> rendererContext;
+        com_ptr<ID3D11VideoDevice> videoDevice;
+        try
+        {
+            winrt::check_hresult(DirectXInteropHelper::GetDeviceManagerFromStreamSource(sender, gpuDecoderDeviceManager));
+            if (!gpuDecoderDeviceManager) winrt::throw_hresult(E_NOINTERFACE);
+            winrt::check_hresult(DirectXInteropHelper::GetDeviceFromStreamSource(gpuDecoderDeviceManager,
+                rendererDevice, rendererContext, videoDevice, &gpuDecoderDeviceHandle));
+        }
+        catch (...)
+        {
+            hr = winrt::to_hresult();
+        }
+
+        for (auto& stream : videoStreams)
+        {
+            auto gpuStream = std::dynamic_pointer_cast<GpuDecoderSampleProvider>(stream);
+            if (!gpuStream) continue;
+            if (FAILED(hr))
+            {
+                gpuStream->DeviceLost(hr);
+            }
+            else
+            {
+                gpuStream->SetRendererDevice(rendererDevice, rendererContext);
+            }
+        }
+        if (FAILED(hr))
+        {
+            av_log(nullptr, AV_LOG_WARNING, "Bale video: GPU decoder device unavailable (hr=0x%08X)\n", static_cast<unsigned>(hr));
+            CloseGpuDecoderDevice();
+        }
+    }
+
+    void FFmpegMediaSource::CloseGpuDecoderDevice()
+    {
+        if (gpuDecoderDeviceHandle && gpuDecoderDeviceManager)
+        {
+            gpuDecoderDeviceManager->CloseDeviceHandle(gpuDecoderDeviceHandle);
+        }
+        gpuDecoderDeviceHandle = nullptr;
+        gpuDecoderDeviceManager = nullptr;
+    }
 
     void FFmpegMediaSource::SetSubtitleDelay(TimeSpan const& delay)
     {
@@ -2033,6 +2163,8 @@ namespace winrt::FFmpegInteropX::implementation
 
     void FFmpegMediaSource::Close(bool onMediaSourceClosed)
     {
+        // Bale: a GPU decoder waiting for an output image may hold `mutex` on the sample thread.
+        CancelGpuDecoderWaits();
         std::lock_guard lock(mutex);
 
 
@@ -2123,6 +2255,7 @@ namespace winrt::FFmpegInteropX::implementation
         deviceContext = nullptr;
         deviceManager = nullptr;
         CloseUploadDevice();
+        CloseGpuDecoderDevice();
 
         PlaybackSession(nullptr);
 
@@ -2549,6 +2682,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_system_decoder_dolby") { target = &baleSystemDecoderDolby; minimum = 0; maximum = 1; }
         else if (key == "bale_subtitle_stream") { target = &baleSubtitleStream; minimum = 0; maximum = 65535; }
         else if (key == "bale_subtitle_sink") { target = &baleSubtitleSink; minimum = 1; maximum = 999999999; }
+        else if (key == "bale_av1_decoder") { target = &baleAv1Decoder; minimum = 0; maximum = 1; }
         else
         {
             hr = E_INVALIDARG;
@@ -2587,8 +2721,10 @@ namespace winrt::FFmpegInteropX::implementation
 
     bool FFmpegMediaSource::UseDecodeAhead()
     {
+        // GPU decoder streams too: the worker waits for their output images without `mutex`.
         return baleDecodeAheadFrames > 0 && currentVideoStream &&
-            currentVideoStream->Decoder() == DecoderEngine::FFmpegSoftwareDecoder &&
+            (currentVideoStream->Decoder() == DecoderEngine::FFmpegSoftwareDecoder ||
+                std::dynamic_pointer_cast<GpuDecoderSampleProvider>(currentVideoStream)) &&
             !config->IsFrameGrabber;
     }
 
@@ -2802,9 +2938,7 @@ namespace winrt::FFmpegInteropX::implementation
     {
         if (baleFatalRaised) return true;
         if (!currentVideoStream) return false;
-        auto uncompressed = std::dynamic_pointer_cast<UncompressedVideoSampleProvider>(currentVideoStream);
-        if (!uncompressed) return false;
-        HRESULT hr = uncompressed->FatalError();
+        HRESULT hr = currentVideoStream->FatalError();
         if (SUCCEEDED(hr)) return false;
 
         baleFatalRaised = true;
@@ -2863,6 +2997,9 @@ namespace winrt::FFmpegInteropX::implementation
 
     void FFmpegMediaSource::OnStarting(MediaStreamSource const& sender, MediaStreamSourceStartingEventArgs const& args)
     {
+        // Bale: a GPU decoder waiting for an output image (e.g. while paused) may hold `mutex` on the
+        // sample thread; end that wait first. The streams resume below.
+        CancelGpuDecoderWaits();
         std::lock_guard lock(mutex);
         if (isClosed)
         {
@@ -2913,6 +3050,12 @@ namespace winrt::FFmpegInteropX::implementation
                 InitializeUploadDevice(sender);
             }
 
+            // Bale: GPU decoder streams need the renderer's device before their first decode.
+            if (isFirstSeek && !config->IsFrameGrabber && HasGpuDecoderStream())
+            {
+                InitializeGpuDecoderDevice(sender);
+            }
+
             // Perform seek operation when MediaStreamSource received seek event from MediaElement
             if (request.StartPosition() && request.StartPosition().Value().count() <= mediaDuration.count() && (!isFirstSeek || request.StartPosition().Value().count() > 0))
             {
@@ -2937,6 +3080,20 @@ namespace winrt::FFmpegInteropX::implementation
         catch (...)
         {
             DebugMessage(L"Exception in OnStarting()!");
+        }
+
+        // Bale: end the cancel; a stream whose sample request it ended drops the worker's end mark.
+        bool cancelledRequest = false;
+        for (auto& stream : videoStreams)
+        {
+            if (auto gpuStream = std::dynamic_pointer_cast<GpuDecoderSampleProvider>(stream))
+            {
+                cancelledRequest = gpuStream->ResumeAfterCancel() || cancelledRequest;
+            }
+        }
+        if (cancelledRequest)
+        {
+            AheadPauseScope clearAhead(this, true);
         }
 
         isFirstSeek = false;
@@ -3035,6 +3192,21 @@ namespace winrt::FFmpegInteropX::implementation
 
     void FFmpegMediaSource::CheckVideoDeviceChanged(MediaStreamSource const& mss)
     {
+        if (gpuDecoderDeviceManager)
+        {
+            auto gpuHr = gpuDecoderDeviceManager->TestDevice(gpuDecoderDeviceHandle);
+            if (FAILED(gpuHr))
+            {
+                // The decoder's images live on the lost device: the stream fails (no recreate).
+                CancelGpuDecoderWaits();
+                AheadPauseScope aheadPause(this, true);
+                for (auto& stream : videoStreams)
+                {
+                    if (auto gpuStream = std::dynamic_pointer_cast<GpuDecoderSampleProvider>(stream)) gpuStream->DeviceLost(gpuHr);
+                }
+                CloseGpuDecoderDevice();
+            }
+        }
         if (uploadDeviceManager)
         {
             auto uploadHr = uploadDeviceManager->TestDevice(uploadDeviceHandle);

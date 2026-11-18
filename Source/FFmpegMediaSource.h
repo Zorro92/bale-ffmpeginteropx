@@ -10,6 +10,7 @@
 #include "CodecChecker.h"
 #include "MediaMetadata.h"
 #include "text_encoding_detect.h"
+#include "GpuDecoderImagePool.h"
 
 namespace winrt::FFmpegInteropX::implementation
 {
@@ -425,6 +426,22 @@ namespace winrt::FFmpegInteropX::implementation
         bool baleZeroCopyRefused = false;
         bool RaiseBaleFatal(MediaStreamSource const& sender);
         bool HasZeroCopyStream();
+
+        // Bale: 1 = AV1 decodes on the GPU with rav1g (GpuDecoderSampleProvider); 0 = the FFmpeg paths.
+        // Falls back to them at open when rav1g cannot take the stream.
+        int baleAv1Decoder = 0;
+        std::shared_ptr<MediaSampleProvider> CreateGpuDecoderStream(AVStream* avStream, int index);
+        // Image pools of the GPU decoder streams, filled at open and never changed afterwards: a
+        // Starting or Close request cancels their waits before it takes `mutex` (a decoder waiting for
+        // an image may hold it on the sample thread).
+        std::vector<std::shared_ptr<GpuDecoderImagePool>> gpuDecoderPools;
+        void CancelGpuDecoderWaits();
+        // Renderer device handle for the GPU decoder streams (not an FFmpeg hardware device).
+        com_ptr<IMFDXGIDeviceManager> gpuDecoderDeviceManager;
+        HANDLE gpuDecoderDeviceHandle = nullptr;
+        void InitializeGpuDecoderDevice(MediaStreamSource const& sender);
+        void CloseGpuDecoderDevice();
+        bool HasGpuDecoderStream();
 
         uint64_t windowId;
         bool useHdr;

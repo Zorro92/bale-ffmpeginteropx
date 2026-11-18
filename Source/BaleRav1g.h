@@ -3,6 +3,12 @@
 #include <d3d11_4.h>
 #include <d3d12.h>
 #include <dxgi1_2.h>
+#include "GpuVideoDecoder.h"
+
+extern "C"
+{
+#include <libavutil/pixdesc.h>
+}
 
 // rav1g's C interface, copied verbatim from Zorro92/rav1g crates/rav1g/include/rav1g.h (commit
 // eebfbd7, interface version 1). rav1g owns the header: copy it again, unchanged, whenever rav1g
@@ -11,7 +17,7 @@
 static_assert(RAV1G_ABI_VERSION == 1, "BaleRav1g.h is written against rav1g interface version 1");
 
 // Bale glue for rav1g (GPU AV1 decoding in D3D12 compute shaders): loading rav1g.dll from the app
-// package and the process-wide device. Nothing outside
+// package, the process-wide device, and (below) the GpuVideoDecoder implementation. Nothing outside
 // this header names rav1g.
 
 // rav1g.dll's exports, resolved once per process. The library is loaded with LoadPackagedLibrary and
@@ -145,4 +151,355 @@ struct BaleRav1gDevice
         }();
         return shared;
     }
+};
+
+// GpuVideoDecoder on rav1g, semi-planar output (one NV12 or P010 texture a frame) into the provider's
+// images, with a shared output fence the D3D11 side waits on. Settings are rav1g's defaults plus the
+// output, the shared fence and the budget callback: low_memory, slots, threads and frames in parse stay
+// rav1g's choice, and the process-global rav1g_set_* switches are never called.
+class BaleRav1gDecoder final : public GpuVideoDecoder
+{
+public:
+    // Direct rav1g output carries this private media type attribute (UINT32 1); Bale's player
+    // accepts direct output on this route only with it. Processed output carries the tone-map mark.
+    static constexpr winrt::guid OutputMark{ 0x6d553633, 0x9287, 0x4856, { 0xbc, 0x9f, 0x0c, 0x23, 0xaf, 0x00, 0xe1, 0x84 } };
+
+    BaleRav1gDecoder() = default;
+    ~BaleRav1gDecoder() override { Destroy(); }
+    BaleRav1gDecoder(const BaleRav1gDecoder&) = delete;
+    BaleRav1gDecoder& operator=(const BaleRav1gDecoder&) = delete;
+
+    // The open-time check: library, interface version, profile, the container's sequence header and
+    // the process device. Null, logged once as a fallback to dav1d, when rav1g cannot take the stream.
+    // bitDepth: the depth the stream's frames will have (8 or 10).
+    static std::unique_ptr<BaleRav1gDecoder> TryOpen(const AVCodecParameters* parameters, int& bitDepth)
+    {
+        const auto& api = BaleRav1gExports::Get();
+        if (FAILED(api.status)) return Fallback(api.failure, api.status);
+        // 4:2:0 and monochrome (Main profile) only; rav1g refuses 4:4:4 and 4:2:2.
+        if (parameters->profile != AV_PROFILE_AV1_MAIN && parameters->profile != AV_PROFILE_UNKNOWN)
+        {
+            return Fallback("profile not Main", parameters->profile);
+        }
+        auto result = std::make_unique<BaleRav1gDecoder>();
+        result->configObus = ConfigObus(parameters);
+        int depth = 0;
+        if (!result->configObus.empty())
+        {
+            Rav1gStreamInfo info{};
+            auto status = api.peekStreamInfo(result->configObus.data(), result->configObus.size(), &info);
+            if (status != RAV1G_STATUS_OK) return Fallback("stream info unsupported", status);
+            depth = static_cast<int>(info.bit_depth);
+        }
+        else
+        {
+            // No codec configuration (e.g. a raw OBU stream): the depth the demuxer probed.
+            auto description = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(parameters->format));
+            depth = description && description->nb_components > 0 ? description->comp[0].depth : parameters->bits_per_raw_sample;
+        }
+        if (depth != 8 && depth != 10) return Fallback("bit depth unsupported", depth);
+        const auto& shared = BaleRav1gDevice::Get();
+        if (FAILED(shared.status)) return Fallback("device unavailable", shared.status);
+        bitDepth = depth;
+        return result;
+    }
+
+    static std::nullptr_t Fallback(const char* reason, HRESULT status)
+    {
+        av_log(nullptr, AV_LOG_WARNING, "Bale rav1g: fallback to dav1d (%s, status=0x%08X)\n", reason, static_cast<unsigned>(status));
+        return nullptr;
+    }
+
+    const char* LogName() const override { return "Bale rav1g"; }
+
+    HRESULT SetDevice(ID3D11Device* device) override
+    {
+        const auto& shared = BaleRav1gDevice::Get();
+        if (FAILED(shared.status)) return shared.status;
+        winrt::com_ptr<ID3D11Device> renderer;
+        renderer.copy_from(device);
+        auto dxgiDevice = renderer.try_as<IDXGIDevice>();
+        if (!dxgiDevice) return E_NOINTERFACE;
+        winrt::com_ptr<IDXGIAdapter> adapter;
+        auto hr = dxgiDevice->GetAdapter(adapter.put());
+        DXGI_ADAPTER_DESC description{};
+        if (SUCCEEDED(hr)) hr = adapter->GetDesc(&description);
+        if (FAILED(hr)) return hr;
+        if (description.AdapterLuid.LowPart != shared.adapter.LowPart || description.AdapterLuid.HighPart != shared.adapter.HighPart)
+        {
+            // The shared textures and fence must be on the D3D12 device's adapter.
+            av_log(nullptr, AV_LOG_ERROR, "Bale rav1g: the renderer device is on another adapter\n");
+            return DXGI_ERROR_UNSUPPORTED;
+        }
+        device11 = renderer.try_as<ID3D11Device5>();
+        return device11 ? S_OK : E_NOINTERFACE;
+    }
+
+    HRESULT OpenTexture(ID3D11Texture2D* texture, winrt::com_ptr<::IUnknown>& decoderView) override
+    {
+        winrt::com_ptr<ID3D11Texture2D> texture11;
+        texture11.copy_from(texture);
+        auto resource = texture11.try_as<IDXGIResource1>();
+        if (!resource) return E_NOINTERFACE;
+        HANDLE handle = nullptr;
+        auto hr = resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &handle);
+        if (FAILED(hr)) return hr;
+        winrt::com_ptr<ID3D12Resource> texture12;
+        hr = BaleRav1gDevice::Get().d3d12->OpenSharedHandle(handle, __uuidof(ID3D12Resource), texture12.put_void());
+        CloseHandle(handle);
+        if (FAILED(hr)) return hr;
+        // rav1g takes the ID3D12Resource pointer itself; keep that exact pointer.
+        decoderView.copy_from(static_cast<::IUnknown*>(texture12.get()));
+        return S_OK;
+    }
+
+    HRESULT Create(const uint8_t* data, size_t size, GpuDecoderHost* newHost) override
+    {
+        if (decoder) return E_NOT_VALID_STATE;
+        if (!device11) return E_NOT_VALID_STATE;
+        const auto& api = BaleRav1gExports::Get();
+        const auto& shared = BaleRav1gDevice::Get();
+        host = newHost;
+
+        // The unit's own sequence header wins (a new sequence); without one, the container's.
+        Rav1gStreamInfo info{};
+        bool ownSequence = Peek(data, size, info);
+        if (!ownSequence)
+        {
+            if (configObus.empty()) return S_FALSE;
+            auto unit = WithConfig(data, size);
+            if (!Peek(unit.data(), unit.size(), info)) return S_FALSE;
+        }
+        if (info.bit_depth > 10) return StatusError(RAV1G_STATUS_UNSUPPORTED_BITSTREAM);
+
+        Rav1gSettings settings{};
+        api.settingsDefault(&settings);
+        settings.width = info.width;
+        settings.height = info.height;
+        settings.bit_depth = info.bit_depth == 8 ? 8 : 10;
+        settings.memory_available = &MemoryAvailable;
+        settings.memory_available_context = this;
+        settings.output_kind = RAV1G_OUTPUT_SEMI_PLANAR;
+        settings.shared_fence = true;
+        settings.output.context = this;
+        settings.output.get_image = &GetImage;
+        settings.output.frame = &Frame;
+        settings.output.unused = &Unused;
+        settings.output.end_of_frames = nullptr;
+        auto status = api.decoderCreate(shared.device, &settings, &decoder);
+        if (status != RAV1G_STATUS_OK || !decoder)
+        {
+            decoder = nullptr;
+            av_log(nullptr, AV_LOG_ERROR, "Bale rav1g: decoder creation failed (status %d)\n", static_cast<int>(status));
+            return StatusError(status != RAV1G_STATUS_OK ? status : RAV1G_STATUS_ERROR);
+        }
+
+        // Each decoder has its own output fence; open it on the renderer's device.
+        HANDLE handle = nullptr;
+        auto fence12 = static_cast<ID3D12Fence*>(api.decoderOutputFence(decoder));
+        auto hr = fence12 ? shared.d3d12->CreateSharedHandle(fence12, nullptr, GENERIC_ALL, nullptr, &handle) : E_POINTER;
+        if (SUCCEEDED(hr))
+        {
+            hr = device11->OpenSharedFence(handle, __uuidof(ID3D11Fence), fence11.put_void());
+            CloseHandle(handle);
+        }
+        if (FAILED(hr))
+        {
+            av_log(nullptr, AV_LOG_ERROR, "Bale rav1g: output fence could not be shared (hr=0x%08X)\n", static_cast<unsigned>(hr));
+            Destroy();
+            return hr;
+        }
+
+        Rav1gConfiguration configuration{};
+        api.decoderConfiguration(decoder, &configuration);
+        av_log(nullptr, AV_LOG_INFO, "Bale rav1g: active %ux%u bits=%u slots=%u parse=%u threads=%u device=%.1f MiB\n",
+            info.width, info.height, settings.bit_depth, configuration.frame_slots, configuration.frames_in_parse,
+            configuration.threads, configuration.device_size / (1024.0 * 1024.0));
+        sendConfig = !ownSequence;
+        return S_OK;
+    }
+
+    bool IsCreated() const override { return decoder != nullptr; }
+
+    HRESULT Decode(const uint8_t* data, size_t size, uint64_t userData) override
+    {
+        if (!decoder) return E_NOT_VALID_STATE;
+        const auto& api = BaleRav1gExports::Get();
+        Rav1gStatus status;
+        if (sendConfig)
+        {
+            // The first unit of a decoder created from the container's sequence header carries it.
+            auto unit = WithConfig(data, size);
+            status = api.decoderDecode(decoder, unit.data(), unit.size(), userData);
+        }
+        else
+        {
+            status = api.decoderDecode(decoder, data, size, userData);
+        }
+        if (status == RAV1G_STATUS_NEEDS_RECONFIGURE) return ReconfigureRequired;
+        sendConfig = false;
+        return status == RAV1G_STATUS_OK ? S_OK : StatusError(status);
+    }
+
+    HRESULT Drain() override
+    {
+        if (!decoder) return S_OK;
+        auto status = BaleRav1gExports::Get().decoderDrain(decoder);
+        return status == RAV1G_STATUS_OK ? S_OK : StatusError(status);
+    }
+
+    void Destroy() override
+    {
+        if (decoder)
+        {
+            // Waits for the frames in flight and hands them over (Frame/Unused) first.
+            BaleRav1gExports::Get().decoderDestroy(decoder);
+            decoder = nullptr;
+        }
+        fence11 = nullptr;
+    }
+
+    void DescribeOutput(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const override
+    {
+        properties.Insert(OutputMark, winrt::Windows::Foundation::PropertyValue::CreateUInt32(1));
+    }
+
+private:
+    // A rav1g status as an HRESULT: 0x80042B20 + status.
+    static HRESULT StatusError(Rav1gStatus status)
+    {
+        return MAKE_HRESULT(SEVERITY_ERROR, FACILITY_ITF, 0x2B20 + static_cast<int>(status));
+    }
+
+    static bool Peek(const uint8_t* data, size_t size, Rav1gStreamInfo& info)
+    {
+        if (!data || !size) return false;
+        info = {};
+        auto status = BaleRav1gExports::Get().peekStreamInfo(data, size, &info);
+        return status == RAV1G_STATUS_OK && info.bit_depth != 0 && info.width != 0 && info.height != 0;
+    }
+
+    // The configuration OBUs of the codec configuration (av1C: four bytes, then the OBUs; otherwise
+    // the extradata is OBUs already). Matroska requires the sequence header there and lets blocks
+    // leave it out.
+    static std::vector<uint8_t> ConfigObus(const AVCodecParameters* parameters)
+    {
+        if (!parameters->extradata || parameters->extradata_size <= 0) return {};
+        auto data = parameters->extradata;
+        auto size = static_cast<size_t>(parameters->extradata_size);
+        if (data[0] & 0x80)
+        {
+            if (size <= 4) return {};
+            return std::vector<uint8_t>(data + 4, data + size);
+        }
+        return std::vector<uint8_t>(data, data + size);
+    }
+
+    // The unit with the configuration OBUs in front, behind a leading temporal delimiter.
+    std::vector<uint8_t> WithConfig(const uint8_t* data, size_t size) const
+    {
+        size_t delimiter = 0;
+        if (size >= 2 && ((data[0] >> 3) & 0x0F) == 2 && (data[0] & 0x02))
+        {
+            // OBU_TEMPORAL_DELIMITER with a size field: header (1 or 2 bytes) and size 0.
+            size_t header = (data[0] & 0x04) ? 2 : 1;
+            if (size > header && data[header] == 0) delimiter = header + 1;
+        }
+        std::vector<uint8_t> unit;
+        unit.reserve(size + configObus.size());
+        unit.insert(unit.end(), data, data + delimiter);
+        unit.insert(unit.end(), configObus.begin(), configObus.end());
+        unit.insert(unit.end(), data + delimiter, data + size);
+        return unit;
+    }
+
+    static VideoFrameColorInfo ColorInfo(const Rav1gFrame& frame)
+    {
+        // AV1 code points are H.273's, like FFmpeg's; 2 (unspecified) without a colour description.
+        VideoFrameColorInfo info;
+        info.transfer = frame.color.transfer_characteristics;
+        info.primaries = frame.color.primaries;
+        info.matrix = frame.color.matrix_coefficients;
+        info.range = static_cast<uint8_t>(frame.color.full_range ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG);
+        info.chromaLocation = static_cast<uint8_t>(
+            frame.color.chroma_sample_position == RAV1G_CHROMA_SAMPLE_POSITION_VERTICAL ? AVCHROMA_LOC_LEFT :
+            frame.color.chroma_sample_position == RAV1G_CHROMA_SAMPLE_POSITION_COLOCATED ? AVCHROMA_LOC_TOPLEFT :
+            AVCHROMA_LOC_UNSPECIFIED);
+        if (frame.has_mastering_display)
+        {
+            // The metadata OBU's fixed point: chromaticity 0.16, max luminance 24.8, min 18.14.
+            info.hasMasteringPrimaries = true;
+            info.hasMasteringLuminance = true;
+            for (int i = 0; i < 3; i++)
+            {
+                for (int j = 0; j < 2; j++)
+                {
+                    info.masteringPrimaries[i][j] = frame.mastering_display.primaries[i][j] / 65536.0f;
+                }
+            }
+            info.masteringWhite[0] = frame.mastering_display.white_point[0] / 65536.0f;
+            info.masteringWhite[1] = frame.mastering_display.white_point[1] / 65536.0f;
+            info.masteringMaxNits = frame.mastering_display.max_luminance / 256.0f;
+            info.masteringMinNits = frame.mastering_display.min_luminance / 16384.0f;
+        }
+        if (frame.has_content_light)
+        {
+            info.hasContentLight = true;
+            info.maxCLL = frame.content_light.max_content_light_level;
+            info.maxFALL = frame.content_light.max_frame_average_light_level;
+        }
+        return info;
+    }
+
+    // rav1g's callbacks: get_image/unused on the decode thread or a parse thread, frame on the
+    // completion thread.
+    static int32_t GetImage(void* context, const Rav1gImageRequest* request, Rav1gImage* image)
+    {
+        auto self = static_cast<BaleRav1gDecoder*>(context);
+        *image = {};
+        DXGI_FORMAT format = request->format == RAV1G_IMAGE_FORMAT_P010 ? DXGI_FORMAT_P010 :
+            request->format == RAV1G_IMAGE_FORMAT_NV12 ? DXGI_FORMAT_NV12 : DXGI_FORMAT_UNKNOWN;
+        if (format == DXGI_FORMAT_UNKNOWN || !self->host) return 1;
+        void* view = nullptr;
+        void* token = nullptr;
+        // A non-zero result fails the temporal unit: only for a cancel (stop, seek) or a failure.
+        if (!self->host->AcquireImage((request->width + 1) & ~1u, (request->height + 1) & ~1u, format, &view, &token)) return 1;
+        image->d3d12_textures[0] = view;
+        image->token = token;
+        return 0;
+    }
+
+    static void Frame(void* context, const Rav1gFrame* frame)
+    {
+        auto self = static_cast<BaleRav1gDecoder*>(context);
+        GpuDecodedFrame decoded;
+        decoded.image = frame->image.token;
+        decoded.fence = self->fence11;
+        decoded.fenceValue = frame->fence_value;
+        decoded.width = frame->width;
+        decoded.height = frame->height;
+        decoded.format = frame->format == RAV1G_IMAGE_FORMAT_P010 ? DXGI_FORMAT_P010 :
+            frame->format == RAV1G_IMAGE_FORMAT_NV12 ? DXGI_FORMAT_NV12 : DXGI_FORMAT_UNKNOWN;
+        decoded.color = ColorInfo(*frame);
+        decoded.userData = frame->user_data;
+        self->host->FrameReady(std::move(decoded));
+    }
+
+    static void Unused(void* context, void* token)
+    {
+        static_cast<BaleRav1gDecoder*>(context)->host->ImageUnused(token);
+    }
+
+    static int64_t MemoryAvailable(void* context)
+    {
+        auto self = static_cast<BaleRav1gDecoder*>(context);
+        return self->host ? self->host->MemoryAvailable() : -1;
+    }
+
+    std::vector<uint8_t> configObus;
+    Rav1gDecoder* decoder = nullptr;
+    GpuDecoderHost* host = nullptr;
+    winrt::com_ptr<ID3D11Device5> device11;
+    winrt::com_ptr<ID3D11Fence> fence11;
+    bool sendConfig = false;
 };
