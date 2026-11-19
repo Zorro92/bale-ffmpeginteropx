@@ -110,6 +110,10 @@ HDMI output below 30 bpp an 8-bit result is shown anyway; dithering it in the st
 the stage's full-precision result, avoids the banding of a later plain 10-to-8 step and saves the
 P010 bandwidth. Bale sets 8 only for stage mounts on such displays, not for HDR passthrough or AV1.
 
+Console (Series X, 24 bpp SDR display, bale.61, Bale 0.1.700, 2026-11-19): a 4K HDR film tone-mapped
+with `8` logged `Bale tonemap output format=NV12 dithered`, an NV12 media type, 24.0 fps and no
+dropped frames in three runs; without it, P010 as before. Bale's guard accepted both.
+
 ### Retired debug options
 
 `bale_tonemap_output` (0–15) and `bale_tonemap_format` (0–3) were debug switches used to
