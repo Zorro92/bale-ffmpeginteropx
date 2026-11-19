@@ -353,6 +353,8 @@ namespace winrt::FFmpegInteropX::implementation
         // Bale: target size of the processed output (0 = source size); fit inside, aspect kept.
         int baleToneMapOutputWidth = 0;
         int baleToneMapOutputHeight = 0;
+        // Bale: 8 = the stage writes dithered NV12 when it can (an 8-bit display); 0 or 10 = P010 as before.
+        int baleToneMapOutputDepth = 0;
         // 1 = software libdav1d decodes into bale_gpu zero-copy buffers (needs the D3D11 upload).
         // Zero-copy only: a stream it cannot take is refused or fails (no CPU fallback).
         int baleZeroCopy = 0;

@@ -32,13 +32,14 @@ public:
         bool applyHdrColorInfo,
         std::unique_ptr<VideoFrameProcessor> processor = nullptr,
         int targetOutputWidth = 0,
-        int targetOutputHeight = 0)
+        int targetOutputHeight = 0,
+        int outputDepth = 0)
         : UncompressedVideoSampleProvider(reader, avFormatCtx, avCodecCtx, config, streamIndex, hardwareDecoderStatus, applyHdrColorInfo)
     {
         frameProcessor = std::move(processor);
-        // Output P010 whenever the processor can write it, so processed video stays 10-bit; NV12
-        // only for a processor without P010 output.
-        outputP010 = frameProcessor && frameProcessor->SupportsOutputFormat(DXGI_FORMAT_P010);
+        // P010 whenever the processor can write it; NV12 for a processor without P010 output, or
+        // dithered NV12 when 8-bit output was requested (outputDepth 8, see SelectOutputFormat).
+        outputP010 = frameProcessor && VideoFrameProcessor::SelectOutputFormat(*frameProcessor, outputDepth) == DXGI_FORMAT_P010;
         processorWidth = avCodecCtx->width;
         processorHeight = avCodecCtx->height;
         processedWidth = processorWidth;
@@ -602,7 +603,8 @@ private:
             if (!outputFormatLogged)
             {
                 outputFormatLogged = true;
-                av_log(nullptr, AV_LOG_INFO, "Bale tonemap output format=%s\n", outputP010 ? "P010" : "NV12");
+                av_log(nullptr, AV_LOG_INFO, "Bale tonemap output format=%s\n", outputP010 ? "P010"
+                    : frameProcessor->DithersOutputFormat(DXGI_FORMAT_NV12) ? "NV12 dithered" : "NV12");
             }
 
             auto multithread = device.try_as<ID3D10Multithread>();

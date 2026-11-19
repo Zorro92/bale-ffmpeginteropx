@@ -64,7 +64,8 @@ public:
         int bitDepth,
         std::unique_ptr<VideoFrameProcessor> processor = nullptr,
         int targetOutputWidth = 0,
-        int targetOutputHeight = 0)
+        int targetOutputHeight = 0,
+        int outputDepth = 0)
         : MediaSampleProvider(reader, avFormatCtx, avCodecCtx, config, streamIndex, HardwareDecoderStatus::Available)
         , gpuDecoder(std::move(gpuDecoder))
         , applyHdrColorInfo(applyHdrColorInfo)
@@ -90,8 +91,9 @@ public:
         processedHeight = sourceHeight;
         if (frameProcessor)
         {
-            // Processed output keeps 10 bits whenever the processor can write P010.
-            outputP010 = frameProcessor->SupportsOutputFormat(DXGI_FORMAT_P010);
+            // Processed output keeps 10 bits whenever the processor can write P010, unless 8-bit output
+            // was requested and the processor dithers NV12 (see SelectOutputFormat).
+            outputP010 = VideoFrameProcessor::SelectOutputFormat(*frameProcessor, outputDepth) == DXGI_FORMAT_P010;
             VideoFrameProcessor::SelectOutputSize(*frameProcessor, sourceWidth, sourceHeight, targetOutputWidth, targetOutputHeight,
                 processedWidth, processedHeight);
         }

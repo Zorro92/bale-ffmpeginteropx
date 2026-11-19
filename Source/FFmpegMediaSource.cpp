@@ -1355,7 +1355,7 @@ namespace winrt::FFmpegInteropX::implementation
 
         auto provider = std::make_shared<GpuDecoderSampleProvider>(m_pReader, avFormatCtx, avCodecCtx,
             config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, useHdr, std::move(gpuDecoder), bitDepth,
-            std::move(processor), baleToneMapOutputWidth, baleToneMapOutputHeight);
+            std::move(processor), baleToneMapOutputWidth, baleToneMapOutputHeight, baleToneMapOutputDepth);
         if (baleGpuDecodeInflight > 0) provider->SetDecodeInflight(static_cast<uint32_t>(baleGpuDecodeInflight));
         if (baleGpuOutputTextures > 0) provider->SetOutputTextureLimit(static_cast<uint32_t>(baleGpuOutputTextures));
         if (baleDecodeThreadPriority > 0) provider->SetFeederThreadPriority(BaleThreadBoost::ToWin32(baleDecodeThreadPriority));
@@ -2597,7 +2597,7 @@ namespace winrt::FFmpegInteropX::implementation
         {
             hardwareDecoderStatus = HardwareDecoderStatus::Available;
             auto processor = BaleToneMap::Create(baleToneMap, avStream->codecpar, baleToneMapOutputWidth, baleToneMapOutputHeight);
-            videoSampleProvider = std::shared_ptr<MediaSampleProvider>(new D3D11VideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr, std::move(processor), baleToneMapOutputWidth, baleToneMapOutputHeight));
+            videoSampleProvider = std::shared_ptr<MediaSampleProvider>(new D3D11VideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr, std::move(processor), baleToneMapOutputWidth, baleToneMapOutputHeight, baleToneMapOutputDepth));
         }
         else
         {
@@ -2729,6 +2729,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_tonemap_format") { target = &retired; minimum = 0; maximum = 3; }
         else if (key == "bale_tonemap_output_width") { target = &baleToneMapOutputWidth; minimum = 0; maximum = 8192; }
         else if (key == "bale_tonemap_output_height") { target = &baleToneMapOutputHeight; minimum = 0; maximum = 8192; }
+        else if (key == "bale_tonemap_output_depth") { target = &baleToneMapOutputDepth; minimum = 0; maximum = 10; }
         else if (key == "bale_zero_copy") { target = &baleZeroCopy; minimum = 0; maximum = 1; }
         else if (key == "bale_decode_thread_priority") { target = &baleDecodeThreadPriority; minimum = 0; maximum = 2; }
         else if (key == "bale_decoder_use_max_resolution") { target = &baleDecoderUseMaxResolution; minimum = 0; maximum = 1; }

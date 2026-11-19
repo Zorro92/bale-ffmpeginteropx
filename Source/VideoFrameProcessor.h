@@ -121,6 +121,18 @@ public:
     virtual void NotifyError(HRESULT hr) noexcept { UNREFERENCED_PARAMETER(hr); }
     // Output texture formats Process can write. NV12 is the baseline every processor supports.
     virtual bool SupportsOutputFormat(DXGI_FORMAT format) const { return format == DXGI_FORMAT_NV12; }
+    // Whether Process dithers when it writes this format (an 8-bit output of higher-precision
+    // results without banding). Default: no.
+    virtual bool DithersOutputFormat(DXGI_FORMAT format) const { UNREFERENCED_PARAMETER(format); return false; }
+
+    // The processed output format: P010 whenever the processor can write it, so processed video keeps
+    // 10 bits, NV12 otherwise. With an 8-bit output depth requested (an 8-bit display), NV12 when the
+    // processor dithers it, so the 10-to-8 step happens once, dithered, in the processor's own pass.
+    static DXGI_FORMAT SelectOutputFormat(const VideoFrameProcessor& processor, int requestedDepth)
+    {
+        if (requestedDepth == 8 && processor.DithersOutputFormat(DXGI_FORMAT_NV12)) return DXGI_FORMAT_NV12;
+        return processor.SupportsOutputFormat(DXGI_FORMAT_P010) ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
+    }
     // Adds processor-specific attributes to the processed stream's media type (after the colour
     // description). Default: none.
     virtual void DescribeOutput(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const

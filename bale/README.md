@@ -93,6 +93,23 @@ Foundation's video processor downscales 4K SDR to a smaller display (the process
 after ~23 opens, also with Windows' own decoder and no FFmpeg), while 4K HDR
 passthrough, 1080p SDR, and 4K SDR converted at native size all survived 40 opens.
 
+### Output depth (dithered 8-bit)
+
+`bale_tonemap_output_depth` (0–10, default 0; bale.61) chooses the stage's output depth:
+`8` makes the stage write NV12, ordered-dithered in its own pass, when the loaded bale_gpu exports
+`BALE_TONEMAP_OUTPUT_NV12_DITHERED` (32; static 8x8 Bayer, ±1 code, zero mean; `Source/bale_tonemap.h`
+copied from Bale 17a07b8). Any other value, or a bale_gpu without the bit, keeps today's choice:
+P010 when the stage can write it, else plain NV12. Decided when the stream is created (the
+capability needs no device), so the media type is NV12 from the start and keeps the tone-map
+mark. It applies wherever the stage runs (D3D11 hardware decode and the rav1g route); the generic
+part is `VideoFrameProcessor::DithersOutputFormat` and `SelectOutputFormat`. Log: `Bale tonemap
+output format=P010|NV12|NV12 dithered`.
+
+Why: owner's bit-depth rule (2026-11-19), "work at source depth, deliver at display depth". On an
+HDMI output below 30 bpp an 8-bit result is shown anyway; dithering it in the stage's pass, from
+the stage's full-precision result, avoids the banding of a later plain 10-to-8 step and saves the
+P010 bandwidth. Bale sets 8 only for stage mounts on such displays, not for HDR passthrough or AV1.
+
 ### Retired debug options
 
 `bale_tonemap_output` (0–15) and `bale_tonemap_format` (0–3) were debug switches used to

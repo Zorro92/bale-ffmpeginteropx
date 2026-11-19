@@ -256,6 +256,11 @@ public:
             (api.outputFormats() & BALE_TONEMAP_OUTPUT_P010) != 0;
     }
 
+    bool DithersOutputFormat(DXGI_FORMAT format) const override
+    {
+        return format == DXGI_FORMAT_NV12 && (Capabilities() & BALE_TONEMAP_OUTPUT_NV12_DITHERED) != 0;
+    }
+
     void NotifyError(HRESULT hr) noexcept override
     {
         LogFailure(hr, "frame processing failed");
