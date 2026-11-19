@@ -516,7 +516,7 @@ HRESULT UncompressedVideoSampleProvider::StagedGrainFrame(AVFrame* avFrame, IDir
     }
     catch (...)
     {
-        auto hr = winrt::to_hresult();
+        HRESULT hr = winrt::to_hresult();
         *surface = nullptr;
         return Fail(SUCCEEDED(hr) ? E_UNEXPECTED : hr, "D3D11 grain upload failed");
     }
