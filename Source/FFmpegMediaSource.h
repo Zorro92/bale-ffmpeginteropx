@@ -430,14 +430,18 @@ namespace winrt::FFmpegInteropX::implementation
         void CloseUploadDevice();
         // Bale: true once the current video stream's zero-copy failure was raised (NotifyError).
         bool baleFatalRaised = false; // Under mutex.
-        // Bale: set by CreateVideoStream when it refused the stream for zero-copy.
-        bool baleZeroCopyRefused = false;
+        // Bale: set by CreateVideoStream when it refused the stream (zero-copy, or a GPU decoder
+        // fallback above bale_av1_fallback_max_height); a refused default stream fails the open.
+        bool baleVideoRefused = false;
         bool RaiseBaleFatal(MediaStreamSource const& sender);
         bool HasZeroCopyStream();
 
         // Bale: 1 = AV1 decodes on the GPU with rav1g (GpuDecoderSampleProvider); 0 = the FFmpeg paths.
         // Falls back to them at open when rav1g cannot take the stream.
         int baleAv1Decoder = 0;
+        // Bale: with the GPU AV1 decoder requested, the tallest source the software fallback may take
+        // when that decoder declines at open; a taller one is refused, so the app replans (0 = no limit).
+        int baleAv1FallbackMaxHeight = 0;
         std::shared_ptr<MediaSampleProvider> CreateGpuDecoderStream(AVStream* avStream, int index);
         // Image pools of the GPU decoder streams, filled at open and never changed afterwards: a
         // Starting or Close request cancels their waits before it takes `mutex` (a decoder waiting for

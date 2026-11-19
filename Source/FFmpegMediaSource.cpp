@@ -623,7 +623,7 @@ namespace winrt::FFmpegInteropX::implementation
             }
         }
 
-        bool zeroCopyRefused = false;
+        bool videoRefused = false;
         for (int index = 0; index < (int)avFormatCtx->nb_streams; index++)
         {
             auto avStream = avFormatCtx->streams[index];
@@ -658,9 +658,9 @@ namespace winrt::FFmpegInteropX::implementation
             {
                 stream = CreateVideoStream(avStream, index);
                 // Bale: a refused default video stream fails the open, so the app replans.
-                if (!stream && baleZeroCopyRefused)
+                if (!stream && baleVideoRefused)
                 {
-                    zeroCopyRefused = true;
+                    videoRefused = true;
                     if (index == videoStreamIndex) hr = MF_E_UNSUPPORTED_FORMAT;
                 }
                 if (stream)
@@ -715,8 +715,8 @@ namespace winrt::FFmpegInteropX::implementation
         {
             currentVideoStream = videoStreams[0];
         }
-        // Bale: never open audio-only because zero-copy refused every video stream.
-        if (zeroCopyRefused && videoStreams.empty() && SUCCEEDED(hr))
+        // Bale: never open audio-only because every video stream was refused.
+        if (videoRefused && videoStreams.empty() && SUCCEEDED(hr))
         {
             hr = MF_E_UNSUPPORTED_FORMAT;
         }
@@ -1096,7 +1096,7 @@ namespace winrt::FFmpegInteropX::implementation
         int filmGrainMode = 0;
         bool eightBitZeroCopy = false;
         bool zeroCopyStream = false;
-        baleZeroCopyRefused = false;
+        baleVideoRefused = false;
         // Bale: opt-in GPU AV1 decoding. bale_zero_copy, bale_d3d11_upload and bale_film_grain_mode do
         // not apply to it (the decoder applies film grain); when it cannot take the stream, the
         // paths below do, with those keys.
@@ -1106,6 +1106,13 @@ namespace winrt::FFmpegInteropX::implementation
             if (result)
             {
                 return result;
+            }
+            if (baleAv1FallbackMaxHeight > 0 && avStream->codecpar->height > baleAv1FallbackMaxHeight)
+            {
+                av_log(nullptr, AV_LOG_WARNING, "Bale AV1: refusing video stream (GPU decoder declined, height %d above the fallback limit %d).\n",
+                    avStream->codecpar->height, baleAv1FallbackMaxHeight);
+                baleVideoRefused = true;
+                return nullptr;
             }
         }
         // Find the video stream and its decoder
@@ -1258,7 +1265,7 @@ namespace winrt::FFmpegInteropX::implementation
                     {
                         av_log(nullptr, AV_LOG_WARNING, "Bale zero-copy: refusing video stream (%s, format %d).\n",
                             refusal, static_cast<int>(avVideoCodecCtx->pix_fmt));
-                        baleZeroCopyRefused = true;
+                        baleVideoRefused = true;
                         hr = E_FAIL;
                     }
                 }
@@ -2729,6 +2736,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_subtitle_stream") { target = &baleSubtitleStream; minimum = 0; maximum = 65535; }
         else if (key == "bale_subtitle_sink") { target = &baleSubtitleSink; minimum = 1; maximum = 999999999; }
         else if (key == "bale_av1_decoder") { target = &baleAv1Decoder; minimum = 0; maximum = 1; }
+        else if (key == "bale_av1_fallback_max_height") { target = &baleAv1FallbackMaxHeight; minimum = 0; maximum = 8192; }
         else
         {
             hr = E_INVALIDARG;

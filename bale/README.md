@@ -277,7 +277,13 @@ native FFmpeg build is needed; Bale ships `rav1g.dll` in its package.
 monochrome), `rav1g_peek_stream_info` reads the container's sequence header (av1C config
 OBUs; without one, the probed pixel format) with depth 8 or 10, and the process device
 exists. Any failure logs `Bale rav1g: fallback to dav1d (reason, status=0x..)` and the
-stream opens on today's dav1d path with the keys above honoured. The decoder itself is
+stream opens on today's dav1d path with the keys above honoured, unless
+`bale_av1_fallback_max_height` (0–8192, default 0 = no limit; bale.59) is set and the
+container's height is above it: then the stream is refused (`Bale AV1: refusing video stream
+(GPU decoder declined, height N above the fallback limit M)`) and, for the default video stream,
+the open fails with `MF_E_UNSUPPORTED_FORMAT`, as a zero-copy refusal does, so the app can replan
+(Bale: 1080, so a 4K source never lands on the software decoder). A height the container doesn't
+give (0) is never refused. The decoder itself is
 created on the first temporal unit, after Media Foundation's device is known; a failure
 from then on (creation refused, decode or drain status, device removed, fence wait, a
 frame the declared type can't carry) latches a fatal stream error, logged once as
