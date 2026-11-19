@@ -266,8 +266,8 @@ Frame grabbers never use it. With `"1"`, `bale_zero_copy`, `bale_d3d11_upload` a
 Code: generic `GpuVideoDecoder.h` (decoder interface), `GpuDecoderImagePool.h` (output
 images), `GpuDecoderSampleProvider.h` (the provider); all rav1g glue in `BaleRav1g.h`.
 `Source/rav1g.h` is rav1g's `crates/rav1g/include/rav1g.h`, copied verbatim (rav1g
-v0.4.0-alpha.2, `c1de272`, interface version 1; copy it again, unchanged, when rav1g changes it).
-`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.4.0-alpha.2, copied verbatim
+v0.5.0-alpha.1, `ba4a9a9`, interface version 1; copy it again, unchanged, when rav1g changes it).
+`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.4.0-alpha.2 (unchanged in v0.5.0-alpha.1), copied verbatim
 (only for `bale_rav1g_perf`). No new
 native FFmpeg build is needed; Bale ships `rav1g.dll` in its package.
 

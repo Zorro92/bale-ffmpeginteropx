@@ -21,7 +21,7 @@ extern "C"
 static_assert(sizeof(void*) != 8 || sizeof(av1_perf_frame) == 616, "av1_perf_frame differs from rav1g v0.4.0-alpha.2's");
 
 // rav1g's C interface, copied verbatim from Zorro92/rav1g crates/rav1g/include/rav1g.h (tag
-// v0.4.0-alpha.2, commit c1de272, interface version 1). rav1g owns the header: copy it again, unchanged, whenever rav1g
+// v0.5.0-alpha.1, commit ba4a9a9, interface version 1). rav1g owns the header: copy it again, unchanged, whenever rav1g
 // changes it, and raise the expected version below with it.
 #include "rav1g.h"
 static_assert(RAV1G_ABI_VERSION == 1, "BaleRav1g.h is written against rav1g interface version 1");
