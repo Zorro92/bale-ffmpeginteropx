@@ -383,6 +383,36 @@ Media Foundation releases enough samples for 8 images (MSS `BufferTime` on this 
 should stay below 8 frames), the direct-write path (`OUTPUT ... direct` in rav1g's log) and
 both fallbacks.
 
+## D3D11 GPU film grain without zero-copy
+
+`bale_film_grain_mode=3` (bale.60) puts AV1 film grain on the GPU for software libdav1d streams
+that are **not** zero-copy, with Direct3D 11 only: no D3D12, no `bale_zc_*`, no
+`bale_d3d11_upload`. Values of the key: 0 = dav1d applies grain on the CPU (default, upstream);
+1 and 2 = GPU grain on the zero-copy path (unchanged; without zero-copy they keep dav1d's grain);
+3 = this path, and on a zero-copy stream the same as 2.
+
+Decided before the decoder opens, because dav1d can't start applying grain later. It needs a 4:2:0
+8/10-bit input whose output is NV12 (8-bit) or P010 (10-bit), the grain exports of
+`bale_gpu.dll`, and a once-per-process probe: a private D3D11 device on the default adapter that
+must support NV12/P010 staging textures and pass the grain pass's self-test
+(`bale_grain_gpu_create`). Then dav1d exports the grain instead of applying it and the open logs
+`Bale film grain: mode=gpu-d3d11`. Anything missing keeps dav1d's own grain for that stream and logs
+`Bale film grain: mode=dav1d (reason, hr=0x..)`.
+
+Per frame, swscale converts the picture into a mapped STAGING texture (a ring of three), and
+`bale_grain_gpu_apply` draws it with the frame's grain into a pooled render-target texture
+(`RENDER_TARGET | SHADER_RESOURCE`, not shared) that goes to Media Foundation; a frame without
+grain parameters is copied. The upload device is taken on the first Starting, as for zero-copy, and
+the grain handle is created then, before any decode. From then on a failure (device, staging map,
+grain pass) fails the stream like a zero-copy failure (`NotifyError`, the app replans): dav1d no
+longer applies the grain itself, so there is no CPU fallback after the open. Logs: `Bale film
+grain: D3D11 staged upload active: NV12|P010 WxH`, `... staged frames=N grained=N` every 240 frames,
+and the upload timing line with `repack=0` (fill = swscale, gpu = grain or copy).
+
+Measured before this path existed (Series X, 1080p 10-bit AV1 with grain, Bale 0.1.695, 23.97 fps,
+no drops): dav1d CPU grain 1.39–1.51 cores, grain off 1.23, D3D12 zero-copy GPU grain 0.95.
+Not console-tested yet.
+
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
 Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.

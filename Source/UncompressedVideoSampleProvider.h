@@ -84,10 +84,16 @@ public:
     int ZeroCopy = 0;
     // Bale: EightBitZeroCopy's pre-open result for this stream; SelectOutputFormat must agree with it.
     bool ZeroCopyEightBit = false;
+    // Bale: 1 = GPU film grain on the staged D3D11 upload (FilmGrain.mode 3, decided before the
+    // decoder opened; dav1d exports the grain). The CPU converts each frame into a STAGING texture and
+    // the D3D11 grain pass draws it into the MF texture; no D3D12, no zero-copy. Failures after the
+    // open fail the stream (FatalError), since dav1d cannot apply the grain itself any more.
+    int StagedGrain = 0;
     BYTE* TargetBuffer = NULL;
 
     // Bale: independent of SetHardwareDevice/AVHWDeviceContext; never changes the decoder engine.
-    // S_FALSE for a stream that is not zero-copy (no uploader); failures latch FatalError.
+    // S_FALSE for a stream that is neither zero-copy nor staged grain (no uploader); failures latch
+    // FatalError.
     HRESULT SetUploadDevice(winrt::com_ptr<ID3D11Device> newDevice, winrt::com_ptr<ID3D11DeviceContext> newContext, int variant);
     void DisableUpload(HRESULT hr);
     MediaStreamSample CreateSurfaceSample(IDirect3DSurface const& surface, TimeSpan position) override
@@ -168,6 +174,10 @@ private:
     static int get_zero_copy_buffer(AVCodecContext* avCodecContext, AVFrame* frame, int flags);
     HRESULT CreateZeroCopy(winrt::com_ptr<ID3D11Device> const& device, winrt::com_ptr<ID3D11DeviceContext> const& context);
     HRESULT ZeroCopyFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts);
+    HRESULT StagedGrainFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts);
+    bool stagedGrainLogged = false;
+    unsigned stagedGrainFrames = 0;     // Frames out through the staged upload.
+    unsigned stagedGrainAppliedFrames = 0; // Of those, with grain applied.
     HRESULT DropFrame(AVFrame* avFrame);
     HRESULT TryZeroCopy(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts, const BaleGrainParams* params);
     void LogZeroCopyStats(void* handle, const char* when);

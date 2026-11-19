@@ -271,10 +271,10 @@ HRESULT UncompressedVideoSampleProvider::InitializeScalerIfRequired(AVFrame* avF
 }
 
 // Bale: shared renderer context calls must be protected, even on the decode-ahead worker.
-// Only zero-copy streams get an uploader; any setup failure fails the stream.
+// Only zero-copy and staged grain streams get an uploader; any setup failure fails the stream.
 HRESULT UncompressedVideoSampleProvider::SetUploadDevice(winrt::com_ptr<ID3D11Device> newDevice, winrt::com_ptr<ID3D11DeviceContext> newContext, int variant)
 {
-    if (!ZeroCopy) return S_FALSE;
+    if (!ZeroCopy && !StagedGrain) return S_FALSE;
     auto fatalHr = FatalError();
     if (FAILED(fatalHr)) return fatalHr;
     try
@@ -292,21 +292,30 @@ HRESULT UncompressedVideoSampleProvider::SetUploadDevice(winrt::com_ptr<ID3D11De
         if (!protectedContext) winrt::throw_hresult(E_FAIL);
         av_log(nullptr, AV_LOG_INFO, "Bale D3D11 upload output declared: %dx%d subtype=%s.\n",
             outputFrameWidth, outputFrameHeight, winrt::to_string(outputMediaSubtype).c_str());
-        upload = std::make_shared<BaleD3D11Upload>(newDevice, newContext, variant);
-        winrt::check_hresult(CreateZeroCopy(newDevice, newContext));
+        if (ZeroCopy)
+        {
+            upload = std::make_shared<BaleD3D11Upload>(newDevice, newContext, BaleD3D11Upload::Pool::ZeroCopy);
+            winrt::check_hresult(CreateZeroCopy(newDevice, newContext));
+        }
+        else
+        {
+            // Staged grain: plain render-target pool; the grain handle (and its self-test) now.
+            upload = std::make_shared<BaleD3D11Upload>(newDevice, newContext, BaleD3D11Upload::Pool::Plain);
+            upload->PrepareGrain(FilmGrain);
+        }
         return S_OK;
     }
     catch (...)
     {
-        return Fail(winrt::to_hresult(), "upload device or zero-copy setup failed");
+        return Fail(winrt::to_hresult(), ZeroCopy ? "upload device or zero-copy setup failed" : "upload device or D3D11 grain setup failed");
     }
 }
 
 void UncompressedVideoSampleProvider::DisableUpload(HRESULT hr)
 {
-    // Zero-copy has no CPU output path: losing the upload device fails the stream. Other streams
-    // never get an uploader.
-    if (ZeroCopy) Fail(hr, "upload device lost or unavailable");
+    // Zero-copy and staged grain have no CPU output path: losing the upload device fails the stream.
+    // Other streams never get an uploader.
+    if (ZeroCopy || StagedGrain) Fail(hr, "upload device lost or unavailable");
 }
 
 // Bale: latches the first failure. Afterwards CreateBufferFromFrame/CreateNextSampleBuffer return
@@ -365,8 +374,9 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
     HRESULT hr = S_OK;
     CheckFrameSize(avFrame);
 
-    // Bale: zero-copy streams have no CPU output path; every other stream is upstream.
+    // Bale: zero-copy and staged grain streams have no CPU output path; every other stream is upstream.
     if (ZeroCopy) return ZeroCopyFrame(avFrame, surface, framePts);
+    if (StagedGrain) return StagedGrainFrame(avFrame, surface, framePts);
 
     if (outputDirectBuffer)
     {
@@ -463,6 +473,65 @@ HRESULT UncompressedVideoSampleProvider::ZeroCopyFrame(AVFrame* avFrame, IDirect
             hr == E_INVALIDARG ? "layout refused" : "GPU write or sample failed");
     }
     zeroCopyMissRun = 0;
+    return S_OK;
+}
+
+// Bale: staged GPU grain. swscale converts the frame into a mapped STAGING texture (NV12 for 8-bit,
+// P010 for 10-bit, the declared output); the D3D11 grain pass draws it into a pooled texture with the
+// frame's grain, or a copy moves it there when the frame has none. Any failure fails the stream.
+HRESULT UncompressedVideoSampleProvider::StagedGrainFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts)
+{
+    if (!upload)
+    {
+        *surface = nullptr;
+        return Fail(E_UNEXPECTED, "frame decoded without the D3D11 grain upload");
+    }
+    BaleGrainParams grainParams{};
+    bool hasGrain = FilmGrain.Prepare(avFrame, m_OutputPixelFormat, outputWidth, outputHeight, grainParams);
+    try
+    {
+        DXGI_FORMAT format = m_OutputPixelFormat == AV_PIX_FMT_P010LE ? DXGI_FORMAT_P010
+            : m_OutputPixelFormat == AV_PIX_FMT_NV12 ? DXGI_FORMAT_NV12 : DXGI_FORMAT_UNKNOWN;
+        if (format == DXGI_FORMAT_UNKNOWN) winrt::throw_hresult(E_INVALIDARG);
+        winrt::check_hresult(InitializeScalerIfRequired(avFrame));
+        auto& timing = upload->timing;
+        auto start = BaleUploadTiming::Now();
+        if (timing.lastEnd) timing.Add(BaleUploadTiming::Gap, start - timing.lastEnd);
+        BaleD3D11Upload::Mapping staging;
+        winrt::check_hresult(upload->Map(outputFrameWidth, outputFrameHeight, format, staging));
+        // A mapped planar texture: the chroma plane follows the luma plane's rows at the same pitch.
+        auto base = static_cast<uint8_t*>(staging.mapped.pData);
+        auto pitch = static_cast<int>(staging.mapped.RowPitch);
+        uint8_t* data[4] = { base, base + static_cast<size_t>(pitch) * outputFrameHeight, nullptr, nullptr };
+        int linesize[4] = { pitch, pitch, 0, 0 };
+        auto fillStart = BaleUploadTiming::Now();
+        if (sws_scale(m_pSwsCtx, (const UINT8**)(avFrame->data), avFrame->linesize, 0, avFrame->height, data, linesize) <= 0)
+        {
+            winrt::throw_hresult(E_FAIL);
+        }
+        timing.Add(BaleUploadTiming::Fill, BaleUploadTiming::Now() - fillStart);
+        ReadFrameProperties(avFrame, framePts);
+        uploadSample = upload->CreateStagedSample(staging, ConvertPosition(framePts), surface, FilmGrain, hasGrain ? &grainParams : nullptr);
+        timing.EndFrame(0);
+    }
+    catch (...)
+    {
+        auto hr = winrt::to_hresult();
+        *surface = nullptr;
+        return Fail(SUCCEEDED(hr) ? E_UNEXPECTED : hr, "D3D11 grain upload failed");
+    }
+    stagedGrainFrames++;
+    if (hasGrain) stagedGrainAppliedFrames++;
+    if (!stagedGrainLogged)
+    {
+        stagedGrainLogged = true;
+        av_log(nullptr, AV_LOG_INFO, "Bale film grain: D3D11 staged upload active: %s %dx%d.\n",
+            m_OutputPixelFormat == AV_PIX_FMT_P010LE ? "P010" : "NV12", outputFrameWidth, outputFrameHeight);
+    }
+    if (stagedGrainFrames % 240 == 0)
+    {
+        av_log(nullptr, AV_LOG_INFO, "Bale film grain: D3D11 staged frames=%u grained=%u.\n", stagedGrainFrames, stagedGrainAppliedFrames);
+    }
     return S_OK;
 }
 

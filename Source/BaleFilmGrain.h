@@ -102,7 +102,9 @@ struct BaleGrainExports
 class BaleFilmGrain
 {
 public:
-    int mode = 0; // 0 dav1d at open (or after a GPU failure, which fails the stream), 2 GPU; never reset on seek.
+    // 0 dav1d at open (or after a GPU failure, which fails the stream), 2 GPU on the zero-copy path,
+    // 3 GPU on the staged D3D11 upload (no D3D12); never reset on seek.
+    int mode = 0;
     // 8-bit pictures written into P010 by the zero-copy direct write (EightBitZeroCopy); only that
     // write applies their grain.
     bool eightInP010 = false;
@@ -160,6 +162,57 @@ public:
         return selected;
     }
 
+    // Mode 3 (bale_film_grain_mode=3 on a stream that is not zero-copy): dav1d exports the grain and
+    // the D3D11 grain pass applies it after a plain staged upload. Decided before avcodec_open2, since
+    // dav1d cannot start applying grain later: anything that fails here keeps dav1d's own grain.
+    static int SelectD3D11Mode(AVPixelFormat input, AVPixelFormat output)
+    {
+        const char* reason = nullptr;
+        HRESULT probe = S_OK;
+        if (!BitDepth(input)) reason = "input is not 4:2:0 8/10-bit";
+        else if (!Compatible(input, output)) reason = "output is not matching NV12/P010";
+        else if (!BaleGrainExports::Get().validate) reason = "grain DLL unavailable or incompatible";
+        else if (FAILED(probe = ProbeD3D11())) reason = "D3D11 grain self-test failed";
+        if (reason)
+        {
+            av_log(nullptr, AV_LOG_INFO, "Bale film grain: mode=dav1d (%s, hr=0x%08X)\n", reason, static_cast<unsigned>(probe));
+            return 0;
+        }
+        av_log(nullptr, AV_LOG_INFO, "Bale film grain: mode=gpu-d3d11\n");
+        return 3;
+    }
+
+    // Once per process: the D3D11 grain pass's self-test (bale_grain_gpu_create) and the formats the
+    // staged upload needs, on a private D3D11 device of the default adapter (MF's device is not known
+    // before the open; on the console both are the one GPU). The device is released afterwards.
+    static HRESULT ProbeD3D11()
+    {
+        static const HRESULT result = []
+        {
+            const auto& api = BaleGrainExports::Get();
+            if (!api.gpuCreate) return E_NOINTERFACE;
+            winrt::com_ptr<ID3D11Device> device;
+            winrt::com_ptr<ID3D11DeviceContext> context;
+            D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+            auto hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                levels, ARRAYSIZE(levels), D3D11_SDK_VERSION, device.put(), nullptr, context.put());
+            if (FAILED(hr)) return hr;
+            // The staging ring; the self-test below covers what the grain pass itself needs.
+            constexpr UINT needed = D3D11_FORMAT_SUPPORT_TEXTURE2D | D3D11_FORMAT_SUPPORT_CPU_LOCKABLE;
+            for (auto format : { DXGI_FORMAT_NV12, DXGI_FORMAT_P010 })
+            {
+                UINT support = 0;
+                if (FAILED(device->CheckFormatSupport(format, &support)) || (support & needed) != needed) return E_NOTIMPL;
+            }
+            void* handle = nullptr;
+            hr = api.gpuCreate(device.get(), context.get(), &handle);
+            if (hr == S_OK && handle) api.gpuDestroy(handle);
+            else if (SUCCEEDED(hr)) hr = E_FAIL;
+            return hr;
+        }();
+        return result;
+    }
+
     bool Prepare(AVFrame* frame, AVPixelFormat output, int width, int height, BaleGrainParams& params)
     {
         // Runtime mode 0 leaves exported frames ungrained; dav1d cannot resume without reopening.
@@ -193,7 +246,7 @@ public:
         return true;
     }
 
-    // The zero-copy stream fails with this HRESULT (no CPU or ungrained fallback): log once.
+    // The zero-copy or staged stream fails with this HRESULT (no CPU or ungrained fallback): log once.
     void GpuFailed(HRESULT hr, bool creating)
     {
         mode = 0;

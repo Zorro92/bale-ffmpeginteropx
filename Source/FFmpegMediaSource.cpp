@@ -1251,8 +1251,14 @@ namespace winrt::FFmpegInteropX::implementation
                     config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), eightBitZeroCopy);
                 zeroCopyStream = zeroCopyRoute &&
                     UncompressedVideoSampleProvider::ZeroCopyEligible(avVideoCodecCtx->pix_fmt, outputFormat, eightBitZeroCopy);
-                filmGrainMode = BaleFilmGrain::SelectMode(baleFilmGrainMode, baleDav1dExportFilmGrain > 0,
-                    dav1d, hardware, avVideoCodecCtx->pix_fmt, outputFormat, zeroCopyStream, eightBitZeroCopy);
+                // Mode 3: GPU grain on the staged D3D11 upload, for streams that are not zero-copy; on
+                // the zero-copy route it means GPU grain there (2).
+                bool stagedGrainRoute = baleFilmGrainMode == 3 && baleDav1dExportFilmGrain == 0 && !zeroCopyRoute &&
+                    dav1d && !hardware && !config->IsFrameGrabber;
+                filmGrainMode = stagedGrainRoute
+                    ? BaleFilmGrain::SelectD3D11Mode(avVideoCodecCtx->pix_fmt, outputFormat)
+                    : BaleFilmGrain::SelectMode((std::min)(baleFilmGrainMode, 2), baleDav1dExportFilmGrain > 0,
+                        dav1d, hardware, avVideoCodecCtx->pix_fmt, outputFormat, zeroCopyStream, eightBitZeroCopy);
                 // Bale: refuse the stream at open (no provider, so the app replans to a server
                 // transcode) when zero-copy cannot take it or requested GPU grain is unavailable.
                 if (zeroCopyRoute)
@@ -2606,6 +2612,7 @@ namespace winrt::FFmpegInteropX::implementation
             uncompressed->ZeroCopyEightBit = eightBitZeroCopy && zeroCopyStream;
             uncompressed->FilmGrain.eightInP010 = uncompressed->ZeroCopyEightBit;
             uncompressed->FilmGrain.mode = filmGrainMode;
+            uncompressed->StagedGrain = filmGrainMode == 3 && !zeroCopyStream ? 1 : 0;
             videoSampleProvider = std::shared_ptr<MediaSampleProvider>(uncompressed);
         }
 
@@ -2713,7 +2720,7 @@ namespace winrt::FFmpegInteropX::implementation
         if (key == "bale_decode_ahead_frames") { target = &baleDecodeAheadFrames; minimum = 0; maximum = 64; }
         else if (key == "bale_dav1d_max_frame_delay") { target = &baleDav1dMaxFrameDelay; minimum = 0; maximum = 64; }
         else if (key == "bale_dav1d_export_film_grain") { target = &baleDav1dExportFilmGrain; minimum = 0; maximum = 1; }
-        else if (key == "bale_film_grain_mode") { target = &baleFilmGrainMode; minimum = 0; maximum = 2; }
+        else if (key == "bale_film_grain_mode") { target = &baleFilmGrainMode; minimum = 0; maximum = 3; }
         else if (key == "bale_d3d11_upload") { target = &baleD3d11Upload; minimum = 0; maximum = 6; }
         else if (key == "bale_tonemap") { target = &baleToneMap; minimum = 0; maximum = 2; }
         // Retired debug keys: still accepted (old ranges) so older apps that send them keep working,
@@ -2992,6 +2999,19 @@ namespace winrt::FFmpegInteropX::implementation
         return false;
     }
 
+    bool FFmpegMediaSource::HasStagedGrainStream()
+    {
+        for (auto& stream : videoStreams)
+        {
+            if (stream->Decoder() == DecoderEngine::FFmpegSoftwareDecoder)
+            {
+                auto uncompressed = std::dynamic_pointer_cast<UncompressedVideoSampleProvider>(stream);
+                if (uncompressed && uncompressed->StagedGrain > 0) return true;
+            }
+        }
+        return false;
+    }
+
     // Called with `mutex` held. Raises the current video stream's latched fatal failure once.
     // Returns true when that stream has failed; the caller then delivers no sample.
     bool FFmpegMediaSource::RaiseBaleFatal(MediaStreamSource const& sender)
@@ -3104,8 +3124,10 @@ namespace winrt::FFmpegInteropX::implementation
             }
 
             // Bale: zero-copy streams need their upload device and bale_zc handle before any decode,
-            // including when another stream opened a hardware context.
-            if (isFirstSeek && baleD3d11Upload > 0 && !config->IsFrameGrabber && HasZeroCopyStream())
+            // including when another stream opened a hardware context; so do staged grain streams
+            // (their grain handle), which need no bale_d3d11_upload.
+            if (isFirstSeek && !config->IsFrameGrabber &&
+                ((baleD3d11Upload > 0 && HasZeroCopyStream()) || HasStagedGrainStream()))
             {
                 InitializeUploadDevice(sender);
             }

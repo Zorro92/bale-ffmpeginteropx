@@ -435,6 +435,7 @@ namespace winrt::FFmpegInteropX::implementation
         bool baleVideoRefused = false;
         bool RaiseBaleFatal(MediaStreamSource const& sender);
         bool HasZeroCopyStream();
+        bool HasStagedGrainStream();
 
         // Bale: 1 = AV1 decodes on the GPU with rav1g (GpuDecoderSampleProvider); 0 = the FFmpeg paths.
         // Falls back to them at open when rav1g cannot take the stream.
