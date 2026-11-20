@@ -46,6 +46,22 @@ change so it *could* be offered later without a rewrite:
 - Native FFmpeg (and its configure flags) is built in Bale, not here. A change that needs a new
   native FFmpeg build (e.g. a hwaccel) needs a matching Bale native release first.
 
+## Design against the console's limits
+
+Owner rule (2026-11-20): check every design decision (where work runs, pool and buffer sizes,
+threads, CPU vs GPU, copies, bit depth) against the console's measured limits, and say in the
+commit or doc which limit it is sized for. The source of truth is Bale's `docs/gpu-tone-map.md`,
+"Measured limits" (Xbox Series X, Developer Mode, `hevcPlayback`). In short:
+
+- **Memory:** 3328 MiB per app, one pool for CPU and GPU; GPU-resident memory up to about 2.8 GB
+  (DXGI local budget 2857 MiB).
+- **Compute:** about 1.86 TFLOP/s of GPU and 4 shared CPU cores.
+- **Idle state:** playback runs about 10 s after the last input. There, CPU work is ~20–25% slower,
+  CPU RAM copies 3.6–4x slower and GPU copies ~2.4x slower, while GPU compute is unchanged.
+
+So prefer GPU compute for heavy per-frame work, touch a whole frame on the CPU at most once, and
+count every full-frame copy. Delegate briefs repeat this rule.
+
 ## Building and testing
 
 - Development is on Linux; the wrapper builds only on Windows in GitHub Actions. Pushes to `main`
