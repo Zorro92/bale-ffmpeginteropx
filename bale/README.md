@@ -434,6 +434,43 @@ Measured before this path existed (Series X, 1080p 10-bit AV1 with grain, Bale 0
 no drops): dav1d CPU grain 1.39–1.51 cores, grain off 1.23, D3D12 zero-copy GPU grain 0.95.
 Not console-tested yet.
 
+## GPU memory ledger
+
+Optional. The wrapper reports its GPU textures to `bale_gpu.dll` when the DLL exports both functions of
+ABI 1: `uint32_t bale_mem_abi_version(void)`, which must return 1, and
+`void bale_mem_account(uint32_t category, int64_t delta_bytes, int32_t delta_count)`, which must be
+thread-safe. Bale's `mem` view uses them to show GPU memory per component beside the Xbox graphics total.
+Without both exports, or with another version, nothing is reported and nothing else changes. The only log
+line is `Bale memory ledger: active` (INFO), once, when the ledger loads. The code is
+`Source/BaleMemoryLedger.h`.
+
+Categories (fixed numbers):
+
+- 16 `DecoderFrames`: the d3d11va decoder's texture array, one per decoder pool.
+- 17 `ToneMapOutput`: output textures of the tone-map or downscale stage.
+- 18 `Dav1dUpload`: the software AV1 upload pool and its STAGING ring.
+- 19 `Rav1gOutputImages`: rav1g's output images (its fixed pool).
+- 20 `Rav1gPrewarmResident`: the process-wide rav1g device; one count, no bytes, never subtracted.
+- 21 `OtherTextures`: copy textures of the plain d3d11va path, and output textures of the rav1g path without a stage.
+
+Size rule: width x height x bytes per pixel x array slices, with mips ignored (all of these have one). Bytes
+per pixel: NV12 1.5, P010 3, R8 1, R8G8 2, R16 2, R16G16B16A16 8, and 4 for every other format (BGRA8, RGBA8
+and R10G10B10A2 among them). Driver padding is not counted, so the figure is a little under the driver's
+allocation.
+
+Ticket: a texture is counted once. The first report attaches a ticket, an `IUnknown` under the private GUID
+`BaleMemoryTicketGuid` set with `SetPrivateDataInterface`. The ticket adds its bytes and count when it is made
+and subtracts them in its destructor. D3D11 destroys the ticket with the texture, on whichever thread drops the
+last reference, so the count falls when the memory goes. Reporting a texture that already has a ticket does
+nothing, so callers may report every reuse. If the attach fails, the ticket is released at once, which
+subtracts it again. Because `bale_mem_account` can run inside D3D11's release path, it must not call D3D11 or
+take a lock that a D3D11 caller can hold.
+
+Evidence/limits: not console-tested. The check for an existing ticket reads the private data's size. If the
+console does not report interface data that way, each report replaces the ticket instead: the totals stay
+balanced, but each report costs an allocation. To check on the console: the per-category figures return to idle
+after stop/start cycles and follow the textures in use.
+
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
 Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.

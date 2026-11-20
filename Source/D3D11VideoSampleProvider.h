@@ -3,6 +3,7 @@
 #include "UncompressedVideoSampleProvider.h"
 #include "TexturePool.h"
 #include "VideoFrameProcessor.h"
+#include "BaleMemoryLedger.h"
 #include <d3d10.h>
 #include "DirectXInteropHelper.h"
 #include "FFmpegReader.h"
@@ -87,6 +88,11 @@ public:
             av_log(nullptr, AV_LOG_INFO, "Bale video: d3d11 provider created; decoder surfaces=%d %dx%d processed=%d\n",
                 frames->initial_pool_size, frames->width, frames->height, frameProcessor ? 1 : 0);
         }
+        if (avFrame->format == AV_PIX_FMT_D3D11)
+        {
+            // The decoder's texture array; counted once, so every later frame of the pool is a no-op.
+            BaleMemTrackTexture(reinterpret_cast<ID3D11Texture2D*>(avFrame->data[0]), BaleMemCategory::DecoderFrames);
+        }
         if (frameProcessor) return CreateProcessedBufferFromFrame(surface, avFrame, framePts);
 
         HRESULT hr = S_OK;
@@ -116,6 +122,7 @@ public:
                     std::lock_guard lock(samplesMutex);
                     hr = texturePool->GetCopyTexture(decodedTexture, renderTexture);
                 }
+                if (SUCCEEDED(hr)) BaleMemTrackTexture(renderTexture.get(), BaleMemCategory::OtherTextures);
                 deviceContext->CopySubresourceRegion(renderTexture.get(), 0, 0, 0, 0, decodedTexture, (UINT)(unsigned long long)avFrame->data[1], NULL);
                 deviceContext->Flush();
 
@@ -600,6 +607,7 @@ private:
                 winrt::check_hresult(processedTexturePool->GetTexture(processedWidth, processedHeight, ProcessedOutputDxgiFormat(),
                     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, output));
             }
+            BaleMemTrackTexture(output.get(), BaleMemCategory::ToneMapOutput);
             if (!outputFormatLogged)
             {
                 outputFormatLogged = true;

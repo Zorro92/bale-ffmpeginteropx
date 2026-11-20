@@ -4,6 +4,7 @@
 #include <atomic>
 #include "TexturePool.h"
 #include "BaleFilmGrain.h"
+#include "BaleMemoryLedger.h"
 #include "DirectXInteropHelper.h"
 
 // Bale: bale_gpu.dll zero-copy ABI 1. dav1d decodes into GPU-visible buffers from bale_zc_alloc and
@@ -214,6 +215,7 @@ public:
                 av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 upload CreateTexture2D STAGING failed (hr=0x%08X).\n", static_cast<unsigned>(hr));
                 return hr;
             }
+            BaleMemTrackTexture(staging.get(), BaleMemCategory::Dav1dUpload);
         }
         nextStaging = (nextStaging + 1) % stagingTextures.size();
         target.context = context;
@@ -317,6 +319,7 @@ private:
                 std::lock_guard lock(samplesMutex);
                 winrt::check_hresult(texturePool.GetUploadTexture(outputDesc.Width, outputDesc.Height, outputDesc.Format, bindFlags, miscFlags, texture));
             }
+            BaleMemTrackTexture(texture.get(), BaleMemCategory::Dav1dUpload);
             operation = drawOperation;
             if (!draw(texture.get()))
             {

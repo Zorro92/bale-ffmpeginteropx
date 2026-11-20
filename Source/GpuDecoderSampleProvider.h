@@ -5,6 +5,7 @@
 #include "GpuVideoDecoder.h"
 #include "GpuDecoderImagePool.h"
 #include "TexturePool.h"
+#include "BaleMemoryLedger.h"
 #include "VideoFrameProcessor.h"
 #include "VideoColorAttributes.h"
 #include "DirectXInteropHelper.h"
@@ -1131,6 +1132,7 @@ private:
                     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, output));
                 playerTexturesCreated.store(processedTexturePool->CreatedCount());
             }
+            BaleMemTrackTexture(output.get(), frameProcessor ? BaleMemCategory::ToneMapOutput : BaleMemCategory::OtherTextures);
 
             uint64_t releaseValue = 0;
             {

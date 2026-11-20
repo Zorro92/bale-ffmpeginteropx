@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <mutex>
 #include "GpuVideoDecoder.h"
+#include "BaleMemoryLedger.h"
 
 extern "C"
 {
@@ -164,6 +165,8 @@ struct BaleRav1gDevice
             }
             result.adapter = result.d3d12->GetAdapterLuid();
             result.status = S_OK;
+            // The process-wide device is never destroyed, so it is counted once and never subtracted.
+            BaleMemAccount(BaleMemCategory::Rav1gPrewarmResident, 0, 1);
             return result;
         }();
         return shared;

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <functional>
+#include "BaleMemoryLedger.h"
 
 // A fixed number of output textures for a GPU decoder, each shared with the decoder's device. The pool
 // never grows: when every image is in use, Acquire waits until one comes back (a decoder that waits
@@ -280,6 +281,7 @@ private:
             desc.BindFlags &= ~D3D11_BIND_UNORDERED_ACCESS;
             hr = device->CreateTexture2D(&desc, nullptr, image->texture.put());
         }
+        if (SUCCEEDED(hr)) BaleMemTrackTexture(image->texture.get(), BaleMemCategory::Rav1gOutputImages);
         if (SUCCEEDED(hr)) hr = openView(image->texture.get(), image->decoderView);
         if (FAILED(hr))
         {
