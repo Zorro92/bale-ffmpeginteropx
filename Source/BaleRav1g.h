@@ -447,6 +447,9 @@ public:
         Rav1gConfiguration configuration{};
         api.decoderConfiguration(decoder, &configuration);
         deviceBytes = configuration.device_size;
+        // A decoder with no device bytes is not counted: Destroy subtracts only when ledgerBytes is set.
+        ledgerBytes = deviceBytes;
+        if (ledgerBytes) BaleMemAccount(BaleMemCategory::Rav1gDecoderBuffers, static_cast<int64_t>(ledgerBytes), 1);
         av_log(nullptr, AV_LOG_INFO, "Bale rav1g: active %ux%u bits=%u slots=%u parse=%u threads=%u device=%.1f MiB\n",
             info.width, info.height, settings.bit_depth, configuration.frame_slots, configuration.frames_in_parse,
             configuration.threads, configuration.device_size / (1024.0 * 1024.0));
@@ -490,6 +493,11 @@ public:
             // Waits for the frames in flight and hands them over (Frame/Unused) first.
             BaleRav1gExports::Get().decoderDestroy(decoder);
             decoder = nullptr;
+            if (ledgerBytes)
+            {
+                BaleMemAccount(BaleMemCategory::Rav1gDecoderBuffers, -static_cast<int64_t>(ledgerBytes), -1);
+                ledgerBytes = 0;
+            }
         }
         fence11 = nullptr;
     }
@@ -664,6 +672,8 @@ private:
 private:
     std::vector<uint8_t> configObus;
     uint64_t deviceBytes = 0;
+    // Bytes reported to the memory ledger for this decoder, 0 when none.
+    uint64_t ledgerBytes = 0;
     Rav1gDecoder* decoder = nullptr;
     GpuDecoderHost* host = nullptr;
     winrt::com_ptr<ID3D11Device5> device11;

@@ -436,10 +436,11 @@ Not console-tested yet.
 
 ## GPU memory ledger
 
-Optional. The wrapper reports its GPU textures to `bale_gpu.dll` when the DLL exports both functions of
+Optional. The wrapper reports its GPU memory to `bale_gpu.dll` when the DLL exports both functions of
 ABI 1: `uint32_t bale_mem_abi_version(void)`, which must return 1, and
 `void bale_mem_account(uint32_t category, int64_t delta_bytes, int32_t delta_count)`, which must be
-thread-safe. Bale's `mem` view uses them to show GPU memory per component beside the Xbox graphics total.
+thread-safe. As Bale confirmed, bale_gpu's account path is atomics only: no locks and no D3D11 calls.
+Bale's `mem` view uses them to show GPU memory per component beside the Xbox graphics total.
 Without both exports, or with another version, nothing is reported and nothing else changes. The only log
 line is `Bale memory ledger: active` (INFO), once, when the ledger loads. The code is
 `Source/BaleMemoryLedger.h`.
@@ -450,13 +451,17 @@ Categories (fixed numbers):
 - 17 `ToneMapOutput`: output textures of the tone-map or downscale stage.
 - 18 `Dav1dUpload`: the software AV1 upload pool and its STAGING ring.
 - 19 `Rav1gOutputImages`: rav1g's output images (its fixed pool).
-- 20 `Rav1gPrewarmResident`: the process-wide rav1g device; one count, no bytes, never subtracted.
+- 20 `Rav1gPrewarmResident`: the process-wide rav1g device's presence; one count, no bytes, never subtracted.
+  The decoders' buffers are not counted here (category 22).
 - 21 `OtherTextures`: copy textures of the plain d3d11va path, and output textures of the rav1g path without a stage.
+- 22 `Rav1gDecoderBuffers`: the rav1g decoder's own device buffers, `device_size` from its configuration; one
+  count per decoder (none when `device_size` is 0). Added when the decoder is created and subtracted when it
+  is destroyed, including by the destructor, so a recreate after a reconfigure counts the new size.
 
 Size rule: width x height x bytes per pixel x array slices, with mips ignored (all of these have one). Bytes
 per pixel: NV12 1.5, P010 3, R8 1, R8G8 2, R16 2, R16G16B16A16 8, and 4 for every other format (BGRA8, RGBA8
 and R10G10B10A2 among them). Driver padding is not counted, so the figure is a little under the driver's
-allocation.
+allocation. Category 22 is not a texture: its bytes are rav1g's `device_size`, not this rule.
 
 Ticket: a texture is counted once. The first report attaches a ticket, an `IUnknown` under the private GUID
 `BaleMemoryTicketGuid` set with `SetPrivateDataInterface`. The ticket adds its bytes and count when it is made
@@ -469,7 +474,7 @@ take a lock that a D3D11 caller can hold.
 Evidence/limits: not console-tested. The check for an existing ticket reads the private data's size. If the
 console does not report interface data that way, each report replaces the ticket instead: the totals stay
 balanced, but each report costs an allocation. To check on the console: the per-category figures return to idle
-after stop/start cycles and follow the textures in use.
+after stop/start cycles and follow the textures in use. Category 22 falls back to zero when each rav1g stream stops.
 
 ## Console evidence (Xbox Series X, app mode, SDR display)
 

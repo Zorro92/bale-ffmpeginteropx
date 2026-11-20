@@ -60,6 +60,7 @@ namespace BaleMemCategory
     inline constexpr uint32_t Rav1gOutputImages = 19;    // rav1g decoder output images
     inline constexpr uint32_t Rav1gPrewarmResident = 20; // the process-wide rav1g device (a count, no bytes)
     inline constexpr uint32_t OtherTextures = 21;        // copy and output textures of the other paths
+    inline constexpr uint32_t Rav1gDecoderBuffers = 22;  // rav1g decoder's own device buffers (device_size), count = decoders
 }
 
 // The logical size of a texture: width x height x bytes per pixel x array slices. Driver padding is not
