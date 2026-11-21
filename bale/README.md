@@ -476,6 +476,25 @@ console does not report interface data that way, each report replaces the ticket
 balanced, but each report costs an allocation. To check on the console: the per-category figures return to idle
 after stop/start cycles and follow the textures in use. Category 22 falls back to zero when each rav1g stream stops.
 
+## Shader-readable decoder pools (experiment)
+
+`bale_d3d11va_shader_resource` (0/1, default 0) asks whether the stage could read d3d11va decoder
+frames in place instead of copying them. FFmpeg decodes into one texture array per pool, and
+bale_gpu's tone map copies each frame into a scratch texture first, because a shader resource view
+of a decoder-bound array is taken to be invalid in D3D11. That copy is one full-frame GPU copy per
+frame on the hardware-decode path (about 24 MB at 4K P010, ~0.6 ms at the idle-state GPU copy rate
+of ~40 GB/s) plus a ~24 MiB scratch texture. Sized against: the idle state's ~2.4x slower GPU
+copies; the GPU's shader cores are otherwise lightly loaded on this path (fixed-function decode).
+
+With `1`, when the hardware device is set up (first Starting, and after a device change) the fork
+creates a small two-slice NV12 and P010 array with `DECODER | SHADER_RESOURCE` and the stage's
+plane views of slice 1, and logs `Bale d3d11va shader resource probe: NV12 hr=0x.. P010 hr=0x..;
+decoder pools get SHADER_RESOURCE|unchanged`. Only if both formats pass does it add
+`SHADER_RESOURCE` to the d3d11va device's bind flags, which FFmpeg 8.1 ORs into every decoder pool
+made from that device (FFmpeg 9.1 sets the flag on its own, for driver compatibility). bale_gpu
+still copies until it accepts decoder-bound sources; the probe answers whether it could, and the
+decoder must keep working with the flag. Not console-tested yet.
+
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
 Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.

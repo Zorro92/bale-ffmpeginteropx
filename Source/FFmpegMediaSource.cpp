@@ -19,6 +19,7 @@
 #include "BaleToneMap.h"
 #include "GpuDecoderSampleProvider.h"
 #include "BaleRav1g.h"
+#include "BaleD3D11vaShaderResource.h"
 // Bale: Media Foundation error codes for streams zero-copy refuses at open.
 #include <mferror.h>
 #include <atomic>
@@ -2744,6 +2745,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_subtitle_stream") { target = &baleSubtitleStream; minimum = 0; maximum = 65535; }
         else if (key == "bale_subtitle_sink") { target = &baleSubtitleSink; minimum = 1; maximum = 999999999; }
         else if (key == "bale_av1_decoder") { target = &baleAv1Decoder; minimum = 0; maximum = 1; }
+        else if (key == "bale_d3d11va_shader_resource") { target = &baleD3d11vaShaderResource; minimum = 0; maximum = 1; }
         else if (key == "bale_av1_fallback_max_height") { target = &baleAv1FallbackMaxHeight; minimum = 0; maximum = 8192; }
         else
         {
@@ -3096,6 +3098,8 @@ namespace winrt::FFmpegInteropX::implementation
                 HRESULT hr = DirectXInteropHelper::GetDeviceManagerFromStreamSource(sender, deviceManager);
                 if (SUCCEEDED(hr))
                     hr = D3D11VideoSampleProvider::InitializeHardwareDeviceContext(sender, avHardwareContext, device, deviceContext, deviceManager, &deviceHandle);
+                // Bale experiment: shader-readable decoder pools, before the first decode.
+                if (SUCCEEDED(hr) && baleD3d11vaShaderResource > 0) BaleD3D11vaShaderResource::Probe(device.get(), avHardwareContext);
 
                 if (SUCCEEDED(hr))
                 {
@@ -3331,6 +3335,9 @@ namespace winrt::FFmpegInteropX::implementation
             {
                 hr = D3D11VideoSampleProvider::InitializeHardwareDeviceContext(mss, avHardwareContext, device, deviceContext, deviceManager, &deviceHandle);
             }
+
+            // Bale experiment: the new device gets the same probe.
+            if (SUCCEEDED(hr) && baleD3d11vaShaderResource > 0) BaleD3D11vaShaderResource::Probe(device.get(), avHardwareContext);
 
             if (SUCCEEDED(hr))
             {
