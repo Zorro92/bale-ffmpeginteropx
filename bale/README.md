@@ -493,7 +493,15 @@ decoder pools get SHADER_RESOURCE|unchanged`. Only if both formats pass does it 
 `SHADER_RESOURCE` to the d3d11va device's bind flags, which FFmpeg 8.1 ORs into every decoder pool
 made from that device (FFmpeg 9.1 sets the flag on its own, for driver compatibility). bale_gpu
 still copies until it accepts decoder-bound sources; the probe answers whether it could, and the
-decoder must keep working with the flag. Not console-tested yet.
+decoder must keep working with the flag.
+
+Console (Series X, bale.63, Bale 0.1.711, 2026-11-21): the probe passed for both formats
+(`NV12 hr=0x00000000 P010 hr=0x00000000; decoder pools get SHADER_RESOURCE`), so D3D11 on the Xbox
+does create shader views of slices of decoder-bound arrays. A 4K HDR HEVC film on the d3d11va +
+tone-map route (dithered NV12, 3840x2160 to 1920x1080) then played 2910 frames at 24.02 fps with
+none dropped or corrupted, and 985 more at 23.99 fps after a seek; no errors, no device removal,
+memory unchanged (app 1189 MiB; decoder array 20 slices, 478 MiB). Next: bale_gpu reads such
+sources directly instead of copying.
 
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
