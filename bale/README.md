@@ -509,6 +509,14 @@ Since bale.64 the flag is added only when the loaded bale_gpu exports
 and falls back to its copy once if D3D11 refuses the view. Without the bit the key logs `probe:
 skipped (bale_gpu reads decoder arrays through a copy)` and changes nothing.
 
+Console A/B (Bale 0.1.712, bale_gpu d68c966 + bale.63, 4K HDR HEVC tone map, two pairs, 45 s in,
+2026-11-21): direct reads removed the 23.9 MiB scratch texture, but app memory rose from
+1185/1191 to 1255/1247 MiB (memory nobody reports up by ~90 MiB); 24 fps, no drops, seeks fine
+either way. The bind flag alone costs nothing (bale.63 with the old, copying bale_gpu: 1189 MiB).
+Likely the driver keeps shader-readable copies of decoder surfaces it stores in a decoder-only
+layout (~3-4 slices' worth), so the copy may only have moved into the driver. Bale keeps it off by
+default until per-stage GPU timing shows a saving.
+
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
 Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.
