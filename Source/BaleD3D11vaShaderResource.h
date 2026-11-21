@@ -1,6 +1,7 @@
 #pragma once
 #include "pch.h"
 #include <d3d11.h>
+#include "BaleToneMap.h"
 
 extern "C"
 {
@@ -15,8 +16,10 @@ extern "C"
 // a scratch texture first (one full-frame GPU copy per frame; GPU copies are ~2.4x slower while the
 // console is idle). This probe asks the device directly: a small two-slice NV12 and P010 array with
 // DECODER | SHADER_RESOURCE, and plane views of slice 1 (R8/R8G8, R16/R16G16, as the stage makes).
-// Only when every step succeeds does it add SHADER_RESOURCE to the device's bind flags, which FFmpeg
-// applies to every decoder pool made from that device afterwards. Results are logged either way.
+// Only when every step succeeds, and the loaded bale_gpu reads such arrays in place
+// (BALE_TONEMAP_INPUT_DECODER_SRV), does it add SHADER_RESOURCE to the device's bind flags, which
+// FFmpeg applies to every decoder pool made from that device afterwards. Results are logged either way.
+// Console (bale.63): both formats pass on the Xbox, and decoding is unaffected by the flag.
 class BaleD3D11vaShaderResource
 {
 public:
@@ -26,6 +29,12 @@ public:
         try
         {
             if (!device || !hardwareContext) return;
+            // Without a stage that reads decoder arrays in place the flag would buy nothing.
+            if (!(BaleToneMap::Capabilities() & BALE_TONEMAP_INPUT_DECODER_SRV))
+            {
+                av_log(nullptr, AV_LOG_INFO, "Bale d3d11va shader resource probe: skipped (bale_gpu reads decoder arrays through a copy)\n");
+                return;
+            }
             HRESULT nv12 = ProbeFormat(device, DXGI_FORMAT_NV12, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UNORM);
             HRESULT p010 = ProbeFormat(device, DXGI_FORMAT_P010, DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16G16_UNORM);
             bool readable = SUCCEEDED(nv12) && SUCCEEDED(p010);

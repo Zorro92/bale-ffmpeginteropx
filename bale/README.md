@@ -503,6 +503,12 @@ none dropped or corrupted, and 985 more at 23.99 fps after a seek; no errors, no
 memory unchanged (app 1189 MiB; decoder array 20 slices, 478 MiB). Next: bale_gpu reads such
 sources directly instead of copying.
 
+Since bale.64 the flag is added only when the loaded bale_gpu exports
+`BALE_TONEMAP_INPUT_DECODER_SRV` (64; Bale d68c966, `Source/bale_tonemap.h` copied from it): its
+`bale_tonemap_apply` then reads a decoder-array slice in place when the input has `SHADER_RESOURCE`,
+and falls back to its copy once if D3D11 refuses the view. Without the bit the key logs `probe:
+skipped (bale_gpu reads decoder arrays through a copy)` and changes nothing.
+
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
 Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.
