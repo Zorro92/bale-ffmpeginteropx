@@ -155,8 +155,8 @@ the frame's command list; records with `show_frame`, `showable_frame` and `is_se
 the process-wide `rav1g_set_perf_callback` while at least one stream with the key is open (with
 several, their frames mix) and removes it when the last one closes; a library without that export
 logs `Bale rav1g: perf statistics unavailable` once and the stream plays without it. The record
-layout (`Source/av1_perf.h`, rav1g v0.4.0-alpha.2, 616 bytes; 592 in alpha.1, bale.57 and
-before) is not covered by rav1g's interface version: copy it again from the rav1g release Bale
+layout (`Source/av1_perf.h`, rav1g v0.6.0-alpha.1, 624 bytes since bale.65; 616 for v0.4.0-alpha.2
+to v0.5.x, bale.58–64; 592 in alpha.1, bale.57 and before) is not covered by rav1g's interface version: copy it again from the rav1g release Bale
 ships, and set the key only with a wrapper whose layout matches the shipped `rav1g.dll` (a mismatch
 reads the wrong fields). Diagnostic only; production never sets
 it.
@@ -287,8 +287,8 @@ Frame grabbers never use it. With `"1"`, `bale_zero_copy`, `bale_d3d11_upload` a
 Code: generic `GpuVideoDecoder.h` (decoder interface), `GpuDecoderImagePool.h` (output
 images), `GpuDecoderSampleProvider.h` (the provider); all rav1g glue in `BaleRav1g.h`.
 `Source/rav1g.h` is rav1g's `crates/rav1g/include/rav1g.h`, copied verbatim (rav1g
-v0.5.0-alpha.1, `ba4a9a9`, interface version 1; copy it again, unchanged, when rav1g changes it).
-`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.4.0-alpha.2 (unchanged in v0.5.0-alpha.1), copied verbatim
+v0.6.0-alpha.1, `88c05f0`, interface version 1; copy it again, unchanged, when rav1g changes it).
+`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.6.0-alpha.1, copied verbatim
 (only for `bale_rav1g_perf`). No new
 native FFmpeg build is needed; Bale ships `rav1g.dll` in its package.
 

@@ -192,7 +192,7 @@ typedef struct av1_stage_dump av1_stage_dump;
 #define RAV1G_INTER_FAST_ON 1
 
 /*
- With `RAV1G_INTER_FAST_ON`: the blocks with one reference are listed and predicted by the original
+ With `RAV1G_INTER_FAST_ON`: the blocks with one reference are listed and predicted by the size-list
  shader.
  */
 #define RAV1G_INTER_FAST_SINGLE_ORIGINAL 2
@@ -203,7 +203,7 @@ typedef struct av1_stage_dump av1_stage_dump;
 #define RAV1G_INTER_FAST_COMPOUND_ORIGINAL 4
 
 /*
- The lists of the fast inter path with the original shaders on all of them.
+ The lists of the fast inter path with the size-list shaders on all of them.
  */
 #define RAV1G_INTER_FAST_LISTS_ONLY 7
 
@@ -757,7 +757,7 @@ typedef struct Rav1gSettings {
   uint32_t bit_depth;
   /*
    The threads that parse: the tiles of a frame and, with more than one frame in parse, the frames;
-   at most 8. 0 is the default, by the frame size the decoder is created for: 1 up to 2560x1440, 2
+   at most 8. 0 is the default, by the frame size the decoder is created for: 1 up to 2560x1440, 4
    above.
    */
   uint32_t threads;
@@ -809,9 +809,9 @@ typedef struct Rav1gSettings {
   uint32_t parser_options;
   /*
    Frames whose parse may run at the same time: 1 to
-   `RAV1G_FRAMES_IN_PARSE_MAX`, and never more than the threads. 0 is the default: 2 for a decoder
-   that is created for frames above 2560x1440 with at least 2 threads and 3 or more pipeline slots,
-   else 1.
+   `RAV1G_FRAMES_IN_PARSE_MAX`, and never more than the threads. 0 is the default: as many as the
+   threads, at most `RAV1G_FRAMES_IN_PARSE_MAX` and at most the pipeline slots, for a decoder that is
+   created for frames above 2560x1440 with at least 2 threads and 3 or more pipeline slots, else 1.
 
    With 1, `rav1g_decoder_decode` returns when the frames of its data are parsed, recorded and
    submitted. With more it returns when their parse has begun; the frames are parsed on the
@@ -1220,7 +1220,7 @@ void rav1g_set_cdef_v2(bool enable);
 void rav1g_set_intra_v2(bool enable);
 
 /*
- The optimised build of the original intra shader.
+ The optimized intra main shaders (true, default) or the legacy kernels (false).
  */
 void rav1g_set_intra_opt(bool enable);
 
@@ -1257,12 +1257,12 @@ void rav1g_set_intra_edge_fix(bool enable);
 
 /*
  Experiment (a library whose `rav1g_shader_variant` is "shader-pick"): which bytecode the pipeline
- state of a shader is made of, in the devices created after the call. The build has three sets:
- `dxc`, the default build's DXC bytecode, also used without a pick; `od`, DXC with `-Od`;
- `fxc`, FXC's `cs_5_0` bytecode for compiler diagnostics.
- `pick` is "fxc=<list>,od=<list>,dxc=<list>": a list is shader names (the names of
+ state of a shader is made of, in the devices created after the call. The build has two sets.
+ `dxc` is the default build's DXC bytecode, also used without a pick.
+ `od` uses DXC with `-Od` where supported.
+ In a `pick` of the form "od=<list>,dxc=<list>", a list is shader names (the names of
  the `.hlsl` files) separated by commas, `all`, or names with `*` for any characters; a later part
- overrides an earlier one ("fxc=all,dxc=loopfilter_vert_hbd"). Null or an empty text is no pick. The
+ overrides an earlier one ("od=all,dxc=loopfilter_vert_hbd"). Null or an empty text is no pick. The
  device logs one "SHADERSET" line per bytecode set and a "SHADERPICK" line with the shaders of each.
  `RAV1G_STATUS_INVALID_PARAM` (and the reason in `rav1g_last_error`) for a text that is not a pick, a
  name no shader has, and any pick in a library that is not that build; the pick then stays what it was.
