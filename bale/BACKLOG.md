@@ -5,7 +5,7 @@ item when work is proposed, move it when its state changes, and drop "Done" entr
 older than a few releases (the commits and `README.md` keep the details). Every design item is sized
 against the console limits in `AGENTS.md` ("Design against the console's limits").
 
-Last updated: 2026-11-22 (wrapper 2.1.0-bale.66).
+Last updated: 2026-11-22 (wrapper 2.1.0-bale.67).
 
 ## Open: fork work
 
@@ -19,7 +19,7 @@ Last updated: 2026-11-22 (wrapper 2.1.0-bale.66).
 
 | Item | Waiting for |
 |---|---|
-| rav1g 4K60 AV1 at ~45 fps (stalls ~300 ms every ~1.2 s, CPU half idle) | Bale: rerun the 4K60 clips with bale.66 and `bale_rav1g_perf=1`; then decide whether the stall is output images held (wait output, cap 21 at 60 fps), the feed (read/gap), or inside rav1g. |
+| rav1g 4K60 AV1 at ~45 fps (stalls ~300 ms every ~1.2 s, CPU half idle) | bale.66 showed rav1g waiting 13–19 ms per frame in get_image for a just-released image's D3D11 readers (`pool blocked=0`). bale.67 picks images whose readers are done. Bale: rerun the 4K60 clips (wait output and `image release wait` should drop, fps rise). |
 | Direct reads of decoder frames by the tone map (`bale_d3d11va_shader_resource`, bale.63/64; bale_gpu bit 64) | Bale: per-stage GPU timing (Bale `docs/resource-budget.md`). Off by default: the direct read removed the 23.9 MiB scratch, but app memory rose ~90 MiB unreported. Parked tests: does the extra stay flat or grow; read one fixed slice; GPU time on vs off. |
 | dav1d D3D11 GPU grain (`bale_film_grain_mode=3`, bale.60) | Owner: visual check on the TV. Console: works for NV12 and P010, 1.11 vs 1.51 cores (1080p 10-bit, Series X). |
 | rav1g untested paths | Console runs: HDR passthrough (needs an HDR display), 8-bit NV12 direct output (shared UAV NV12 not yet confirmed on the console), film-grain films. |
@@ -42,6 +42,7 @@ Last updated: 2026-11-22 (wrapper 2.1.0-bale.66).
 
 | Release | What |
 |---|---|
+| bale.67 | rav1g image pool takes an image whose D3D11 readers are done (or creates one) instead of the first free one; logs `image release wait` |
 | bale.66 | rav1g delivery line: decode-thread waits (output, slot, fb, image), entropy wall, packet read and decode-call gap, for the 4K60 stalls |
 | bale.65 | rav1g headers from v0.6.0-alpha.1 (perf record 624 bytes) |
 | bale.64 | Shader-readable decoder pools only when bale_gpu reads them in place (bit 64) |

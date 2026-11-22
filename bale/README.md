@@ -144,6 +144,16 @@ for a free image in the window. The decode call is timed on the feeder thread. S
 counted). A long gap with a short read means the feeder waited for in-flight units to drain,
 while a long read means the input was slow.
 
+Since bale.67 the line also has `image release wait n=N avg=.. max=.. ms`: how often, and how long,
+`get_image` waited on the CPU for an image's D3D11 readers (the stage or the player copy) to finish.
+On bale.66 rav1g spent 13–19 ms per frame in its output callback on 4K60 AV1 10-bit
+(`wait output`, 40/60/100 Mbps; Series X, Bale 0ba928d) with `pool blocked=0`: there was always a
+free image, but the pool took the first free one, typically the image the stage had just been given,
+and waited for its release fence. Delivery stayed at 44.9–46.4 fps, and more in-flight units
+(6) or player textures (32) did not help. The pool now takes a free image whose readers are done,
+else creates one while it has room (up to 10, 23.7 MiB each at 4K 10-bit: within the 3328 MiB app
+limit), and only then waits, for the image released first.
+
 `bale_gpu_decode_inflight` (1–8, default 4) sets how many temporal units the feeder keeps in
 flight; it stays below the stream's output images (8 up to bale.56, where 8 acted as 7).
 

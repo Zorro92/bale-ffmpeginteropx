@@ -720,6 +720,9 @@ private:
         pool->Statistics(created, peak, blocked);
         auto blockedDelta = blocked - windowBlocked;
         windowBlocked = blocked;
+        uint32_t releaseWaits = 0;
+        double releaseWaitSumMs = 0, releaseWaitMaxMs = 0;
+        pool->TakeReleaseWaits(releaseWaits, releaseWaitSumMs, releaseWaitMaxMs);
         if (stats.samples == 0) return;
         std::string decoderText;
         try
@@ -733,7 +736,8 @@ private:
         auto elapsedS = std::chrono::duration<double>(std::chrono::steady_clock::now() - stats.windowStart).count();
         av_log(nullptr, AV_LOG_INFO,
             "%s: delivery samples=%u rate=%.2f/s latency avg=%.1f max=%.1f ms decode call avg=%.1f max=%.1f ms read avg=%.1f max=%.1f ms gap avg=%.1f max=%.1f ms pts step min=%.1f max=%.1f ms backwards=%u gaps=%u queue max=%u"
-            " inflight avg=%.1f max=%u target=%u wait avg=%.1f max=%.1f ms output avg=%.1f max=%.1f ms pool blocked=%u%s\n",
+            " inflight avg=%.1f max=%u target=%u wait avg=%.1f max=%.1f ms output avg=%.1f max=%.1f ms pool blocked=%u"
+            " image release wait n=%u avg=%.1f max=%.1f ms%s\n",
             logName, stats.samples, elapsedS > 0 ? stats.samples / elapsedS : 0.0, stats.latencySumMs / stats.samples, stats.latencyMaxMs,
             decode.calls ? decode.sumMs / decode.calls : 0.0, decode.maxMs,
             decode.reads ? decode.readSumMs / decode.reads : 0.0, decode.readMaxMs,
@@ -742,7 +746,7 @@ private:
             stats.backwards, stats.gaps, static_cast<unsigned>(stats.queueMax),
             static_cast<double>(stats.inFlightSum) / stats.samples, stats.inFlightMax, target,
             stats.waitSumMs / stats.samples, stats.waitMaxMs, stats.outputSumMs / stats.samples, stats.outputMaxMs,
-            blockedDelta, decoderText.c_str());
+            blockedDelta, releaseWaits, releaseWaits ? releaseWaitSumMs / releaseWaits : 0.0, releaseWaitMaxMs, decoderText.c_str());
         LogMemory("delivery");
         auto lastPts = stats.lastPts;
         stats = DeliveryStats{};

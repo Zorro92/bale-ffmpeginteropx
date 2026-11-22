@@ -2,6 +2,7 @@
 #include "pch.h"
 #include <d3d11_4.h>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include "BaleMemoryLedger.h"
@@ -18,6 +19,10 @@
 // shutdown fails every Acquire. A released image may
 // still be read by D3D11 work already submitted: the releaser signals the pool's D3D11 fence and
 // Acquire waits on the CPU until the fence has passed that value before the decoder writes again.
+// To keep that wait off the decoder's path, Acquire takes a free image whose D3D11 work is already
+// done, else creates one while the pool has room, and only then waits for the free image released
+// first (lowest fence value). Taking the first free image instead made rav1g wait ~15-19 ms per 4K60
+// frame for the stage that had just read it, holding delivery near 45 fps (bale.66, Series X).
 class GpuDecoderImagePool
 {
 public:
@@ -91,13 +96,20 @@ public:
                     return E_ABORT;
                 }
                 Image* stale = nullptr;
+                Image* pending = nullptr; // free, but its D3D11 readers may still run
+                uint64_t completed = releaseFence ? releaseFence->GetCompletedValue() : UINT64_MAX;
                 for (auto& entry : images)
                 {
                     if (entry->inUse) continue;
                     if (Matches(*entry, width, height, format))
                     {
-                        image = entry.get();
-                        break;
+                        if (!entry->releaseValue || entry->releaseValue <= completed)
+                        {
+                            image = entry.get();
+                            break;
+                        }
+                        if (!pending || entry->releaseValue < pending->releaseValue) pending = entry.get();
+                        continue;
                     }
                     stale = entry.get();
                 }
@@ -111,6 +123,12 @@ public:
                 {
                     auto hr = CreateImage(width, height, format, image);
                     if (FAILED(hr)) return hr;
+                    break;
+                }
+                if (pending)
+                {
+                    // Full pool: the image whose readers were submitted first finishes first.
+                    image = pending;
                     break;
                 }
                 if (cancelRequested)
@@ -131,7 +149,16 @@ public:
             if (inUse > peakInUse) peakInUse = inUse;
         }
 
+        auto waitStart = std::chrono::steady_clock::now();
         auto hr = WaitForRelease(*image);
+        auto waitMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - waitStart).count();
+        if (waitMs >= 0.05)
+        {
+            std::lock_guard lock(mutex);
+            releaseWaits++;
+            releaseWaitSumMs += waitMs;
+            releaseWaitMaxMs = (std::max)(releaseWaitMaxMs, waitMs);
+        }
         if (FAILED(hr))
         {
             Release(image, 0);
@@ -218,6 +245,18 @@ public:
         count = static_cast<uint32_t>(images.size());
         bytes = 0;
         for (auto& image : images) bytes += ImageBytes(image->width, image->height, image->format);
+    }
+
+    // Acquires that waited on the CPU for an image's D3D11 readers, since the last call.
+    void TakeReleaseWaits(uint32_t& waits, double& sumMs, double& maxMs)
+    {
+        std::lock_guard lock(mutex);
+        waits = releaseWaits;
+        sumMs = releaseWaitSumMs;
+        maxMs = releaseWaitMaxMs;
+        releaseWaits = 0;
+        releaseWaitSumMs = 0;
+        releaseWaitMaxMs = 0;
     }
 
     void Statistics(uint32_t& created, uint32_t& peak, uint32_t& blocked)
@@ -337,5 +376,8 @@ private:
     uint32_t peakInUse = 0;
     uint32_t createdCount = 0;
     uint32_t blockedCount = 0;
+    uint32_t releaseWaits = 0;
+    double releaseWaitSumMs = 0;
+    double releaseWaitMaxMs = 0;
     uint32_t cancelHits = 0;
 };
