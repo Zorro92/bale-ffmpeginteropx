@@ -286,6 +286,7 @@ public:
         FeederPause pause(this);
         {
             std::lock_guard lock(framesMutex);
+            lastDecodeEnd = {};
             generation++;
             feedEnded = false;
             feedCancelled = false;
@@ -636,9 +637,19 @@ private:
         uint32_t calls = 0;
         double sumMs = 0;
         double maxMs = 0;
+        // Feeder thread, between the end of one decode call and the start of the next: the packet read
+        // (demux, on the same thread), then any wait for the units in flight to drop below the target.
+        uint32_t reads = 0;
+        double readSumMs = 0;
+        double readMaxMs = 0;
+        uint32_t gaps = 0;
+        double gapSumMs = 0;
+        double gapMaxMs = 0;
     };
     DeliveryStats stats;
     DecodeCallStats decodeStats;
+    // End of the last decode call (framesMutex); cleared by Flush so a seek's pause isn't a gap.
+    std::chrono::steady_clock::time_point lastDecodeEnd{};
     uint32_t windowBlocked = 0; // The pool's blocked count at the start of the window.
     uint32_t listedSinceStart = 0;
     std::string listedPts;
@@ -721,10 +732,12 @@ private:
         }
         auto elapsedS = std::chrono::duration<double>(std::chrono::steady_clock::now() - stats.windowStart).count();
         av_log(nullptr, AV_LOG_INFO,
-            "%s: delivery samples=%u rate=%.2f/s latency avg=%.1f max=%.1f ms decode call avg=%.1f max=%.1f ms pts step min=%.1f max=%.1f ms backwards=%u gaps=%u queue max=%u"
+            "%s: delivery samples=%u rate=%.2f/s latency avg=%.1f max=%.1f ms decode call avg=%.1f max=%.1f ms read avg=%.1f max=%.1f ms gap avg=%.1f max=%.1f ms pts step min=%.1f max=%.1f ms backwards=%u gaps=%u queue max=%u"
             " inflight avg=%.1f max=%u target=%u wait avg=%.1f max=%.1f ms output avg=%.1f max=%.1f ms pool blocked=%u%s\n",
             logName, stats.samples, elapsedS > 0 ? stats.samples / elapsedS : 0.0, stats.latencySumMs / stats.samples, stats.latencyMaxMs,
             decode.calls ? decode.sumMs / decode.calls : 0.0, decode.maxMs,
+            decode.reads ? decode.readSumMs / decode.reads : 0.0, decode.readMaxMs,
+            decode.gaps ? decode.gapSumMs / decode.gaps : 0.0, decode.gapMaxMs,
             stats.deltaMin == INT64_MAX ? 0.0 : stats.deltaMin / 10000.0, stats.deltaMax == INT64_MIN ? 0.0 : stats.deltaMax / 10000.0,
             stats.backwards, stats.gaps, static_cast<unsigned>(stats.queueMax),
             static_cast<double>(stats.inFlightSum) / stats.samples, stats.inFlightMax, target,
@@ -921,11 +934,20 @@ private:
                 LONGLONG duration = 0;
                 // Interruptible: a seek or stop disables the stream (whose packets are then dropped) or
                 // pauses the feeder, and must not wait for a read that would run to the end of the input.
+                auto readStart = std::chrono::steady_clock::now();
                 hr = GetNextPacket(&packet, pts, duration, [this]
                 {
                     std::lock_guard lock(framesMutex);
                     return feederStop || feederPauses > 0 || !feedEnabled;
                 });
+                if (hr == S_OK)
+                {
+                    auto readMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - readStart).count();
+                    std::lock_guard lock(framesMutex);
+                    decodeStats.reads++;
+                    decodeStats.readSumMs += readMs;
+                    decodeStats.readMaxMs = (std::max)(decodeStats.readMaxMs, readMs);
+                }
                 if (hr == E_PENDING)
                 {
                     // Nothing was taken; the feeder waits until it may feed again.
@@ -995,14 +1017,23 @@ private:
         {
             // Counted before the call: the decoder may hand the frame over before Decode returns.
             std::lock_guard lock(framesMutex);
+            if (lastDecodeEnd != std::chrono::steady_clock::time_point{})
+            {
+                auto gapMs = std::chrono::duration<double, std::milli>(decodeStart - lastDecodeEnd).count();
+                decodeStats.gaps++;
+                decodeStats.gapSumMs += gapMs;
+                decodeStats.gapMaxMs = (std::max)(decodeStats.gapMaxMs, gapMs);
+            }
             userData = nextUserData++;
             timings[userData % timings.size()] = FrameTiming{ userData, pts, duration, generation, decodeStart };
             unitsInDecoder++;
         }
         auto hr = gpuDecoder->Decode(packet->data, static_cast<size_t>(packet->size), userData);
         {
-            auto decodeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - decodeStart).count();
+            auto decodeEnd = std::chrono::steady_clock::now();
+            auto decodeMs = std::chrono::duration<double, std::milli>(decodeEnd - decodeStart).count();
             std::lock_guard lock(framesMutex);
+            lastDecodeEnd = decodeEnd;
             decodeStats.calls++;
             decodeStats.sumMs += decodeMs;
             decodeStats.maxMs = (std::max)(decodeStats.maxMs, decodeMs);

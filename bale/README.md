@@ -137,7 +137,12 @@ avg=.. max=.. ms pool blocked=N`: temporal units in flight (fed to rav1g and not
 counted when a frame is taken for delivery, that frame included) against the feeder's target;
 the time the sample thread waited for a decoded frame (0 when one was queued); `OutputFrame` time
 (GPU fence wait, copy or stage, release signal and flush); and how often `get_image` had to wait
-for a free image in the window. The decode call is timed on the feeder thread.
+for a free image in the window. The decode call is timed on the feeder thread. Since bale.66
+`decode call ...` is followed by `read avg=.. max=.. ms gap avg=.. max=.. ms`: the packet read
+(demux, on the feeder thread) and the time from the end of one decode call to the start of the next
+(the read plus any wait for the units in flight to drop below the target; a seek's pause is not
+counted). A long gap with a short read means the feeder waited for in-flight units to drain,
+while a long read means the input was slow.
 
 `bale_gpu_decode_inflight` (1–8, default 4) sets how many temporal units the feeder keeps in
 flight; it stays below the stream's output images (8 up to bale.56, where 8 acted as 7).
@@ -151,7 +156,11 @@ Images not created yet still count against `memory_available` (up to 10 × 23.7 
 `bale_rav1g_perf` (0/1, default 0) appends rav1g's own timing run to the delivery line:
 ` rav1g perf records=N decode thread avg=.. max=.. ms gpu avg=.. max=.. ms shown=N showable=N
 sef=N` (rav1g's decode thread from frame setup to submit, `AV1_PERF_CPU_FRAME`; the GPU span of
-the frame's command list; records with `show_frame`, `showable_frame` and `is_sef`). It installs
+the frame's command list; records with `show_frame`, `showable_frame` and `is_sef`). Since bale.66 it
+ends with ` wait output avg=.. max=.. slot .. fb .. image .. ms entropy wall avg=.. max=.. ms`, the
+decode thread's waits per record (`AV1_PERF_CPU_WAIT_OUTPUT`: in the output callback, i.e. a blocked
+`get_image`; `WAIT_SLOT`, `WAIT_FB`, `WAIT_IMAGE`) and the tile decode's wall time
+(`ENTROPY_WALL`). It installs
 the process-wide `rav1g_set_perf_callback` while at least one stream with the key is open (with
 several, their frames mix) and removes it when the last one closes; a library without that export
 logs `Bale rav1g: perf statistics unavailable` once and the stream plays without it. The record

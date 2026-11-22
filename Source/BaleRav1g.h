@@ -191,6 +191,10 @@ public:
         uint32_t shown = 0;
         uint32_t showable = 0;
         uint32_t showExisting = 0;
+        // Decode-thread waits and the tile decode's wall time (cpu_ms), sum and max per window.
+        enum Wait { Output, Slot, FrameBuffer, Image, Entropy, WaitCount };
+        double waitSumMs[WaitCount]{};
+        double waitMaxMs[WaitCount]{};
     };
 
     // Never destroyed: rav1g's threads may still call the callback after it was replaced.
@@ -262,6 +266,14 @@ private:
             window.gpuRecords++;
             window.gpuSumMs += frame->gpu_span_ms;
             window.gpuMaxMs = (std::max)(window.gpuMaxMs, frame->gpu_span_ms);
+        }
+        static constexpr int fields[Window::WaitCount] = { AV1_PERF_CPU_WAIT_OUTPUT, AV1_PERF_CPU_WAIT_SLOT,
+            AV1_PERF_CPU_WAIT_FB, AV1_PERF_CPU_WAIT_IMAGE, AV1_PERF_CPU_ENTROPY_WALL };
+        for (int i = 0; i < Window::WaitCount; i++)
+        {
+            auto ms = frame->cpu_ms[fields[i]];
+            window.waitSumMs[i] += ms;
+            window.waitMaxMs[i] = (std::max)(window.waitMaxMs[i], ms);
         }
         if (frame->show_frame) window.shown++;
         if (frame->showable_frame) window.showable++;
@@ -520,12 +532,19 @@ public:
     {
         if (!perfStatistics) return;
         auto window = BaleRav1gPerf::Get().TakeWindow();
-        char text[256];
+        char text[512];
+        auto avg = [&](int i) { return window.records ? window.waitSumMs[i] / window.records : 0.0; };
+        using W = BaleRav1gPerf::Window;
         auto length = snprintf(text, sizeof(text),
-            " rav1g perf records=%u decode thread avg=%.1f max=%.1f ms gpu avg=%.1f max=%.1f ms shown=%u showable=%u sef=%u",
+            " rav1g perf records=%u decode thread avg=%.1f max=%.1f ms gpu avg=%.1f max=%.1f ms shown=%u showable=%u sef=%u"
+            " wait output avg=%.1f max=%.1f slot avg=%.1f max=%.1f fb avg=%.1f max=%.1f image avg=%.1f max=%.1f ms"
+            " entropy wall avg=%.1f max=%.1f ms",
             window.records, window.records ? window.decodeSumMs / window.records : 0.0, window.decodeMaxMs,
             window.gpuRecords ? window.gpuSumMs / window.gpuRecords : 0.0, window.gpuMaxMs,
-            window.shown, window.showable, window.showExisting);
+            window.shown, window.showable, window.showExisting,
+            avg(W::Output), window.waitMaxMs[W::Output], avg(W::Slot), window.waitMaxMs[W::Slot],
+            avg(W::FrameBuffer), window.waitMaxMs[W::FrameBuffer], avg(W::Image), window.waitMaxMs[W::Image],
+            avg(W::Entropy), window.waitMaxMs[W::Entropy]);
         if (length > 0) line.append(text, (std::min)(static_cast<size_t>(length), sizeof(text) - 1));
     }
 
