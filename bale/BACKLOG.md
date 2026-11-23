@@ -18,6 +18,7 @@ Last updated: 2026-11-22 (wrapper 2.1.0-bale.71).
 
 | Item | Waiting for |
 |---|---|
+| Stream-sized decoder pool as the default for HEVC, H.264 and VP9 (owner, 2026-11-23) | Bale: set `bale_d3d11va_pool_from_stream=1` on every d3d11va route (debug now, release after a long play). No fork change; the key stays opt-in in the fork. |
 | Direct reads of decoder frames by the tone map (`bale_d3d11va_shader_resource`, bale.63/64; bale_gpu bit 64) | Bale: per-stage GPU timing (Bale `docs/resource-budget.md`). Off by default: the direct read removed the 23.9 MiB scratch, but app memory rose ~90 MiB unreported. Parked tests: does the extra stay flat or grow; read one fixed slice; GPU time on vs off. |
 | dav1d D3D11 GPU grain (`bale_film_grain_mode=3`, bale.60) | Owner: visual check on the TV. Console: works for NV12 and P010, 1.11 vs 1.51 cores (1080p 10-bit, Series X). |
 | rav1g untested paths | Console runs: HDR passthrough (needs an HDR display), 8-bit NV12 direct output (shared UAV NV12 not yet confirmed on the console), film-grain films. |
