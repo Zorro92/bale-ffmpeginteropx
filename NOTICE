@@ -67,7 +67,7 @@ Patent License 1.0 (https://www.aomedia.org/license/patent), as its own header s
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Source/av1_perf.h is the record of rav1g's timing run (libav1/dx/av1_perf.h of
-https://github.com/Zorro92/rav1g at tag v0.6.0-alpha.1), copied unchanged. rav1g's
+https://github.com/Zorro92/rav1g at tag v0.6.0-alpha.2), copied unchanged. rav1g's
 LICENSE.txt places it under the same BSD 2-Clause License and Alliance for Open Media
 Patent License 1.0 as Source/rav1g.h above (copyright 2016 Alliance for Open Media,
 2020 Google LLC).

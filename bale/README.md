@@ -328,7 +328,7 @@ Code: generic `GpuVideoDecoder.h` (decoder interface), `GpuDecoderImagePool.h` (
 images), `GpuDecoderSampleProvider.h` (the provider); all rav1g glue in `BaleRav1g.h`.
 `Source/rav1g.h` is rav1g's `crates/rav1g/include/rav1g.h`, copied verbatim (rav1g
 v0.6.0-alpha.1, `88c05f0`, interface version 1; copy it again, unchanged, when rav1g changes it).
-`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.6.0-alpha.1, copied verbatim
+`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.6.0-alpha.2 (`505b6c3`; the added `output_path` field sits in padding, so the size and every field the fork reads are unchanged from alpha.1), copied verbatim
 (only for `bale_rav1g_perf`). No new
 native FFmpeg build is needed; Bale ships `rav1g.dll` in its package.
 
