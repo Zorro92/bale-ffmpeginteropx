@@ -371,6 +371,8 @@ namespace winrt::FFmpegInteropX::implementation
         int baleGpuDecodeInflight = 0;
         // Bale: most player-side textures a GPU decoder stream keeps (0 = no limit; below 4 acts as 4).
         int baleGpuOutputTextures = 0;
+        // Bale: output images per GPU decoder stream (0 = the provider's 10; 1-3 act as 4; at most 16).
+        int baleGpuOutputImages = 0;
         // Bale: fast seek without a MediaPlaybackSession (e.g. IMFMediaEngine), backward-only.
         int baleFastSeekWithoutSession = 0;
         // 1 = AC-3/E-AC-3 packets go undecoded to the system Dolby decoder (keeps E-AC-3 JOC/Atmos).

@@ -123,12 +123,23 @@ public:
 
     HRESULT FatalError() const override { return fatal.load(); }
 
-    // Units the feeder keeps in flight (1 to OutputImages - 1; larger values are capped). Before the
+    // Output images per stream (4 to 16; default OutputImages). Before the first sample, and before
+    // SetDecodeInflight, whose target stays below it.
+    void SetOutputImages(uint32_t images)
+    {
+        pool->SetCapacity((std::max)(4u, (std::min)(images, 16u)));
+        auto capacity = pool->Capacity(); // never take the pool's lock under framesMutex
+        std::lock_guard lock(framesMutex);
+        inflightTarget = (std::min)(inflightTarget, capacity - 1);
+    }
+
+    // Units the feeder keeps in flight (1 to the output images - 1; larger values are capped). Before the
     // first sample.
     void SetDecodeInflight(uint32_t units)
     {
+        auto capacity = pool->Capacity(); // never take the pool's lock under framesMutex
         std::lock_guard lock(framesMutex);
-        inflightTarget = (std::max)(1u, (std::min)(units, OutputImages - 1));
+        inflightTarget = (std::max)(1u, (std::min)(units, capacity - 1));
     }
 
     // At most this many player-side textures exist at once (0 = no limit, the default). When all of them
@@ -720,9 +731,9 @@ private:
         pool->Statistics(created, peak, blocked);
         auto blockedDelta = blocked - windowBlocked;
         windowBlocked = blocked;
-        uint32_t releaseWaits = 0;
-        double releaseWaitSumMs = 0, releaseWaitMaxMs = 0;
-        pool->TakeReleaseWaits(releaseWaits, releaseWaitSumMs, releaseWaitMaxMs);
+        uint32_t releaseWaits = 0, fullWaits = 0;
+        double releaseWaitSumMs = 0, releaseWaitMaxMs = 0, fullInUse = 0, fullPending = 0;
+        pool->TakeReleaseWaits(releaseWaits, releaseWaitSumMs, releaseWaitMaxMs, fullWaits, fullInUse, fullPending);
         if (stats.samples == 0) return;
         std::string decoderText;
         try
@@ -737,7 +748,7 @@ private:
         av_log(nullptr, AV_LOG_INFO,
             "%s: delivery samples=%u rate=%.2f/s latency avg=%.1f max=%.1f ms decode call avg=%.1f max=%.1f ms read avg=%.1f max=%.1f ms gap avg=%.1f max=%.1f ms pts step min=%.1f max=%.1f ms backwards=%u gaps=%u queue max=%u"
             " inflight avg=%.1f max=%u target=%u wait avg=%.1f max=%.1f ms output avg=%.1f max=%.1f ms pool blocked=%u"
-            " image release wait n=%u avg=%.1f max=%.1f ms%s\n",
+            " image release wait n=%u avg=%.1f max=%.1f ms full n=%u in use avg=%.1f free pending avg=%.1f of %u%s\n",
             logName, stats.samples, elapsedS > 0 ? stats.samples / elapsedS : 0.0, stats.latencySumMs / stats.samples, stats.latencyMaxMs,
             decode.calls ? decode.sumMs / decode.calls : 0.0, decode.maxMs,
             decode.reads ? decode.readSumMs / decode.reads : 0.0, decode.readMaxMs,
@@ -746,7 +757,8 @@ private:
             stats.backwards, stats.gaps, static_cast<unsigned>(stats.queueMax),
             static_cast<double>(stats.inFlightSum) / stats.samples, stats.inFlightMax, target,
             stats.waitSumMs / stats.samples, stats.waitMaxMs, stats.outputSumMs / stats.samples, stats.outputMaxMs,
-            blockedDelta, releaseWaits, releaseWaits ? releaseWaitSumMs / releaseWaits : 0.0, releaseWaitMaxMs, decoderText.c_str());
+            blockedDelta, releaseWaits, releaseWaits ? releaseWaitSumMs / releaseWaits : 0.0, releaseWaitMaxMs,
+            fullWaits, fullInUse, fullPending, pool->Capacity(), decoderText.c_str());
         LogMemory("delivery");
         auto lastPts = stats.lastPts;
         stats = DeliveryStats{};

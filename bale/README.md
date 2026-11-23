@@ -156,7 +156,16 @@ limit), and only then waits, for the image released first. On bale.67 (Bale f71f
 47.0/50.4/50.2 fps, with the pool full (10 images, peak 4 in use) and `pool blocked=0`, but about 210
 of 240 acquires still waited 16–19 ms: every free image still had D3D11 work pending, so the stage's
 GPU work runs several frames behind rav1g (GPU ~9.5–10 ms a frame). The remaining limit is GPU time,
-not the pool. A/B on the 40 Mbps clip (30 s): without the downscale stage (rav1g's 4K
+not the pool.
+
+Since bale.70: `bale_gpu_output_images` (0–16, default 0 = 10; 1–3 act as 4) sets the output images per
+stream (23.7 MiB each at 4K 10-bit: 16 is ~379 MiB, within the 3328 MiB app limit), and the in-flight
+target stays below it. The delivery line's `image release wait` part goes on with `full n=N in use
+avg=.. free pending avg=.. of C`: of the acquires that found every image either in use or still read
+by D3D11 work, how many images were in use (with rav1g, queued for output or being output; Bale's
+decode-ahead queue holds player textures, not these images) and how many were free with D3D11 work
+still pending, out of C. Mostly "free pending" means the D3D11 side lags (more images let rav1g run
+further ahead); mostly "in use" means rav1g and the output queue hold them. A/B on the 40 Mbps clip (30 s): without the downscale stage (rav1g's 4K
 P010 copied straight to the player) delivery was 57.5 fps, `image release wait` 24/240 at ~10 ms,
 rav1g's output wait 1.2 ms and 5.0% missed frames; with the stage (4K to 1080p) 47.9 fps, 233/240
 at 18.8 ms and 20.6% missed. So bale_gpu's 4K downscale costs ~10 ms of GPU per frame; the fix is in

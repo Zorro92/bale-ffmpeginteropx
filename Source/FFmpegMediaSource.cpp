@@ -1359,6 +1359,7 @@ namespace winrt::FFmpegInteropX::implementation
         auto provider = std::make_shared<GpuDecoderSampleProvider>(m_pReader, avFormatCtx, avCodecCtx,
             config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, useHdr, std::move(gpuDecoder), bitDepth,
             std::move(processor), baleToneMapOutputWidth, baleToneMapOutputHeight, baleToneMapOutputDepth);
+        if (baleGpuOutputImages > 0) provider->SetOutputImages(static_cast<uint32_t>(baleGpuOutputImages));
         if (baleGpuDecodeInflight > 0) provider->SetDecodeInflight(static_cast<uint32_t>(baleGpuDecodeInflight));
         if (baleGpuOutputTextures > 0) provider->SetOutputTextureLimit(static_cast<uint32_t>(baleGpuOutputTextures));
         if (baleDecodeThreadPriority > 0) provider->SetFeederThreadPriority(BaleThreadBoost::ToWin32(baleDecodeThreadPriority));
@@ -2743,6 +2744,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_rav1g_parse") { target = &baleRav1gParse; minimum = 0; maximum = 8; }
         else if (key == "bale_rav1g_perf") { target = &baleRav1gPerf; minimum = 0; maximum = 1; }
         else if (key == "bale_gpu_decode_inflight") { target = &baleGpuDecodeInflight; minimum = 1; maximum = 8; }
+        else if (key == "bale_gpu_output_images") { target = &baleGpuOutputImages; minimum = 0; maximum = 16; }
         else if (key == "bale_gpu_output_textures") { target = &baleGpuOutputTextures; minimum = 0; maximum = 64; }
         else if (key == "bale_fast_seek_without_session") { target = &baleFastSeekWithoutSession; minimum = 0; maximum = 1; }
         else if (key == "bale_system_decoder_dolby") { target = &baleSystemDecoderDolby; minimum = 0; maximum = 1; }

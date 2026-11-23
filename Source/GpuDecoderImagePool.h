@@ -41,6 +41,19 @@ public:
 
     GpuDecoderImagePool(uint32_t capacity, const char* logName) : capacity(capacity), logName(logName) {}
 
+    // Before the first image is created.
+    void SetCapacity(uint32_t newCapacity)
+    {
+        std::lock_guard lock(mutex);
+        if (images.empty() && newCapacity > 0) capacity = newCapacity;
+    }
+
+    uint32_t Capacity()
+    {
+        std::lock_guard lock(mutex);
+        return capacity;
+    }
+
     GpuDecoderImagePool(const GpuDecoderImagePool&) = delete;
     GpuDecoderImagePool& operator=(const GpuDecoderImagePool&) = delete;
 
@@ -127,7 +140,17 @@ public:
                 }
                 if (pending)
                 {
-                    // Full pool: the image whose readers were submitted first finishes first.
+                    // Full pool: the image whose readers were submitted first finishes first. Note who
+                    // holds the others: images in use (with the decoder, queued for output or being
+                    // output) and free ones whose D3D11 readers are still running.
+                    uint32_t freePending = 0;
+                    for (auto& entry : images)
+                    {
+                        if (!entry->inUse && Matches(*entry, width, height, format) && entry->releaseValue > completed) freePending++;
+                    }
+                    fullWaits++;
+                    fullWaitInUse += inUse;
+                    fullWaitFreePending += freePending;
                     image = pending;
                     break;
                 }
@@ -247,16 +270,23 @@ public:
         for (auto& image : images) bytes += ImageBytes(image->width, image->height, image->format);
     }
 
-    // Acquires that waited on the CPU for an image's D3D11 readers, since the last call.
-    void TakeReleaseWaits(uint32_t& waits, double& sumMs, double& maxMs)
+    // Acquires that waited on the CPU for an image's D3D11 readers, since the last call; and, of the
+    // acquires that found the pool full with no finished image, the images in use and free-but-pending.
+    void TakeReleaseWaits(uint32_t& waits, double& sumMs, double& maxMs, uint32_t& full, double& inUseAvg, double& pendingAvg)
     {
         std::lock_guard lock(mutex);
         waits = releaseWaits;
         sumMs = releaseWaitSumMs;
         maxMs = releaseWaitMaxMs;
+        full = fullWaits;
+        inUseAvg = fullWaits ? static_cast<double>(fullWaitInUse) / fullWaits : 0.0;
+        pendingAvg = fullWaits ? static_cast<double>(fullWaitFreePending) / fullWaits : 0.0;
         releaseWaits = 0;
         releaseWaitSumMs = 0;
         releaseWaitMaxMs = 0;
+        fullWaits = 0;
+        fullWaitInUse = 0;
+        fullWaitFreePending = 0;
     }
 
     void Statistics(uint32_t& created, uint32_t& peak, uint32_t& blocked)
@@ -357,7 +387,7 @@ private:
         return hr;
     }
 
-    const uint32_t capacity;
+    uint32_t capacity;
     const char* logName;
     std::mutex mutex;
     std::condition_variable changed;
@@ -377,6 +407,9 @@ private:
     uint32_t createdCount = 0;
     uint32_t blockedCount = 0;
     uint32_t releaseWaits = 0;
+    uint32_t fullWaits = 0;
+    uint64_t fullWaitInUse = 0;
+    uint64_t fullWaitFreePending = 0;
     double releaseWaitSumMs = 0;
     double releaseWaitMaxMs = 0;
     uint32_t cancelHits = 0;
