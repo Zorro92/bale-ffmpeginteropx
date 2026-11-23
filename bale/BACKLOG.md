@@ -18,8 +18,7 @@ Last updated: 2026-11-22 (wrapper 2.1.0-bale.70).
 
 | Item | Waiting for |
 |---|---|
-| rav1g 4K60 after the stage fix: 57.6 fps, release waits on 96/240 frames (avg 11.4 ms) | Bale/rav1g: try `bale_gpu_output_images` 14–16 (bale.70) and read `full ... in use / free pending` to see who holds the images. |
-| Decoder pool from the stream for H.264 and VP9 (bale.69) | Bale: console test with `ffmpeg-tune pool=stream` on H.264 films (1080p, one interlaced if possible) and a VP9 film; check the surface count, ledger 16, no decode errors, same fps and drops. |
+| Decoder pool from the stream for H.264 and VP9 (bale.69) | VP9 film stayed at 12 surfaces with pool=stream (expected 11): asked Bale for the `D3D11 decoder pool` log line and whether the key reached the library route. H.264 untested (play-url couldn't open the clip). |
 | Direct reads of decoder frames by the tone map (`bale_d3d11va_shader_resource`, bale.63/64; bale_gpu bit 64) | Bale: per-stage GPU timing (Bale `docs/resource-budget.md`). Off by default: the direct read removed the 23.9 MiB scratch, but app memory rose ~90 MiB unreported. Parked tests: does the extra stay flat or grow; read one fixed slice; GPU time on vs off. |
 | dav1d D3D11 GPU grain (`bale_film_grain_mode=3`, bale.60) | Owner: visual check on the TV. Console: works for NV12 and P010, 1.11 vs 1.51 cores (1080p 10-bit, Series X). |
 | rav1g untested paths | Console runs: HDR passthrough (needs an HDR display), 8-bit NV12 direct output (shared UAV NV12 not yet confirmed on the console), film-grain films. |
@@ -43,7 +42,7 @@ Last updated: 2026-11-22 (wrapper 2.1.0-bale.70).
 | Release | What |
 |---|---|
 | Bale (2026-11-22) | Stage fix in bale_gpu: 4K60 AV1 on rav1g 47.1 → 57.6 fps (missed 21.8% → 4.5%), same as without the stage. Owner approved `bale_d3d11va_pool_from_stream` as the HEVC default (debug builds now, release after a long HEVC play). |
-| bale.70 | `bale_gpu_output_images` (4–16) and who holds the images at a full-pool wait |
+| bale.70 | `bale_gpu_output_images` (4–16) and who holds the images at a full-pool wait; console: the waits are pending D3D11 work, Bale keeps 10 |
 | bale.69 | Decoder pool from the stream also for H.264 (SPS/VUI or level) and VP9 (8 + 1 + 2) |
 | bale.68 | d3d11va decoder pool sized from the HEVC SPS (opt-in); console: 4K HEVC 20 → 8 surfaces (478 → 191 MiB), no misses or errors |
 | bale.67 | rav1g image pool takes an image whose D3D11 readers are done (or creates one) instead of the first free one; logs `image release wait` |

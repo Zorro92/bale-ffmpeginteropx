@@ -165,7 +165,11 @@ avg=.. free pending avg=.. of C`: of the acquires that found every image either 
 by D3D11 work, how many images were in use (with rav1g, queued for output or being output; Bale's
 decode-ahead queue holds player textures, not these images) and how many were free with D3D11 work
 still pending, out of C. Mostly "free pending" means the D3D11 side lags (more images let rav1g run
-further ahead); mostly "in use" means rav1g and the output queue hold them. A/B on the 40 Mbps clip (30 s): without the downscale stage (rav1g's 4K
+further ahead); mostly "in use" means rav1g and the output queue hold them. Console (Bale 301411f, 4K60 AV1 40 Mbps, 30 s): with 10 images
+(decode-ahead 8) 57.1 fps, 114/240 waits at 12.0 ms, at a wait 1.5 in use and 8.5 free pending,
+4.8% missed; with 16, 57.6 fps, 96 waits at 9.3 ms, 1.3 in use, 12.4 pending, 4.7% missed (+142 MiB);
+decode-ahead 4 instead of 8: 57.8 / 58.0 fps, 4.0 / 4.1% missed. The waits are D3D11 work still
+pending, so more images only fill with it; Bale keeps 10. A/B on the 40 Mbps clip (30 s): without the downscale stage (rav1g's 4K
 P010 copied straight to the player) delivery was 57.5 fps, `image release wait` 24/240 at ~10 ms,
 rav1g's output wait 1.2 ms and 5.0% missed frames; with the stage (4K to 1080p) 47.9 fps, 233/240
 at 18.8 ms and 20.6% missed. So bale_gpu's 4K downscale costs ~10 ms of GPU per frame; the fix is in
