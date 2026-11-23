@@ -152,7 +152,11 @@ free image, but the pool took the first free one, typically the image the stage 
 and waited for its release fence. Delivery stayed at 44.9–46.4 fps, and more in-flight units
 (6) or player textures (32) did not help. The pool now takes a free image whose readers are done,
 else creates one while it has room (up to 10, 23.7 MiB each at 4K 10-bit: within the 3328 MiB app
-limit), and only then waits, for the image released first.
+limit), and only then waits, for the image released first. On bale.67 (Bale f71f93a, same clips) that raised delivery to
+47.0/50.4/50.2 fps, with the pool full (10 images, peak 4 in use) and `pool blocked=0`, but about 210
+of 240 acquires still waited 16–19 ms: every free image still had D3D11 work pending, so the stage's
+GPU work runs several frames behind rav1g (GPU ~9.5–10 ms a frame). The remaining limit is GPU time,
+not the pool.
 
 `bale_gpu_decode_inflight` (1–8, default 4) sets how many temporal units the feeder keeps in
 flight; it stays below the stream's output images (8 up to bale.56, where 8 acted as 7).
