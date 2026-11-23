@@ -18,7 +18,7 @@ Last updated: 2026-11-22 (wrapper 2.1.0-bale.71).
 
 | Item | Waiting for |
 |---|---|
-| Decoder pool from the stream for H.264 and VP9 (bale.71 fixes VP9) | Bale: rerun the VP9 film with pool=stream (expect `Bale D3D11 decoder pool: 11 surfaces`), and H.264 once a clip opens. |
+| Decoder pool from the stream for H.264 | Bale: a library H.264 film with pool=stream at the next free console slot (play-url can't open the test clip). VP9 verified on bale.71 (12 → 11). |
 | Direct reads of decoder frames by the tone map (`bale_d3d11va_shader_resource`, bale.63/64; bale_gpu bit 64) | Bale: per-stage GPU timing (Bale `docs/resource-budget.md`). Off by default: the direct read removed the 23.9 MiB scratch, but app memory rose ~90 MiB unreported. Parked tests: does the extra stay flat or grow; read one fixed slice; GPU time on vs off. |
 | dav1d D3D11 GPU grain (`bale_film_grain_mode=3`, bale.60) | Owner: visual check on the TV. Console: works for NV12 and P010, 1.11 vs 1.51 cores (1080p 10-bit, Series X). |
 | rav1g untested paths | Console runs: HDR passthrough (needs an HDR display), 8-bit NV12 direct output (shared UAV NV12 not yet confirmed on the console), film-grain films. |
@@ -42,7 +42,7 @@ Last updated: 2026-11-22 (wrapper 2.1.0-bale.71).
 | Release | What |
 |---|---|
 | Bale (2026-11-22) | Stage fix in bale_gpu: 4K60 AV1 on rav1g 47.1 → 57.6 fps (missed 21.8% → 4.5%), same as without the stage. Owner approved `bale_d3d11va_pool_from_stream` as the HEVC default (debug builds now, release after a long HEVC play). |
-| bale.71 | Decoder pool: compare with FFmpeg's real pool (parameters + 3), so VP9 resizes (12 → 11); every branch logged with a `Bale ` prefix |
+| bale.71 | Decoder pool: compare with FFmpeg's real pool (parameters + 3), so VP9 resizes (12 → 11, console-verified); every branch logged with a `Bale ` prefix |
 | bale.70 | `bale_gpu_output_images` (4–16) and who holds the images at a full-pool wait; console: the waits are pending D3D11 work, Bale keeps 10 |
 | bale.69 | Decoder pool from the stream also for H.264 (SPS/VUI or level) and VP9 (8 + 1 + 2) |
 | bale.68 | d3d11va decoder pool sized from the HEVC SPS (opt-in); console: 4K HEVC 20 → 8 surfaces (478 → 191 MiB), no misses or errors |

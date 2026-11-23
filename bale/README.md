@@ -557,6 +557,9 @@ bale.69 and bale.70 never resized VP9: `avcodec_get_hw_frames_parameters` report
 the references (9 for VP9, 17 for HEVC and H.264), and FFmpeg's own pool then adds 3 (decode.c, "4 base
 work surfaces"). The fork compared its 11 with that 9 and kept FFmpeg's pool, which came out at 12; HEVC
 worked only because 8 is below 17. Since bale.71 it compares with FFmpeg's real pool (parameters + 3).
+Console (bale.71, Bale b1e4261): a 4K VP9 film logged `Bale D3D11 decoder pool: 11 surfaces 3840x2160
+(codec 167, stream buffer 9, FFmpeg's pool 12)`, ledger 11 surfaces (261 MiB), no missed frames. H.264
+is not console-tested yet.
 
 ## Shader-readable decoder pools (experiment)
 
