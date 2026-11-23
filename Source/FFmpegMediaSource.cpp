@@ -1363,6 +1363,7 @@ namespace winrt::FFmpegInteropX::implementation
         if (baleGpuDecodeInflight > 0) provider->SetDecodeInflight(static_cast<uint32_t>(baleGpuDecodeInflight));
         if (baleGpuOutputTextures > 0) provider->SetOutputTextureLimit(static_cast<uint32_t>(baleGpuOutputTextures));
         if (baleDecodeThreadPriority > 0) provider->SetFeederThreadPriority(BaleThreadBoost::ToWin32(baleDecodeThreadPriority));
+        if (baleRav1gPerf >= 2) provider->SetPerFrameLog(true);
         auto hr = provider->Initialize();
         if (FAILED(hr))
         {
@@ -2742,7 +2743,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_decoder_max_dpb_count") { target = &baleDecoderMaxDpbCount; minimum = 0; maximum = 16; }
         else if (key == "bale_compressed_color_info") { target = &baleCompressedColorInfo; minimum = 0; maximum = 1; }
         else if (key == "bale_rav1g_parse") { target = &baleRav1gParse; minimum = 0; maximum = 8; }
-        else if (key == "bale_rav1g_perf") { target = &baleRav1gPerf; minimum = 0; maximum = 1; }
+        else if (key == "bale_rav1g_perf") { target = &baleRav1gPerf; minimum = 0; maximum = 2; }
         else if (key == "bale_gpu_decode_inflight") { target = &baleGpuDecodeInflight; minimum = 1; maximum = 8; }
         else if (key == "bale_gpu_output_images") { target = &baleGpuOutputImages; minimum = 0; maximum = 16; }
         else if (key == "bale_gpu_output_textures") { target = &baleGpuOutputTextures; minimum = 0; maximum = 64; }

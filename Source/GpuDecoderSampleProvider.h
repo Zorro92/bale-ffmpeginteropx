@@ -153,6 +153,13 @@ public:
     }
 
     // Win32 priority of the feeder thread. Before the first sample.
+    // Debug: one log line per frame with the stage's CPU and GPU times (see LogStageTimes). Before the
+    // first sample.
+    void SetPerFrameLog(bool enable)
+    {
+        perFrameLog = enable;
+    }
+
     void SetFeederThreadPriority(int priority)
     {
         feederPriority = priority;
@@ -362,6 +369,7 @@ public:
         }
 
         auto outputStart = std::chrono::steady_clock::now();
+        if (perFrameLog) frameTakeMs = QpcMs();
         auto hr = OutputFrame(frame, timing, surface, samplePts, sampleDuration);
         auto outputMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - outputStart).count();
         {
@@ -600,6 +608,66 @@ private:
         // Called on decoder threads: read the count without the samples lock.
         uint32_t created = playerTexturesCreated.load();
         return created >= ExpectedPlayerTextures ? 0 : (ExpectedPlayerTextures - created) * bytesPerTexture;
+    }
+
+    // Host clock in ms: QueryPerformanceCounter, the same base as rav1g's complete_ms.
+    static double QpcMs() noexcept
+    {
+        static const double perMs = []
+        {
+            LARGE_INTEGER frequency;
+            QueryPerformanceFrequency(&frequency);
+            return static_cast<double>(frequency.QuadPart) / 1000.0;
+        }();
+        LARGE_INTEGER counter;
+        QueryPerformanceCounter(&counter);
+        return static_cast<double>(counter.QuadPart) / perMs;
+    }
+
+    // Debug (bale_rav1g_perf=2): `Bale rav1g stage u=<unit> pts=<ms> take=.. submit=.. release=..
+    // gpudone=..` per frame, host clock ms. take: the sample thread took the frame; submit: the stage or
+    // copy was submitted and flushed; release: the image went back to the pool; gpudone: the image's
+    // release fence passed, i.e. the D3D11 work on it finished (a thread-pool wait on the fence).
+    struct StageTimes
+    {
+        const char* logName;
+        uint64_t unit;
+        double ptsMs, takeMs, submitMs, releaseMs;
+        HANDLE event;
+        PTP_WAIT wait;
+    };
+
+    void LogStageTimes(const FrameTiming& timing, uint64_t releaseValue, double submitMs, double releaseMs) noexcept
+    {
+        try
+        {
+            auto times = new StageTimes{ logName, timing.userData, ConvertPosition(timing.pts).count() / 10000.0,
+                frameTakeMs, submitMs, releaseMs, nullptr, nullptr };
+            times->event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
+            if (times->event) times->wait = CreateThreadpoolWait(&OnStageDone, times, nullptr);
+            if (!times->event || !times->wait || FAILED(releaseFence->SetEventOnCompletion(releaseValue, times->event)))
+            {
+                if (times->wait) CloseThreadpoolWait(times->wait);
+                if (times->event) CloseHandle(times->event);
+                delete times;
+                return;
+            }
+            SetThreadpoolWait(times->wait, times->event, nullptr);
+        }
+        catch (...)
+        {
+        }
+    }
+
+    static void CALLBACK OnStageDone(PTP_CALLBACK_INSTANCE, void* context, PTP_WAIT wait, TP_WAIT_RESULT) noexcept
+    {
+        auto times = static_cast<StageTimes*>(context);
+        av_log(nullptr, AV_LOG_INFO, "%s stage u=%llu pts=%.1f take=%.3f submit=%.3f release=%.3f gpudone=%.3f\n",
+            times->logName, static_cast<unsigned long long>(times->unit), times->ptsMs, times->takeMs,
+            times->submitMs, times->releaseMs, QpcMs());
+        CloseHandle(times->event);
+        CloseThreadpoolWait(wait);
+        delete times;
     }
 
     struct FrameTiming
@@ -1215,9 +1283,11 @@ private:
             frameDuration = timing.duration;
             sampleColor = frameProcessor ? color : frame.color;
             sampleColor.chromaLocation = color.chromaLocation;
+            double submitMs = perFrameLog ? QpcMs() : 0.0;
             // The processor or the copy has read the image (fenced); the sample carries the output.
             pool->Release(image, releaseValue);
             image = nullptr;
+            if (perFrameLog) LogStageTimes(timing, releaseValue, submitMs, QpcMs());
             pendingOutput = output;
             *surface = DirectXInteropHelper::GetSurface(output.as<IDXGISurface>());
             framesOut++;
@@ -1397,6 +1467,8 @@ private:
     std::condition_variable outputTextureReturned;    // with samplesMutex
     bool processorInitialized = false;
     bool outputP010 = false;
+    bool perFrameLog = false;
+    double frameTakeMs = 0; // sample thread
     bool applyHdrColorInfo = false;
     bool hasHdrMetadata = false;
     bool isHdrActive = false;
