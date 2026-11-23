@@ -39,38 +39,44 @@ public:
     {
         auto result = FFmpegUtils::get_format(context, formats);
         if (result != AV_PIX_FMT_D3D11 || !context->hw_device_ctx) return result;
+        int codec = static_cast<int>(context->codec_id);
         int buffer = DecodedPictureBuffer(context);
         if (buffer <= 0)
         {
-            av_log(nullptr, AV_LOG_INFO, "D3D11 decoder pool: stream buffer unknown (codec %d); FFmpeg's default\n",
-                static_cast<int>(context->codec_id));
+            av_log(nullptr, AV_LOG_INFO, "Bale D3D11 decoder pool: stream buffer unknown (codec %d); FFmpeg's pool\n", codec);
             return result;
         }
         AVBufferRef* frames = nullptr;
-        if (avcodec_get_hw_frames_parameters(context, context->hw_device_ctx, AV_PIX_FMT_D3D11, &frames) < 0 || !frames)
+        int error = avcodec_get_hw_frames_parameters(context, context->hw_device_ctx, AV_PIX_FMT_D3D11, &frames);
+        if (error < 0 || !frames)
         {
+            av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 decoder pool: no frame parameters (codec %d, %d); FFmpeg's pool\n", codec, error);
             return result;
         }
         auto framesContext = reinterpret_cast<AVHWFramesContext*>(frames->data);
-        int defaultSize = framesContext->initial_pool_size;
+        // avcodec_get_hw_frames_parameters gives 1 work surface plus the references (17 for HEVC and
+        // H.264, 9 for VP9); FFmpeg's own pool then adds 3 more ("4 base work surfaces", decode.c).
+        int defaultSize = framesContext->initial_pool_size > 0 ? framesContext->initial_pool_size + 3 : 0;
         int size = buffer + (context->codec_id == AV_CODEC_ID_VP9 ? Vp9Margin : Margin);
         if (defaultSize > 0 && size >= defaultSize)
         {
+            av_log(nullptr, AV_LOG_INFO, "Bale D3D11 decoder pool: %d surfaces would not be fewer than FFmpeg's %d (codec %d); FFmpeg's pool\n",
+                size, defaultSize, codec);
             av_buffer_unref(&frames);
             return result;
         }
         framesContext->initial_pool_size = size;
-        int error = av_hwframe_ctx_init(frames);
+        error = av_hwframe_ctx_init(frames);
         if (error < 0)
         {
-            av_log(nullptr, AV_LOG_WARNING, "D3D11 decoder pool: init failed (%d); FFmpeg's default\n", error);
+            av_log(nullptr, AV_LOG_WARNING, "Bale D3D11 decoder pool: init failed (codec %d, %d); FFmpeg's pool\n", codec, error);
             av_buffer_unref(&frames);
             return result;
         }
         av_buffer_unref(&context->hw_frames_ctx);
         context->hw_frames_ctx = frames;
-        av_log(nullptr, AV_LOG_INFO, "D3D11 decoder pool: %d surfaces %dx%d (stream buffer %d, FFmpeg default %d)\n",
-            size, framesContext->width, framesContext->height, buffer, defaultSize);
+        av_log(nullptr, AV_LOG_INFO, "Bale D3D11 decoder pool: %d surfaces %dx%d (codec %d, stream buffer %d, FFmpeg's pool %d)\n",
+            size, framesContext->width, framesContext->height, codec, buffer, defaultSize);
         return result;
     }
 

@@ -535,8 +535,8 @@ frame), never more than FFmpeg's own size. A typical 4K 10-bit film then gets ~9
 - **VP9:** its 8 reference slots + the current frame, plus 2 (VP9 never holds frames back for output
   order): 12 → 11, one surface (23.7 MiB at 4K 10-bit) less.
 Anything it can't read (no SPS in the codec configuration, a parse error, other codecs) keeps
-FFmpeg's pool. Logs: `D3D11 decoder pool: N surfaces WxH
-(stream buffer B, FFmpeg default D)` or `... stream buffer unknown (codec C); FFmpeg's default`.
+FFmpeg's pool. Logs (since bale.71 prefixed `Bale ` and logged for every branch): `Bale D3D11 decoder pool: N
+surfaces WxH (codec C, stream buffer B, FFmpeg's pool D)`, or why it kept FFmpeg's pool.
 
 Sized against: the app memory limit (3328 MiB with `hevcPlayback`, 1024 MiB without) and consoles
 with less memory than the Series X. Limit: an SPS that arrives later in the stream with a larger
@@ -552,6 +552,11 @@ Console (Series X, bale.68, Bale 19e6a77, 2026-11-22; 30 s 4K60 clips, two seeks
 20 surfaces (478 MiB) to 8 (191 MiB), with 0 missed frames, 0 stalls and 0 drops either way; the
 ledger matched and there were no decode errors. A VP9 film kept FFmpeg's own VP9 pool of 12 (4 + 8),
 as expected since only HEVC is read.
+
+bale.69 and bale.70 never resized VP9: `avcodec_get_hw_frames_parameters` reports 1 work surface plus
+the references (9 for VP9, 17 for HEVC and H.264), and FFmpeg's own pool then adds 3 (decode.c, "4 base
+work surfaces"). The fork compared its 11 with that 9 and kept FFmpeg's pool, which came out at 12; HEVC
+worked only because 8 is below 17. Since bale.71 it compares with FFmpeg's real pool (parameters + 3).
 
 ## Shader-readable decoder pools (experiment)
 
