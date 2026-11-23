@@ -5,13 +5,12 @@ item when work is proposed, move it when its state changes, and drop "Done" entr
 older than a few releases (the commits and `README.md` keep the details). Every design item is sized
 against the console limits in `AGENTS.md` ("Design against the console's limits").
 
-Last updated: 2026-11-23 (wrapper 2.1.0-bale.72).
+Last updated: 2026-11-23 (wrapper 2.1.0-bale.73).
 
 ## Open: fork work
 
 | Item | State | Why / sized against |
 |---|---|---|
-| Per-frame rav1g timing lines (`bale_rav1g_perf=2`) | Stage line done (bale.72). The `Bale rav1g frame u= pts= ...` line waits for rav1g to tag av1_perf_frame::user_data (632 bytes) and confirm its clock base. | Owner's bar: 4K60 AV1 up to 40 Mbps smooth, 60 Mbps headroom. Bale keys its renderer/stall log by pts. Debug only. |
 | rav1g route: avoid the per-frame copy of direct output into the player pool | Idea | One full-frame GPU copy per frame (GPU copies are ~2.4x slower in the idle state). The copy exists because handing decoder images to Media Foundation deadlocked the fixed image pool (bale.45), so any change needs a new design for that. |
 | FFmpeg 9.x | Deferred | 9.0/9.1 bring nothing the fork needs (HEVC hardening, a driver-compat SRV flag). Easier once Bale drops dav1d zero-copy, so native FFmpeg needs no dav1d patch (`p1`). |
 
@@ -44,6 +43,7 @@ Last updated: 2026-11-23 (wrapper 2.1.0-bale.72).
 | Release | What |
 |---|---|
 | Bale (2026-11-22) | Stage fix in bale_gpu: 4K60 AV1 on rav1g 47.1 → 57.6 fps (missed 21.8% → 4.5%), same as without the stage. Owner approved `bale_d3d11va_pool_from_stream` as the HEVC default (debug builds now, release after a long HEVC play). |
+| bale.73 | Per-frame `Bale rav1g frame u= pts= ...` line from av1_perf_frame (rav1g v0.6.0-alpha.3, 632 bytes) |
 | bale.72 | `bale_rav1g_perf=2`: per-frame stage line (take, submit, release, gpudone; QPC ms; u and pts) |
 | bale.71 | Decoder pool: compare with FFmpeg's real pool (parameters + 3); console-verified for VP9 (12 → 11) and H.264 (1080p 20 → 8); every branch logged with a `Bale ` prefix |
 | bale.70 | `bale_gpu_output_images` (4–16) and who holds the images at a full-pool wait; console: the waits are pending D3D11 work, Bale keeps 10 |

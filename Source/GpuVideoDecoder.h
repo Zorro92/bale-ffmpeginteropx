@@ -40,6 +40,14 @@ public:
     virtual void FrameReady(GpuDecodedFrame&& frame) noexcept = 0;
     // Bytes the decoder may still allocate, or a negative value when unknown.
     virtual int64_t MemoryAvailable() noexcept = 0;
+    // Diagnostics: the sample timestamp (100 ns) of the access unit fed with this user data, while the
+    // host still remembers it. Default: unknown.
+    virtual bool UnitTimestamp(uint64_t userData, int64_t& timestamp) noexcept
+    {
+        UNREFERENCED_PARAMETER(userData);
+        UNREFERENCED_PARAMETER(timestamp);
+        return false;
+    }
 };
 
 class GpuVideoDecoder

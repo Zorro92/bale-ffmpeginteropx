@@ -190,8 +190,13 @@ take=.. submit=.. release=.. gpudone=..`. `u` is the fork's unit counter (rav1g'
 the sample's timestamp in 100 ns as handed to Media Foundation (Bale keys its renderer log on it); take = the sample thread took the
 frame, submit = the stage or copy submitted and flushed, release = the image back in the pool,
 gpudone = the image's release fence passed (the D3D11 work on it finished; a thread-pool wait on the
-fence). About 60 lines/s at 4K60. A per-frame rav1g line (`Bale rav1g frame u= pts= ...` from
-av1_perf_frame) follows once rav1g adds `user_data` to its record.
+fence). About 60 lines/s at 4K60. Since bale.73 (rav1g v0.6.0-alpha.3 or later) it also logs one line
+per rav1g record: `Bale rav1g frame u=<unit> pts=<100 ns, -1 if no longer known> show= sef= intra=
+out=<output_path> decode=<cpu FRAME> entropy=<ENTROPY_WALL> waitout=<WAIT_OUTPUT> waitslot=<WAIT_SLOT>
+gpu=<gpu_span_ms, -1 without timestamps> gap=<gpu_gap_ms> done=<complete_ms>` (ms; `done` on the same
+QPC clock). `u` is av1_perf_frame::user_data, the pts is the fork's for that unit; hidden frames and
+show-existing copies have their own records. The callback is process-wide: with several streams on
+perf=2 at once, the last one resolves the pts.
 
 `bale_rav1g_perf` (0/1, default 0) appends rav1g's own timing run to the delivery line:
 ` rav1g perf records=N decode thread avg=.. max=.. ms gpu avg=.. max=.. ms shown=N showable=N
@@ -337,7 +342,7 @@ Code: generic `GpuVideoDecoder.h` (decoder interface), `GpuDecoderImagePool.h` (
 images), `GpuDecoderSampleProvider.h` (the provider); all rav1g glue in `BaleRav1g.h`.
 `Source/rav1g.h` is rav1g's `crates/rav1g/include/rav1g.h`, copied verbatim (rav1g
 v0.6.0-alpha.1, `88c05f0`, interface version 1; copy it again, unchanged, when rav1g changes it).
-`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.6.0-alpha.2 (`505b6c3`; the added `output_path` field sits in padding, so the size and every field the fork reads are unchanged from alpha.1), copied verbatim
+`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.6.0-alpha.3 (`ddc5145`; 632 bytes since it added `user_data` at the end, so wrappers before bale.73 read the first 624 bytes unchanged), copied verbatim
 (only for `bale_rav1g_perf`). No new
 native FFmpeg build is needed; Bale ships `rav1g.dll` in its package.
 

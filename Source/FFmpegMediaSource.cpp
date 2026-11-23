@@ -1321,7 +1321,7 @@ namespace winrt::FFmpegInteropX::implementation
         if (rav1gDecoder)
         {
             rav1gDecoder->parseFrames = static_cast<uint32_t>(baleRav1gParse);
-            if (baleRav1gPerf > 0) rav1gDecoder->EnablePerfStatistics();
+            if (baleRav1gPerf > 0) rav1gDecoder->EnablePerfStatistics(baleRav1gPerf >= 2);
         }
         std::unique_ptr<GpuVideoDecoder> gpuDecoder = std::move(rav1gDecoder);
         if (!gpuDecoder)

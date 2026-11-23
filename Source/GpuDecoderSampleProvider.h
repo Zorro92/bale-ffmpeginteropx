@@ -535,6 +535,22 @@ public:
         framesChanged.notify_all();
     }
 
+    bool UnitTimestamp(uint64_t userData, int64_t& timestamp) noexcept override
+    {
+        try
+        {
+            std::lock_guard lock(framesMutex);
+            const auto& timing = timings[userData % timings.size()];
+            if (timing.userData != userData) return false;
+            timestamp = ConvertPosition(timing.pts).count();
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
     int64_t MemoryAvailable() noexcept override
     {
         try

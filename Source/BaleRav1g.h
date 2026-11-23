@@ -14,12 +14,12 @@ extern "C"
 }
 
 // The record of rav1g's timing run (av1_perf_frame, for rav1g_set_perf_callback), copied verbatim
-// from Zorro92/rav1g libav1/dx/av1_perf.h at tag v0.6.0-alpha.2 (commit 505b6c3). The record is not
+// from Zorro92/rav1g libav1/dx/av1_perf.h at tag v0.6.0-alpha.3 (commit ddc5145). The record is not
 // covered by rav1g's interface version: copy it again, unchanged, from the rav1g release Bale ships,
 // and check its size below against rav1g's (crates/rav1g-sys/src/perf.rs). Included before rav1g.h,
 // which then takes the full definition instead of declaring the struct.
 #include "av1_perf.h"
-static_assert(sizeof(void*) != 8 || sizeof(av1_perf_frame) == 624, "av1_perf_frame differs from rav1g v0.6.0-alpha.2's");
+static_assert(sizeof(void*) != 8 || sizeof(av1_perf_frame) == 632, "av1_perf_frame differs from rav1g v0.6.0-alpha.3's");
 
 // rav1g's C interface, copied verbatim from Zorro92/rav1g crates/rav1g/include/rav1g.h (tag
 // v0.6.0-alpha.1, commit 88c05f0, interface version 1). rav1g owns the header: copy it again, unchanged, whenever rav1g
@@ -238,6 +238,14 @@ public:
         av_log(nullptr, AV_LOG_INFO, "Bale rav1g: perf statistics off\n");
     }
 
+    // bale_rav1g_perf=2: also one log line per record, its pts resolved by this host (the last stream
+    // that asked; with several such streams their frames mix). Null unregisters it, if it is that host.
+    void SetFrameHost(GpuDecoderHost* newHost, GpuDecoderHost* previous = nullptr)
+    {
+        std::lock_guard lock(dataMutex);
+        if (newHost || frameHost == previous) frameHost = newHost;
+    }
+
     // The records since the last call.
     Window TakeWindow()
     {
@@ -275,6 +283,19 @@ private:
             window.waitSumMs[i] += ms;
             window.waitMaxMs[i] = (std::max)(window.waitMaxMs[i], ms);
         }
+        if (self->frameHost)
+        {
+            int64_t pts = -1;
+            if (!self->frameHost->UnitTimestamp(frame->user_data, pts)) pts = -1;
+            av_log(nullptr, AV_LOG_INFO,
+                "Bale rav1g frame u=%llu pts=%lld show=%d sef=%d intra=%d out=%d decode=%.3f entropy=%.3f waitout=%.3f"
+                " waitslot=%.3f gpu=%.3f gap=%.3f done=%.3f\n",
+                static_cast<unsigned long long>(frame->user_data), static_cast<long long>(pts), frame->show_frame,
+                frame->is_sef, frame->intra_frame, frame->output_path, frame->cpu_ms[AV1_PERF_CPU_FRAME],
+                frame->cpu_ms[AV1_PERF_CPU_ENTROPY_WALL], frame->cpu_ms[AV1_PERF_CPU_WAIT_OUTPUT],
+                frame->cpu_ms[AV1_PERF_CPU_WAIT_SLOT], frame->gpu_valid ? frame->gpu_span_ms : -1.0, frame->gpu_gap_ms,
+                frame->complete_ms);
+        }
         if (frame->show_frame) window.shown++;
         if (frame->showable_frame) window.showable++;
         if (frame->is_sef) window.showExisting++;
@@ -285,6 +306,7 @@ private:
     bool missingLogged = false;
     std::mutex dataMutex;
     Window window;
+    GpuDecoderHost* frameHost = nullptr; // dataMutex
 };
 
 // GpuVideoDecoder on rav1g, semi-planar output (one NV12 or P010 texture a frame) into the provider's
@@ -399,6 +421,7 @@ public:
         const auto& api = BaleRav1gExports::Get();
         const auto& shared = BaleRav1gDevice::Get();
         host = newHost;
+        if (perFrameLog && perfStatistics) BaleRav1gPerf::Get().SetFrameHost(host);
 
         // The unit's own sequence header wins (a new sequence); without one, the container's.
         Rav1gStreamInfo info{};
@@ -500,6 +523,9 @@ public:
 
     void Destroy() override
     {
+        // Unregistered before the host goes away (the provider destroys the decoder first); Create
+        // registers it again after a reconfigure.
+        if (perFrameLog) BaleRav1gPerf::Get().SetFrameHost(nullptr, host);
         if (decoder)
         {
             // Waits for the frames in flight and hands them over (Frame/Unused) first.
@@ -521,9 +547,10 @@ public:
 
     // bale_rav1g_perf=1: rav1g's per-frame timing on the provider's delivery line. Before the first
     // decode of the stream.
-    void EnablePerfStatistics()
+    void EnablePerfStatistics(bool perFrame = false)
     {
         if (!perfStatistics) perfStatistics = BaleRav1gPerf::Get().Acquire();
+        perFrameLog = perFrame;
     }
 
     uint64_t DeviceBytes() const override { return deviceBytes; }
@@ -687,6 +714,7 @@ public:
 private:
     // bale_rav1g_perf: this decoder holds a use of the process-wide perf callback.
     bool perfStatistics = false;
+    bool perFrameLog = false;
 
 private:
     std::vector<uint8_t> configObus;
