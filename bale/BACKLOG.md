@@ -18,7 +18,6 @@ Last updated: 2026-11-22 (wrapper 2.1.0-bale.71).
 
 | Item | Waiting for |
 |---|---|
-| HEVC/H.264 passthrough media type: add the sequence header (VPS/SPS/PPS), video level, interlace mode and NALU length size (opt-in) | On hold. Bale is checking whether the source's media type matters for the GPU slowdown on the first 10-bit play after boot (step 2: restart + 60 s on Windows' own player). Colour attributes already exist behind `bale_compressed_color_info` (`ffmpeg-tune colorinfo=on`). |
 | Stream-sized decoder pool as the release default (HEVC, H.264, VP9) | Bale: long-play check, then release builds. Debug default since Bale b86a763 (2026-11-23). No fork change. |
 | Direct reads of decoder frames by the tone map (`bale_d3d11va_shader_resource`, bale.63/64; bale_gpu bit 64) | Bale: per-stage GPU timing (Bale `docs/resource-budget.md`). Off by default: the direct read removed the 23.9 MiB scratch, but app memory rose ~90 MiB unreported. Parked tests: does the extra stay flat or grow; read one fixed slice; GPU time on vs off. |
 | dav1d D3D11 GPU grain (`bale_film_grain_mode=3`, bale.60) | Owner: visual check on the TV. Console: works for NV12 and P010, 1.11 vs 1.51 cores (1080p 10-bit, Series X). |
@@ -27,6 +26,7 @@ Last updated: 2026-11-22 (wrapper 2.1.0-bale.71).
 
 ## Parked or on hold (owner decisions)
 
+- **HEVC/H.264 passthrough media-type attributes (sequence header, level, interlace, NALU length):** not needed. The first-10-bit-after-boot slowdown no longer reproduces (likely an OS update), and the 8 vs 21 attributes made no difference (Bale `player-plan.md`, 2026-11-23).
 - **Upstream pull requests:** not before Bale is stable, and only with the owner's approval.
 - **D3D12 / SM6 tone map:** parked by the owner (2026-11-18).
 - **rav1g pipeline cache (ABI 2, `rav1g_device_create_with_cache`):** on hold; creating the device with the cache removed the GPU device on the console.
