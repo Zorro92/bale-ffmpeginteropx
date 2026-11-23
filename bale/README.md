@@ -196,7 +196,9 @@ out=<output_path> decode=<cpu FRAME> entropy=<ENTROPY_WALL> waitout=<WAIT_OUTPUT
 gpu=<gpu_span_ms, -1 without timestamps> gap=<gpu_gap_ms> done=<complete_ms>` (ms; `done` on the same
 QPC clock). `u` is av1_perf_frame::user_data, the pts is the fork's for that unit; hidden frames and
 show-existing copies have their own records. The callback is process-wide: with several streams on
-perf=2 at once, the last one resolves the pts.
+perf=2 at once, the last one resolves the pts. Use `2` only with a rav1g.dll from v0.6.0-alpha.3 on: an older library's
+record ends at 624 bytes, and the frame line reads `user_data` past it (the record carries no size,
+so the fork can't tell). `1` reads only fields before 624 and works with either.
 
 `bale_rav1g_perf` (0/1, default 0) appends rav1g's own timing run to the delivery line:
 ` rav1g perf records=N decode thread avg=.. max=.. ms gpu avg=.. max=.. ms shown=N showable=N
