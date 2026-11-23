@@ -185,9 +185,9 @@ after its copy or stage. On 4K with 3 slots, 4 were created and `get_image` neve
 Images not created yet still count against `memory_available` (up to 10 × 23.7 MiB at 4K 10-bit).
 
 `bale_rav1g_perf=2` (bale.72, debug only) adds one line per frame for the stage, host clock in ms
-(QueryPerformanceCounter, the base of rav1g's `complete_ms`): `Bale rav1g stage u=<unit> pts=<ms>
+(QPC ticks x 1000 / QPF, the base of rav1g's `complete_ms`): `Bale rav1g stage u=<unit> pts=<100 ns>
 take=.. submit=.. release=.. gpudone=..`. `u` is the fork's unit counter (rav1g's `user_data`), `pts`
-the sample time as delivered (Bale keys its renderer log on it); take = the sample thread took the
+the sample's timestamp in 100 ns as handed to Media Foundation (Bale keys its renderer log on it); take = the sample thread took the
 frame, submit = the stage or copy submitted and flushed, release = the image back in the pool,
 gpudone = the image's release fence passed (the D3D11 work on it finished; a thread-pool wait on the
 fence). About 60 lines/s at 4K60. A per-frame rav1g line (`Bale rav1g frame u= pts= ...` from

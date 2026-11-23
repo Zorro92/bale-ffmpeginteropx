@@ -624,7 +624,7 @@ private:
         return static_cast<double>(counter.QuadPart) / perMs;
     }
 
-    // Debug (bale_rav1g_perf=2): `Bale rav1g stage u=<unit> pts=<ms> take=.. submit=.. release=..
+    // Debug (bale_rav1g_perf=2): `Bale rav1g stage u=<unit> pts=<100 ns> take=.. submit=.. release=..
     // gpudone=..` per frame, host clock ms. take: the sample thread took the frame; submit: the stage or
     // copy was submitted and flushed; release: the image went back to the pool; gpudone: the image's
     // release fence passed, i.e. the D3D11 work on it finished (a thread-pool wait on the fence).
@@ -632,7 +632,8 @@ private:
     {
         const char* logName;
         uint64_t unit;
-        double ptsMs, takeMs, submitMs, releaseMs;
+        int64_t pts; // 100 ns, the sample's timestamp as handed to Media Foundation
+        double takeMs, submitMs, releaseMs;
         HANDLE event;
         PTP_WAIT wait;
     };
@@ -641,7 +642,7 @@ private:
     {
         try
         {
-            auto times = new StageTimes{ logName, timing.userData, ConvertPosition(timing.pts).count() / 10000.0,
+            auto times = new StageTimes{ logName, timing.userData, ConvertPosition(timing.pts).count(),
                 frameTakeMs, submitMs, releaseMs, nullptr, nullptr };
             times->event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
             if (times->event) times->wait = CreateThreadpoolWait(&OnStageDone, times, nullptr);
@@ -662,8 +663,8 @@ private:
     static void CALLBACK OnStageDone(PTP_CALLBACK_INSTANCE, void* context, PTP_WAIT wait, TP_WAIT_RESULT) noexcept
     {
         auto times = static_cast<StageTimes*>(context);
-        av_log(nullptr, AV_LOG_INFO, "%s stage u=%llu pts=%.1f take=%.3f submit=%.3f release=%.3f gpudone=%.3f\n",
-            times->logName, static_cast<unsigned long long>(times->unit), times->ptsMs, times->takeMs,
+        av_log(nullptr, AV_LOG_INFO, "%s stage u=%llu pts=%lld take=%.3f submit=%.3f release=%.3f gpudone=%.3f\n",
+            times->logName, static_cast<unsigned long long>(times->unit), static_cast<long long>(times->pts), times->takeMs,
             times->submitMs, times->releaseMs, QpcMs());
         CloseHandle(times->event);
         CloseThreadpoolWait(wait);
