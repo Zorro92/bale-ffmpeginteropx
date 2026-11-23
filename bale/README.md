@@ -198,7 +198,9 @@ QPC clock). `u` is av1_perf_frame::user_data, the pts is the fork's for that uni
 show-existing copies have their own records. The callback is process-wide: with several streams on
 perf=2 at once, the last one resolves the pts. Use `2` only with a rav1g.dll from v0.6.0-alpha.3 on: an older library's
 record ends at 624 bytes, and the frame line reads `user_data` past it (the record carries no size,
-so the fork can't tell). `1` reads only fields before 624 and works with either.
+so the fork can't tell). `1` reads only fields before 624 and works with either. Console (Bale 1dd031e: bale.73 with rav1g
+v0.6.0-alpha.3, 4K60 AV1 60 Mbps, 45 s): 1797 frame and 1797 stage lines, all joinable on pts with
+Bale's per-sample `frame:` log.
 
 `bale_rav1g_perf` (0/1, default 0) appends rav1g's own timing run to the delivery line:
 ` rav1g perf records=N decode thread avg=.. max=.. ms gpu avg=.. max=.. ms shown=N showable=N
