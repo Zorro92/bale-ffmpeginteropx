@@ -515,15 +515,24 @@ sub-layers); films typically need 5 or 6. With the key, the fork's `get_format`
 B), builds the pool itself with `avcodec_get_hw_frames_parameters`, and gives it the buffer plus 3
 surfaces (frames FFmpeg holds for output, and the providers' brief use while they copy or process a
 frame), never more than FFmpeg's own size. A typical 4K 10-bit film then gets ~9 surfaces
-(~213 MiB, ~265 MiB less). Anything it can't read (no SPS in the codec configuration, a parse error,
-H.264 and other codecs for now) keeps FFmpeg's pool. Logs: `D3D11 decoder pool: N surfaces WxH
+(~213 MiB, ~265 MiB less). Since bale.69 also:
+- **H.264:** `max_dec_frame_buffering + 1` from the SPS's VUI bitstream restriction, or without it
+  the level's MaxDpbMbs over the picture size (Table A-1, at most 16), never fewer than
+  `max_num_ref_frames`; plus 3. Typical 1080p films: 20 → ~8 surfaces (~35 MiB less at 1080p 8-bit).
+- **VP9:** its 8 reference slots + the current frame, plus 2 (VP9 never holds frames back for output
+  order): 12 → 11, one surface (23.7 MiB at 4K 10-bit) less.
+Anything it can't read (no SPS in the codec configuration, a parse error, other codecs) keeps
+FFmpeg's pool. Logs: `D3D11 decoder pool: N surfaces WxH
 (stream buffer B, FFmpeg default D)` or `... stream buffer unknown (codec C); FFmpeg's default`.
 
 Sized against: the app memory limit (3328 MiB with `hevcPlayback`, 1024 MiB without) and consoles
 with less memory than the Series X. Limit: an SPS that arrives later in the stream with a larger
 buffer and no format change keeps the smaller pool, and decoding then runs out of surfaces; that's
 why it's opt-in. The SPS reader matched FFmpeg's `trace_headers` on x265 test streams (buffer 3 to 7,
-with and without temporal sub-layers, hvcC and Annex B) and survives random and truncated input.
+with and without temporal sub-layers, hvcC and Annex B) and survives random and truncated input. The
+H.264 reader matched it on x264 streams (progressive, interlaced, High 10; buffer 1 to 5; avcC and
+Annex B) and on hand-built SPSs without a VUI (level 3.0 interlaced, 4.1 1080p, 5.1 4K), with
+scaling lists and with HRD parameters, and survives random and truncated input.
 
 Console (Series X, bale.68, Bale 19e6a77, 2026-11-22; 30 s 4K60 clips, two seeks each, idle state):
 4K HEVC HDR10 60 Mbps with the tone map and 4K HEVC SDR 100 Mbps with the downscale each went from
