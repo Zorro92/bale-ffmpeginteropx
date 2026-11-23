@@ -5,13 +5,12 @@ item when work is proposed, move it when its state changes, and drop "Done" entr
 older than a few releases (the commits and `README.md` keep the details). Every design item is sized
 against the console limits in `AGENTS.md` ("Design against the console's limits").
 
-Last updated: 2026-11-22 (wrapper 2.1.0-bale.67).
+Last updated: 2026-11-22 (wrapper 2.1.0-bale.68).
 
 ## Open: fork work
 
 | Item | State | Why / sized against |
 |---|---|---|
-| Smaller d3d11va decoder pool: an opt-in key (e.g. `bale_d3d11va_surfaces=auto`) that sizes FFmpeg's decoder texture array from the stream's own SPS (max_dec_pic_buffering + 1 + a small margin), falling back to FFmpeg's default when it can't be read | Designed, not started | FFmpeg allocates 4 + 16 surfaces for HEVC/H.264 up front: 20 x 23.7 MiB = 478 MiB at 4K P010 (ledger 16). A typical film needs ~9, saving ~260 MiB. Not urgent within the 3328 MiB app limit. Risk: a pool too small fails decoding, hence SPS-derived and opt-in. |
 | rav1g route: avoid the per-frame copy of direct output into the player pool | Idea | One full-frame GPU copy per frame (GPU copies are ~2.4x slower in the idle state). The copy exists because handing decoder images to Media Foundation deadlocked the fixed image pool (bale.45), so any change needs a new design for that. |
 | FFmpeg 9.x | Deferred | 9.0/9.1 bring nothing the fork needs (HEVC hardening, a driver-compat SRV flag). Easier once Bale drops dav1d zero-copy, so native FFmpeg needs no dav1d patch (`p1`). |
 
@@ -19,6 +18,7 @@ Last updated: 2026-11-22 (wrapper 2.1.0-bale.67).
 
 | Item | Waiting for |
 |---|---|
+| Decoder pool sized from the stream (`bale_d3d11va_pool_from_stream`, bale.68; HEVC) | Bale: console test on HEVC films (4K HDR and 1080p, seeks): ledger 16 should drop from 20 slices to ~9, with no decode errors. H.264 support later if wanted. Preventive, for consoles with less memory. |
 | rav1g 4K60 AV1 at ~45–50 fps | Bale: the cause is bale_gpu's 4K→1080p downscale, ~10 ms of GPU per frame (A/B: 57.5 fps without the stage vs 47.9 with it). Bale is fixing the stage; nothing for the fork. |
 | Direct reads of decoder frames by the tone map (`bale_d3d11va_shader_resource`, bale.63/64; bale_gpu bit 64) | Bale: per-stage GPU timing (Bale `docs/resource-budget.md`). Off by default: the direct read removed the 23.9 MiB scratch, but app memory rose ~90 MiB unreported. Parked tests: does the extra stay flat or grow; read one fixed slice; GPU time on vs off. |
 | dav1d D3D11 GPU grain (`bale_film_grain_mode=3`, bale.60) | Owner: visual check on the TV. Console: works for NV12 and P010, 1.11 vs 1.51 cores (1080p 10-bit, Series X). |
@@ -42,6 +42,7 @@ Last updated: 2026-11-22 (wrapper 2.1.0-bale.67).
 
 | Release | What |
 |---|---|
+| bale.68 | d3d11va decoder pool sized from the HEVC SPS (opt-in) |
 | bale.67 | rav1g image pool takes an image whose D3D11 readers are done (or creates one) instead of the first free one; logs `image release wait` |
 | bale.66 | rav1g delivery line: decode-thread waits (output, slot, fb, image), entropy wall, packet read and decode-call gap, for the 4K60 stalls |
 | bale.65 | rav1g headers from v0.6.0-alpha.1 (perf record 624 bytes) |

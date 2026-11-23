@@ -20,6 +20,7 @@
 #include "GpuDecoderSampleProvider.h"
 #include "BaleRav1g.h"
 #include "BaleD3D11vaShaderResource.h"
+#include "D3D11DecoderPoolSize.h"
 // Bale: Media Foundation error codes for streams zero-copy refuses at open.
 #include <mferror.h>
 #include <atomic>
@@ -1216,7 +1217,8 @@ namespace winrt::FFmpegInteropX::implementation
 
             if (SUCCEEDED(hr))
             {
-                avVideoCodecCtx->get_format = &get_format;
+                // Bale: the d3d11va frame pool sized from the stream (D3D11DecoderPoolSize.h), opt-in.
+                avVideoCodecCtx->get_format = baleD3d11vaPoolFromStream > 0 ? &D3D11DecoderPoolSize::GetFormat : &get_format;
 
                 // initialize the stream parameters with demuxer information
                 hr = avcodec_parameters_to_context(avVideoCodecCtx, avStream->codecpar);
@@ -2598,7 +2600,9 @@ namespace winrt::FFmpegInteropX::implementation
         {
             hardwareDecoderStatus = HardwareDecoderStatus::Available;
             auto processor = BaleToneMap::Create(baleToneMap, avStream->codecpar, baleToneMapOutputWidth, baleToneMapOutputHeight);
-            videoSampleProvider = std::shared_ptr<MediaSampleProvider>(new D3D11VideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr, std::move(processor), baleToneMapOutputWidth, baleToneMapOutputHeight, baleToneMapOutputDepth));
+            auto d3d11Provider = new D3D11VideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr, std::move(processor), baleToneMapOutputWidth, baleToneMapOutputHeight, baleToneMapOutputDepth);
+            d3d11Provider->PoolFromStream = baleD3d11vaPoolFromStream > 0;
+            videoSampleProvider = std::shared_ptr<MediaSampleProvider>(d3d11Provider);
         }
         else
         {
@@ -2745,6 +2749,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_subtitle_stream") { target = &baleSubtitleStream; minimum = 0; maximum = 65535; }
         else if (key == "bale_subtitle_sink") { target = &baleSubtitleSink; minimum = 1; maximum = 999999999; }
         else if (key == "bale_av1_decoder") { target = &baleAv1Decoder; minimum = 0; maximum = 1; }
+        else if (key == "bale_d3d11va_pool_from_stream") { target = &baleD3d11vaPoolFromStream; minimum = 0; maximum = 1; }
         else if (key == "bale_d3d11va_shader_resource") { target = &baleD3d11vaShaderResource; minimum = 0; maximum = 1; }
         else if (key == "bale_av1_fallback_max_height") { target = &baleAv1FallbackMaxHeight; minimum = 0; maximum = 8192; }
         else

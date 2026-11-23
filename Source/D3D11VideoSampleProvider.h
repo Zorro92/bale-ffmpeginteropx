@@ -8,6 +8,7 @@
 #include "DirectXInteropHelper.h"
 #include "FFmpegReader.h"
 #include "FFmpegUtils.h"
+#include "D3D11DecoderPoolSize.h"
 
 extern "C"
 {
@@ -76,6 +77,10 @@ public:
         ReturnTrackedSamples();
     }
 
+
+    // Size the decoder's frame pool from the stream (D3D11DecoderPoolSize) when the codec context is
+    // recreated for a new device, as the media source does at open.
+    bool PoolFromStream = false;
 
     virtual HRESULT CreateBufferFromFrame(IBuffer* pBuffer, IDirect3DSurface* surface, AVFrame* avFrame, int64_t& framePts, int64_t& frameDuration) override
     {
@@ -364,7 +369,7 @@ public:
         if (SUCCEEDED(hr))
         {
             m_pAvCodecCtx->hw_device_ctx = avHardwareContext ? av_buffer_ref(avHardwareContext) : NULL;
-            m_pAvCodecCtx->get_format = &FFmpegUtils::get_format;
+            m_pAvCodecCtx->get_format = PoolFromStream ? &D3D11DecoderPoolSize::GetFormat : &FFmpegUtils::get_format;
             hr = avcodec_open2(m_pAvCodecCtx, codec, NULL);
         }
 

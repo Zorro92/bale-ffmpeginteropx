@@ -503,6 +503,29 @@ console does not report interface data that way, each report replaces the ticket
 balanced, but each report costs an allocation. To check on the console: the per-category figures return to idle
 after stop/start cycles and follow the textures in use. Category 22 falls back to zero when each rav1g stream stops.
 
+## Decoder pool sized from the stream
+
+`bale_d3d11va_pool_from_stream` (0/1, default 0 = FFmpeg's pool; bale.68) sizes the d3d11va
+decoder's frame pool from the stream. FFmpeg allocates that pool once, as one texture array that
+cannot grow, with 4 surfaces plus 16 for H.264 and HEVC (the most pictures either standard lets a
+stream keep): 20 x 23.7 MiB = 478 MiB at 4K 10-bit (ledger 16). An HEVC stream states its decoded
+picture buffer in its SPS (`sps_max_dec_pic_buffering_minus1 + 1`, the largest over the
+sub-layers); films typically need 5 or 6. With the key, the fork's `get_format`
+(`Source/D3D11DecoderPoolSize.h`, generic) reads that from the codec configuration (hvcC or Annex
+B), builds the pool itself with `avcodec_get_hw_frames_parameters`, and gives it the buffer plus 3
+surfaces (frames FFmpeg holds for output, and the providers' brief use while they copy or process a
+frame), never more than FFmpeg's own size. A typical 4K 10-bit film then gets ~9 surfaces
+(~213 MiB, ~265 MiB less). Anything it can't read (no SPS in the codec configuration, a parse error,
+H.264 and other codecs for now) keeps FFmpeg's pool. Logs: `D3D11 decoder pool: N surfaces WxH
+(stream buffer B, FFmpeg default D)` or `... stream buffer unknown (codec C); FFmpeg's default`.
+
+Sized against: the app memory limit (3328 MiB with `hevcPlayback`, 1024 MiB without) and consoles
+with less memory than the Series X. Limit: an SPS that arrives later in the stream with a larger
+buffer and no format change keeps the smaller pool, and decoding then runs out of surfaces; that's
+why it's opt-in. The SPS reader matched FFmpeg's `trace_headers` on x265 test streams (buffer 3 to 7,
+with and without temporal sub-layers, hvcC and Annex B) and survives random and truncated input.
+Not console-tested yet.
+
 ## Shader-readable decoder pools (experiment)
 
 `bale_d3d11va_shader_resource` (0/1, default 0) asks whether the stage could read d3d11va decoder
