@@ -11,6 +11,7 @@ Last updated: 2026-11-22 (wrapper 2.1.0-bale.71).
 
 | Item | State | Why / sized against |
 |---|---|---|
+| Per-frame rav1g timing lines (`bale_rav1g_perf=2`): `Bale rav1g frame u= pts= ...` from av1_perf_frame, plus `Bale rav1g stage u= pts= take= submit= gpudone= release=` (QPC ms) | Agreed in shape with rav1g; waiting for rav1g to confirm the clock base and tag av1_perf_frame::user_data (632 bytes) | Owner's bar: 4K60 AV1 up to 40 Mbps smooth, 60 Mbps headroom. Bale keys its renderer/stall log by pts. Debug only (~120 lines/s at 4K60). |
 | rav1g route: avoid the per-frame copy of direct output into the player pool | Idea | One full-frame GPU copy per frame (GPU copies are ~2.4x slower in the idle state). The copy exists because handing decoder images to Media Foundation deadlocked the fixed image pool (bale.45), so any change needs a new design for that. |
 | FFmpeg 9.x | Deferred | 9.0/9.1 bring nothing the fork needs (HEVC hardening, a driver-compat SRV flag). Easier once Bale drops dav1d zero-copy, so native FFmpeg needs no dav1d patch (`p1`). |
 
