@@ -638,12 +638,11 @@ private:
         PTP_WAIT wait;
     };
 
-    void LogStageTimes(const FrameTiming& timing, uint64_t releaseValue, double submitMs, double releaseMs) noexcept
+    void LogStageTimes(uint64_t unit, int64_t pts, uint64_t releaseValue, double submitMs, double releaseMs) noexcept
     {
         try
         {
-            auto times = new StageTimes{ logName, timing.userData, ConvertPosition(timing.pts).count(),
-                frameTakeMs, submitMs, releaseMs, nullptr, nullptr };
+            auto times = new StageTimes{ logName, unit, pts, frameTakeMs, submitMs, releaseMs, nullptr, nullptr };
             times->event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
             if (times->event) times->wait = CreateThreadpoolWait(&OnStageDone, times, nullptr);
             if (!times->event || !times->wait || FAILED(releaseFence->SetEventOnCompletion(releaseValue, times->event)))
@@ -1288,7 +1287,7 @@ private:
             // The processor or the copy has read the image (fenced); the sample carries the output.
             pool->Release(image, releaseValue);
             image = nullptr;
-            if (perFrameLog) LogStageTimes(timing, releaseValue, submitMs, QpcMs());
+            if (perFrameLog) LogStageTimes(timing.userData, ConvertPosition(timing.pts).count(), releaseValue, submitMs, QpcMs());
             pendingOutput = output;
             *surface = DirectXInteropHelper::GetSurface(output.as<IDXGISurface>());
             framesOut++;
