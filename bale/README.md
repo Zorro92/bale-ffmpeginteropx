@@ -649,7 +649,13 @@ processes the frames`. The delivery line's perf part adds `display n= avg= max= 
 time) and the per-frame line `display=`. rav1g measured the pass at 1.0/1.2 ms per 4K frame to 1080p
 (SDR/HDR10), 1.1/1.5 to 1440p and 1.5/1.8 at 4K 1:1 on the console, against Bale's stage at up to
 ~5.6 ms SDR and ~9 ms HDR10. Sized against: GPU time per 4K60 frame (16.7 ms) and the idle state's
-slow GPU copies (the fork's copy is of the display-size image only). Not console-tested in Bale yet.
+slow GPU copies (the fork's copy is of the display-size image only).
+
+Console (Series X, bale.74 with rav1g v0.7.0-alpha.1, Bale 93a7861, 2026-11-23; 4K60 AV1 60 Mbps to a
+1080p SDR display): `display pass 1920x1080 depth=10`, no declines. SDR: 0% missed frames with the
+display pass against 3.4–4.9% with the stage; HDR10: 0% against 12–13%. The pass took 1.0 ms (SDR) and
+1.18 ms (HDR10) of GPU per frame. rav1g's output images: 47.5 MiB (8 at 1080p) against 237.3 MiB at 4K
+with the stage.
 Design: rav1g `docs/bale-display-pass.md` at v0.7.0-alpha.1.
 
 ## Console evidence (Xbox Series X, app mode, SDR display)
