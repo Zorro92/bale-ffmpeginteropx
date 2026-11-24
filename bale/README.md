@@ -345,8 +345,12 @@ Frame grabbers never use it. With `"1"`, `bale_zero_copy`, `bale_d3d11_upload` a
 Code: generic `GpuVideoDecoder.h` (decoder interface), `GpuDecoderImagePool.h` (output
 images), `GpuDecoderSampleProvider.h` (the provider); all rav1g glue in `BaleRav1g.h`.
 `Source/rav1g.h` is rav1g's `crates/rav1g/include/rav1g.h`, copied verbatim (rav1g
-v0.6.0-alpha.1, `88c05f0`, interface version 1; copy it again, unchanged, when rav1g changes it).
-`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.6.0-alpha.3 (`ddc5145`; 632 bytes since it added `user_data` at the end, so wrappers before bale.73 read the first 624 bytes unchanged), copied verbatim
+v0.7.0-alpha.1, `9f834c7`, interface version 2 since bale.74; version 1 before; copy it again, unchanged,
+when rav1g changes it). The loader accepts exactly the header's version, so bale.74 and later need a
+rav1g.dll of interface version 2 (v0.7.0-alpha.1 on) and wrappers up to bale.73 need version 1: a
+mismatch logs `Bale rav1g: interface version N, expected M` and the stream falls back to dav1d. Pin
+wrapper and DLL together.
+`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.7.0-alpha.1 (`9f834c7`; 640 bytes, with the GPU stage `AV1_PERF_GPU_DISPLAY` and `user_data` at 632; 632 bytes in v0.6.0-alpha.3), copied verbatim
 (only for `bale_rav1g_perf`). No new
 native FFmpeg build is needed; Bale ships `rav1g.dll` in its package.
 
@@ -621,6 +625,28 @@ either way. The bind flag alone costs nothing (bale.63 with the old, copying bal
 Likely the driver keeps shader-readable copies of decoder surfaces it stores in a decoder-only
 layout (~3-4 slices' worth), so the copy may only have moved into the driver. Bale keeps it off by
 default until per-stage GPU timing shows a saving.
+
+## rav1g display pass (trial)
+
+`bale_rav1g_display` (0/1, default 0; bale.74, rav1g interface version 2) lets rav1g write what the
+stage would write for an AV1 stream on the rav1g route: the frame fitted into the stage's output size
+and tone-mapped (BT.2390, 1000-nit peak, 100-nit white, no desaturation) or gamut-converted to BT.709
+SDR, P010 (or NV12, dithered when the stage would dither it), by one compute pass at the end of
+rav1g's own command list (`Rav1gSettings::display`). The fork then copies that display-size image
+into its player texture instead of running `BaleToneMap::Process`, and the decoder's images are
+display-sized (4 x 5.9 MiB at 1080p instead of 4 x 23.7 MiB). It applies only where the stage runs (HDR
+on an SDR display, SDR larger than the display) and not for curve 2 (Hable). The container's colour
+code points fill what the sequence header leaves unspecified, and its chroma siting what it leaves
+unknown. If rav1g can't do the configuration (`RAV1G_STATUS_INCAPABLE`) the decoder is created without
+it and the stage processes the frames as before; the generic part is
+`GpuVideoDecoder::SetDisplayOutput` and `GpuDecodedFrame::displayOutput`. Logs: `Bale rav1g: display
+pass requested`, then `display pass WxH depth=D` or `display pass declined (incapable); the stage
+processes the frames`. The delivery line's perf part adds `display n= avg= max= ms` (the pass's GPU
+time) and the per-frame line `display=`. rav1g measured the pass at 1.0/1.2 ms per 4K frame to 1080p
+(SDR/HDR10), 1.1/1.5 to 1440p and 1.5/1.8 at 4K 1:1 on the console, against Bale's stage at up to
+~5.6 ms SDR and ~9 ms HDR10. Sized against: GPU time per 4K60 frame (16.7 ms) and the idle state's
+slow GPU copies (the fork's copy is of the display-size image only). Not console-tested in Bale yet.
+Design: rav1g `docs/bale-display-pass.md` at v0.7.0-alpha.1.
 
 ## Console evidence (Xbox Series X, app mode, SDR display)
 

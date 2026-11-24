@@ -44,6 +44,10 @@ enum {
                                   AV1_PERF_GPU_CDEF in the command list */
   AV1_PERF_GPU_PRED_COUNT,    /* group counts and record ranks for -parseopt gpublists */
   AV1_PERF_GPU_PRED_SCAN,     /* scan the group counts and write indirect arguments */
+  AV1_PERF_GPU_DISPLAY,       /* the display pass (Rav1gSettings::display): the frame into the display-size
+                                 image, downscaled and tone-mapped, in place of copy_plane; behind the others
+                                 here, at the end of the command list (behind film_grain on a grain frame).
+                                 Its stage time is what an application shows as its display stage. */
   AV1_PERF_GPU_STAGE_COUNT,
   AV1_PERF_GPU_BEGIN = 255     /* first timestamp of a command list */
 };
@@ -63,6 +67,7 @@ enum {
                                       and runs without cdef_filter_v3: -cdefv3legacy, -cdefv1) */
   AV1_PERF_OUTPUT_COPY_OTHER,      /* copy pass: no direct texture (planes, buffer or staged output), or a
                                       show-existing frame */
+  AV1_PERF_OUTPUT_DISPLAY,         /* the display pass wrote the image (AV1_PERF_GPU_DISPLAY); no copy pass */
   AV1_PERF_OUTPUT_COUNT
 };
 
@@ -315,6 +320,14 @@ void av1_set_cdef_v3_legacy(int enable);
  * (-outputcopylegacy); the decoded output is the same. Change only while no
  * frame is in flight. */
 void av1_set_output_copy_legacy(int enable);
+
+/* Process-wide. Non-zero records the front of a frame's command list as
+ * before the merge (-frontmergelegacy): the mode info grid build,
+ * gen_pred_blocks, the residual clear with the transform sort, the loop
+ * filter's edge lists and the CDEF lists each in a dependent step of their
+ * own. Zero (the default) records them in two steps. The decoded output is
+ * the same. Change only while no frame is in flight. */
+void av1_set_front_merge_legacy(int enable);
 
 /* Process-wide. Set while no frame is in flight. Non-zero skips film grain synthesis. */
 void av1_set_skip_film_grain(int enable);

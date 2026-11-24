@@ -14,18 +14,18 @@ extern "C"
 }
 
 // The record of rav1g's timing run (av1_perf_frame, for rav1g_set_perf_callback), copied verbatim
-// from Zorro92/rav1g libav1/dx/av1_perf.h at tag v0.6.0-alpha.3 (commit ddc5145). The record is not
+// from Zorro92/rav1g libav1/dx/av1_perf.h at tag v0.7.0-alpha.1 (commit 9f834c7). The record is not
 // covered by rav1g's interface version: copy it again, unchanged, from the rav1g release Bale ships,
 // and check its size below against rav1g's (crates/rav1g-sys/src/perf.rs). Included before rav1g.h,
 // which then takes the full definition instead of declaring the struct.
 #include "av1_perf.h"
-static_assert(sizeof(void*) != 8 || sizeof(av1_perf_frame) == 632, "av1_perf_frame differs from rav1g v0.6.0-alpha.3's");
+static_assert(sizeof(void*) != 8 || sizeof(av1_perf_frame) == 640, "av1_perf_frame differs from rav1g v0.7.0-alpha.1's");
 
 // rav1g's C interface, copied verbatim from Zorro92/rav1g crates/rav1g/include/rav1g.h (tag
-// v0.6.0-alpha.1, commit 88c05f0, interface version 1). rav1g owns the header: copy it again, unchanged, whenever rav1g
+// v0.7.0-alpha.1, commit 9f834c7, interface version 2). rav1g owns the header: copy it again, unchanged, whenever rav1g
 // changes it, and raise the expected version below with it.
 #include "rav1g.h"
-static_assert(RAV1G_ABI_VERSION == 1, "BaleRav1g.h is written against rav1g interface version 1");
+static_assert(RAV1G_ABI_VERSION == 2, "BaleRav1g.h is written against rav1g interface version 2");
 
 // Bale glue for rav1g (GPU AV1 decoding in D3D12 compute shaders): loading rav1g.dll from the app
 // package, the process-wide device, and (below) the GpuVideoDecoder implementation. Nothing outside
@@ -193,6 +193,9 @@ public:
         uint32_t showExisting = 0;
         // Decode-thread waits and the tile decode's wall time (cpu_ms), sum and max per window.
         enum Wait { Output, Slot, FrameBuffer, Image, Entropy, WaitCount };
+        uint32_t displayRecords = 0; // records with the display pass (AV1_PERF_GPU_DISPLAY)
+        double displaySumMs = 0;
+        double displayMaxMs = 0;
         double waitSumMs[WaitCount]{};
         double waitMaxMs[WaitCount]{};
     };
@@ -283,17 +286,25 @@ private:
             window.waitSumMs[i] += ms;
             window.waitMaxMs[i] = (std::max)(window.waitMaxMs[i], ms);
         }
+        if (frame->gpu_valid && frame->gpu_stage_hits[AV1_PERF_GPU_DISPLAY] > 0)
+        {
+            window.displayRecords++;
+            window.displaySumMs += frame->gpu_stage_ms[AV1_PERF_GPU_DISPLAY];
+            window.displayMaxMs = (std::max)(window.displayMaxMs, frame->gpu_stage_ms[AV1_PERF_GPU_DISPLAY]);
+        }
         if (self->frameHost)
         {
             int64_t pts = -1;
             if (!self->frameHost->UnitTimestamp(frame->user_data, pts)) pts = -1;
             av_log(nullptr, AV_LOG_INFO,
                 "Bale rav1g frame u=%llu pts=%lld show=%d sef=%d intra=%d out=%d decode=%.3f entropy=%.3f waitout=%.3f"
-                " waitslot=%.3f gpu=%.3f gap=%.3f done=%.3f\n",
+                " waitslot=%.3f gpu=%.3f display=%.3f gap=%.3f done=%.3f\n",
                 static_cast<unsigned long long>(frame->user_data), static_cast<long long>(pts), frame->show_frame,
                 frame->is_sef, frame->intra_frame, frame->output_path, frame->cpu_ms[AV1_PERF_CPU_FRAME],
                 frame->cpu_ms[AV1_PERF_CPU_ENTROPY_WALL], frame->cpu_ms[AV1_PERF_CPU_WAIT_OUTPUT],
-                frame->cpu_ms[AV1_PERF_CPU_WAIT_SLOT], frame->gpu_valid ? frame->gpu_span_ms : -1.0, frame->gpu_gap_ms,
+                frame->cpu_ms[AV1_PERF_CPU_WAIT_SLOT], frame->gpu_valid ? frame->gpu_span_ms : -1.0,
+                frame->gpu_valid && frame->gpu_stage_hits[AV1_PERF_GPU_DISPLAY] > 0 ? frame->gpu_stage_ms[AV1_PERF_GPU_DISPLAY] : -1.0,
+                frame->gpu_gap_ms,
                 frame->complete_ms);
         }
         if (frame->show_frame) window.shown++;
@@ -448,6 +459,26 @@ public:
         settings.output.frame = &Frame;
         settings.output.unused = &Unused;
         settings.output.end_of_frames = nullptr;
+        if (displayRequested)
+        {
+            // The stage's work in rav1g's own command list (Bale's configuration: BT.2390, 1000-nit
+            // peak, 100-nit white, no desaturation); the images come at the display size.
+            settings.display.width = display.width;
+            settings.display.height = display.height;
+            settings.display.transform = RAV1G_DISPLAY_TRANSFORM_AUTO;
+            settings.display.tone_curve = RAV1G_TONE_CURVE_BT2390;
+            settings.display.source_peak_nits = 1000.0f;
+            settings.display.target_white_nits = 100.0f;
+            settings.display.desaturation = 0.0f;
+            settings.display.depth = display.depth;
+            settings.display.dither = display.depth == 8 && display.dither ? RAV1G_DISPLAY_DITHER_AUTO : RAV1G_DISPLAY_DITHER_OFF;
+            settings.display.assumed_primaries = display.primaries;
+            settings.display.assumed_transfer_characteristics = display.transfer;
+            settings.display.assumed_matrix_coefficients = display.matrix;
+            settings.display.assumed_chroma_sample_position = static_cast<uint8_t>(
+                display.chromaLocation == AVCHROMA_LOC_LEFT ? RAV1G_CHROMA_SAMPLE_POSITION_VERTICAL :
+                display.chromaLocation == AVCHROMA_LOC_TOPLEFT ? RAV1G_CHROMA_SAMPLE_POSITION_COLOCATED : 0);
+        }
         if (parseFrames > 0)
         {
             // Frames in parse and parse threads (rav1g: frames in parse never exceed the threads; the
@@ -456,6 +487,19 @@ public:
             settings.threads = parseFrames;
         }
         auto status = api.decoderCreate(shared.device, &settings, &decoder);
+        if (displayRequested && status == RAV1G_STATUS_INCAPABLE)
+        {
+            // rav1g can't do this configuration (or the device can't write the format): the provider's
+            // stage takes the frames as before.
+            av_log(nullptr, AV_LOG_INFO, "Bale rav1g: display pass declined (incapable); the stage processes the frames\n");
+            settings.display = {};
+            decoder = nullptr;
+            status = api.decoderCreate(shared.device, &settings, &decoder);
+        }
+        else if (displayRequested && status == RAV1G_STATUS_OK)
+        {
+            av_log(nullptr, AV_LOG_INFO, "Bale rav1g: display pass %ux%u depth=%u\n", display.width, display.height, display.depth);
+        }
         if (status != RAV1G_STATUS_OK || !decoder)
         {
             decoder = nullptr;
@@ -555,6 +599,14 @@ public:
 
     uint64_t DeviceBytes() const override { return deviceBytes; }
 
+    bool SetDisplayOutput(const GpuDisplayOutput& output) override
+    {
+        if (!output.width || !output.height || (output.depth != 8 && output.depth != 10)) return false;
+        display = output;
+        displayRequested = true;
+        return true;
+    }
+
     void AppendStatistics(std::string& line) override
     {
         if (!perfStatistics) return;
@@ -565,13 +617,14 @@ public:
         auto length = snprintf(text, sizeof(text),
             " rav1g perf records=%u decode thread avg=%.1f max=%.1f ms gpu avg=%.1f max=%.1f ms shown=%u showable=%u sef=%u"
             " wait output avg=%.1f max=%.1f slot avg=%.1f max=%.1f fb avg=%.1f max=%.1f image avg=%.1f max=%.1f ms"
-            " entropy wall avg=%.1f max=%.1f ms",
+            " entropy wall avg=%.1f max=%.1f ms display n=%u avg=%.2f max=%.2f ms",
             window.records, window.records ? window.decodeSumMs / window.records : 0.0, window.decodeMaxMs,
             window.gpuRecords ? window.gpuSumMs / window.gpuRecords : 0.0, window.gpuMaxMs,
             window.shown, window.showable, window.showExisting,
             avg(W::Output), window.waitMaxMs[W::Output], avg(W::Slot), window.waitMaxMs[W::Slot],
             avg(W::FrameBuffer), window.waitMaxMs[W::FrameBuffer], avg(W::Image), window.waitMaxMs[W::Image],
-            avg(W::Entropy), window.waitMaxMs[W::Entropy]);
+            avg(W::Entropy), window.waitMaxMs[W::Entropy],
+            window.displayRecords, window.displayRecords ? window.displaySumMs / window.displayRecords : 0.0, window.displayMaxMs);
         if (length > 0) line.append(text, (std::min)(static_cast<size_t>(length), sizeof(text) - 1));
     }
 
@@ -624,17 +677,18 @@ private:
         return unit;
     }
 
-    static VideoFrameColorInfo ColorInfo(const Rav1gFrame& frame)
+    // color: the frame's (the image's) or its source_color (what was decoded, with the display pass).
+    static VideoFrameColorInfo ColorInfo(const Rav1gFrame& frame, const Rav1gColorInfo& color)
     {
         // AV1 code points are H.273's, like FFmpeg's; 2 (unspecified) without a colour description.
         VideoFrameColorInfo info;
-        info.transfer = frame.color.transfer_characteristics;
-        info.primaries = frame.color.primaries;
-        info.matrix = frame.color.matrix_coefficients;
-        info.range = static_cast<uint8_t>(frame.color.full_range ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG);
+        info.transfer = color.transfer_characteristics;
+        info.primaries = color.primaries;
+        info.matrix = color.matrix_coefficients;
+        info.range = static_cast<uint8_t>(color.full_range ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG);
         info.chromaLocation = static_cast<uint8_t>(
-            frame.color.chroma_sample_position == RAV1G_CHROMA_SAMPLE_POSITION_VERTICAL ? AVCHROMA_LOC_LEFT :
-            frame.color.chroma_sample_position == RAV1G_CHROMA_SAMPLE_POSITION_COLOCATED ? AVCHROMA_LOC_TOPLEFT :
+            color.chroma_sample_position == RAV1G_CHROMA_SAMPLE_POSITION_VERTICAL ? AVCHROMA_LOC_LEFT :
+            color.chroma_sample_position == RAV1G_CHROMA_SAMPLE_POSITION_COLOCATED ? AVCHROMA_LOC_TOPLEFT :
             AVCHROMA_LOC_UNSPECIFIED);
         if (frame.has_mastering_display)
         {
@@ -691,8 +745,15 @@ private:
         decoded.height = frame->height;
         decoded.format = frame->format == RAV1G_IMAGE_FORMAT_P010 ? DXGI_FORMAT_P010 :
             frame->format == RAV1G_IMAGE_FORMAT_NV12 ? DXGI_FORMAT_NV12 : DXGI_FORMAT_UNKNOWN;
-        decoded.color = ColorInfo(*frame);
+        decoded.color = ColorInfo(*frame, frame->color);
         decoded.userData = frame->user_data;
+        if (frame->display_transform != RAV1G_DISPLAY_TRANSFORM_NONE)
+        {
+            decoded.displayOutput = true;
+            decoded.sourceWidth = frame->source_width;
+            decoded.sourceHeight = frame->source_height;
+            decoded.sourceColor = ColorInfo(*frame, frame->source_color);
+        }
         self->host->FrameReady(std::move(decoded));
     }
 
@@ -726,4 +787,6 @@ private:
     winrt::com_ptr<ID3D11Device5> device11;
     winrt::com_ptr<ID3D11Fence> fence11;
     bool sendConfig = false;
+    GpuDisplayOutput display;
+    bool displayRequested = false;
 };

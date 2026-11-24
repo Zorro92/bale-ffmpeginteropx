@@ -5,7 +5,7 @@ item when work is proposed, move it when its state changes, and drop "Done" entr
 older than a few releases (the commits and `README.md` keep the details). Every design item is sized
 against the console limits in `AGENTS.md` ("Design against the console's limits").
 
-Last updated: 2026-11-23 (wrapper 2.1.0-bale.73).
+Last updated: 2026-11-23 (wrapper 2.1.0-bale.74).
 
 ## Open: fork work
 
@@ -18,6 +18,7 @@ Last updated: 2026-11-23 (wrapper 2.1.0-bale.73).
 
 | Item | Waiting for |
 |---|---|
+| rav1g display pass trial (`bale_rav1g_display=1`, bale.74, rav1g v0.7.0-alpha.1, interface version 2) | Bale: pin bale.74 with rav1g v0.7.0-alpha.1 together (version lockstep), A/B display on/off on 4K60 AV1 SDR and HDR10 (fps, missed frames, stage/display GPU time, memory). |
 | Stream-sized decoder pool as the release default (HEVC, H.264, VP9) | Bale: long-play check, then release builds. Debug default since Bale b86a763 (2026-11-23). No fork change. |
 | Direct reads of decoder frames by the tone map (`bale_d3d11va_shader_resource`, bale.63/64; bale_gpu bit 64) | Bale: per-stage GPU timing (Bale `docs/resource-budget.md`). Off by default: the direct read removed the 23.9 MiB scratch, but app memory rose ~90 MiB unreported. Parked tests: does the extra stay flat or grow; read one fixed slice; GPU time on vs off. |
 | dav1d D3D11 GPU grain (`bale_film_grain_mode=3`, bale.60) | Owner: visual check on the TV. Console: works for NV12 and P010, 1.11 vs 1.51 cores (1080p 10-bit, Series X). |
@@ -43,6 +44,7 @@ Last updated: 2026-11-23 (wrapper 2.1.0-bale.73).
 | Release | What |
 |---|---|
 | Bale (2026-11-22) | Stage fix in bale_gpu: 4K60 AV1 on rav1g 47.1 → 57.6 fps (missed 21.8% → 4.5%), same as without the stage. Owner approved `bale_d3d11va_pool_from_stream` as the HEVC default (debug builds now, release after a long HEVC play). |
+| bale.74 | rav1g interface version 2; opt-in rav1g display pass (`bale_rav1g_display`) in place of the stage on the rav1g route |
 | bale.73 | Per-frame `Bale rav1g frame u= pts= ...` line from av1_perf_frame (rav1g v0.6.0-alpha.3, 632 bytes) |
 | bale.72 | `bale_rav1g_perf=2`: per-frame stage line (take, submit, release, gpudone; QPC ms; u and pts) |
 | bale.71 | Decoder pool: compare with FFmpeg's real pool (parameters + 3); console-verified for VP9 (12 → 11) and H.264 (1080p 20 → 8); every branch logged with a `Bale ` prefix |

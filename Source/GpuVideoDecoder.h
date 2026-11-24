@@ -24,6 +24,29 @@ struct GpuDecodedFrame
     VideoFrameColorInfo color;
     // What the provider passed to Decode with the access unit of this frame.
     uint64_t userData = 0;
+    // The decoder wrote the display output (GpuVideoDecoder::SetDisplayOutput) instead of the frame:
+    // the texture is width x height at the display size, BT.709 SDR; sourceWidth/sourceHeight and
+    // sourceColor describe what was decoded. False: the texture is the frame (source* unused).
+    bool displayOutput = false;
+    UINT sourceWidth = 0;
+    UINT sourceHeight = 0;
+    VideoFrameColorInfo sourceColor;
+};
+
+// The processed output a decoder may write itself, at the end of its own GPU work, in place of the
+// provider's processing stage: the frame fitted into width x height and tone-mapped or gamut-converted
+// to BT.709 SDR (the stage's BT.2390 curve, 1000-nit source peak, 100-nit SDR white, no desaturation).
+struct GpuDisplayOutput
+{
+    UINT width = 0;
+    UINT height = 0;
+    UINT depth = 10;       // 10: P010, 8: NV12
+    bool dither = false;   // 8-bit codes ordered-dithered (else rounded)
+    // The container's H.273 code points for what the bitstream leaves unspecified, 0 for none.
+    uint8_t primaries = 0;
+    uint8_t transfer = 0;
+    uint8_t matrix = 0;
+    uint8_t chromaLocation = 0; // AVChromaLocation of the container, 0 for none
 };
 
 // What the decoder needs from its host. Called on the decoder's threads; never throws.
@@ -74,6 +97,15 @@ public:
     virtual void Destroy() = 0;
     // GPU memory the decoder allocated for its own work (not the output images); 0 if unknown.
     virtual uint64_t DeviceBytes() const { return 0; }
+
+    // Asks the decoder to write the processed output itself (before Create). True when it will try; it
+    // may still decline at Create, and then its frames carry displayOutput = false (the provider runs
+    // its stage). Default: not supported.
+    virtual bool SetDisplayOutput(const GpuDisplayOutput& output)
+    {
+        UNREFERENCED_PARAMETER(output);
+        return false;
+    }
 
     // Text the decoder adds to the provider's periodic statistics line, for the time since the last
     // call (e.g. the decoder's own per-frame timing). Called on the provider's sample thread, also

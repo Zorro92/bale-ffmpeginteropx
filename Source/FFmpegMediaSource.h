@@ -367,6 +367,9 @@ namespace winrt::FFmpegInteropX::implementation
         int baleRav1gParse = 0;
         // Bale: 1 = rav1g's per-frame timing on the delivery line (diagnostic; process-wide callback).
         int baleRav1gPerf = 0;
+        // Bale: 1 = rav1g writes the tone-mapped, display-size image itself (its display pass) where the
+        // stage would run; 0 = the stage (BaleToneMap) as before.
+        int baleRav1gDisplay = 0;
         // Bale: access units a GPU decoder stream keeps in flight (0 = the provider's default, 3).
         int baleGpuDecodeInflight = 0;
         // Bale: most player-side textures a GPU decoder stream keeps (0 = no limit; below 4 acts as 4).

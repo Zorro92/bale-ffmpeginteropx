@@ -1364,6 +1364,12 @@ namespace winrt::FFmpegInteropX::implementation
         if (baleGpuOutputTextures > 0) provider->SetOutputTextureLimit(static_cast<uint32_t>(baleGpuOutputTextures));
         if (baleDecodeThreadPriority > 0) provider->SetFeederThreadPriority(BaleThreadBoost::ToWin32(baleDecodeThreadPriority));
         if (baleRav1gPerf >= 2) provider->SetPerFrameLog(true);
+        // Bale: rav1g's display pass (interface version 2) does the stage's work for BT.2390 (curve 1);
+        // Hable (2) keeps the stage.
+        if (baleRav1gDisplay > 0 && baleToneMap != 2 && provider->UseDecoderDisplay())
+        {
+            av_log(nullptr, AV_LOG_INFO, "Bale rav1g: display pass requested\n");
+        }
         auto hr = provider->Initialize();
         if (FAILED(hr))
         {
@@ -2743,6 +2749,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_decoder_max_dpb_count") { target = &baleDecoderMaxDpbCount; minimum = 0; maximum = 16; }
         else if (key == "bale_compressed_color_info") { target = &baleCompressedColorInfo; minimum = 0; maximum = 1; }
         else if (key == "bale_rav1g_parse") { target = &baleRav1gParse; minimum = 0; maximum = 8; }
+        else if (key == "bale_rav1g_display") { target = &baleRav1gDisplay; minimum = 0; maximum = 1; }
         else if (key == "bale_rav1g_perf") { target = &baleRav1gPerf; minimum = 0; maximum = 2; }
         else if (key == "bale_gpu_decode_inflight") { target = &baleGpuDecodeInflight; minimum = 1; maximum = 8; }
         else if (key == "bale_gpu_output_images") { target = &baleGpuOutputImages; minimum = 0; maximum = 16; }

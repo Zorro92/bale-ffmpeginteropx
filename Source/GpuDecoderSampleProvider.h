@@ -153,6 +153,26 @@ public:
     }
 
     // Win32 priority of the feeder thread. Before the first sample.
+    // Lets the decoder write the stage's output itself (GpuVideoDecoder::SetDisplayOutput): the size,
+    // depth and dither the stage would use, and the container's colour code points. Only when the stage
+    // runs for this stream; the stage stays for frames the decoder didn't process. Before the first
+    // sample. True when the decoder will try.
+    bool UseDecoderDisplay()
+    {
+        if (!frameProcessor) return false;
+        GpuDisplayOutput output;
+        output.width = static_cast<UINT>(processedWidth);
+        output.height = static_cast<UINT>(processedHeight);
+        output.depth = outputP010 ? 10 : 8;
+        output.dither = !outputP010 && frameProcessor->DithersOutputFormat(DXGI_FORMAT_NV12);
+        auto known = [](uint8_t value) { return static_cast<uint8_t>(value == 2 ? 0 : value); }; // 2: unspecified
+        output.primaries = known(streamColor.primaries);
+        output.transfer = known(streamColor.transfer);
+        output.matrix = known(streamColor.matrix);
+        output.chromaLocation = streamColor.chromaLocation;
+        return gpuDecoder->SetDisplayOutput(output);
+    }
+
     // Debug: one log line per frame with the stage's CPU and GPU times (see LogStageTimes). Before the
     // first sample.
     void SetPerFrameLog(bool enable)
@@ -1229,7 +1249,13 @@ private:
         try
         {
             if (!image || !rendererContext4 || !frame.fence) winrt::throw_hresult(E_UNEXPECTED);
-            bool fits = frameProcessor
+            // With the decoder's display output the image is the stage's output (size and format); the
+            // decoded size is in sourceWidth/sourceHeight.
+            bool fits = frame.displayOutput
+                ? frameProcessor && frame.format == OutputFormat() && frame.width == static_cast<UINT>(processedWidth) &&
+                    frame.height == static_cast<UINT>(processedHeight) && frame.sourceWidth == static_cast<UINT>(sourceWidth) &&
+                    frame.sourceHeight == static_cast<UINT>(sourceHeight)
+                : frameProcessor
                 ? frameProcessor->SupportsInputFormat(frame.format) && frame.width == static_cast<UINT>(sourceWidth) && frame.height == static_cast<UINT>(sourceHeight)
                 : frame.format == decodedFormat && frame.width == static_cast<UINT>(sourceWidth) && frame.height == static_cast<UINT>(sourceHeight);
             if (!fits)
@@ -1239,7 +1265,8 @@ private:
                     frame.width, frame.height, static_cast<unsigned>(frame.format), sourceWidth, sourceHeight, static_cast<unsigned>(decodedFormat));
                 winrt::throw_hresult(E_INVALIDARG);
             }
-            auto color = MergeStreamColor(frame.color);
+            // What the stream says (also with the display output, whose image itself is BT.709 SDR).
+            auto color = MergeStreamColor(frame.displayOutput ? frame.sourceColor : frame.color);
 
             // The player always gets a texture of its own pool, never a decoder image: the player keeps
             // samples until it has rendered them (and fills its buffer before it starts), so handing it
@@ -1271,7 +1298,12 @@ private:
                 ContextLock contextLock(multithread.get());
                 // GPU-side: D3D11 work after this reads the frame only once the decoder has written it.
                 winrt::check_hresult(rendererContext4->Wait(frame.fence.get(), frame.fenceValue));
-                if (frameProcessor)
+                if (frame.displayOutput)
+                {
+                    // The decoder did the stage's work; the copy keeps decoder images away from the player.
+                    rendererContext->CopyResource(output.get(), image->texture.get());
+                }
+                else if (frameProcessor)
                 {
                     if (!processorInitialized)
                     {
