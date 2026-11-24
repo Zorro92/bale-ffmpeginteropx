@@ -43,6 +43,13 @@ struct GpuDisplayOutput
     UINT depth = 10;       // 10: P010, 8: NV12
     bool dither = false;   // 8-bit codes ordered-dithered (else rounded)
     float whiteNits = 100.0f; // the SDR white the tone curve maps to
+    // The container's HDR peaks (MaxCLL, mastering display maximum), 0 unknown; the source peak of the
+    // curve comes from them unless the bitstream carries its own.
+    float maxCllNits = 0.0f;
+    float masteringMaxNits = 0.0f;
+    // Diagnostics (A/B against the stage's debug switches): a fixed source peak, bilinear chroma.
+    bool fixedPeak = false;
+    bool bilinearChroma = false;
     // The container's H.273 code points for what the bitstream leaves unspecified, 0 for none.
     uint8_t primaries = 0;
     uint8_t transfer = 0;

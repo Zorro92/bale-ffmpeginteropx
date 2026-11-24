@@ -5,7 +5,7 @@ item when work is proposed, move it when its state changes, and drop "Done" entr
 older than a few releases (the commits and `README.md` keep the details). Every design item is sized
 against the console limits in `AGENTS.md` ("Design against the console's limits").
 
-Last updated: 2026-11-23 (wrapper 2.1.0-bale.77).
+Last updated: 2026-11-24 (wrapper 2.1.0-bale.78).
 
 ## Open: fork work
 
@@ -41,6 +41,7 @@ Last updated: 2026-11-23 (wrapper 2.1.0-bale.77).
 | Release | What |
 |---|---|
 | Bale (2026-11-22) | Stage fix in bale_gpu: 4K60 AV1 on rav1g 47.1 → 57.6 fps (missed 21.8% → 4.5%), same as without the stage. Owner approved `bale_d3d11va_pool_from_stream` as the HEVC default (debug builds now, release after a long HEVC play). |
+| bale.78 | rav1g interface version 3 (v0.8.0-alpha.1): container HDR peaks to the display pass, peak log, fixed-peak/bilinear-chroma A/B keys |
 | bale.77 | `bale_tonemap_white_nits` (SDR white, 80–400) for the stage and rav1g's display pass; console-verified on both routes |
 | bale.76 | Retired the direct decoder-frame read experiment (`bale_d3d11va_shader_resource` accepted, ignored) |
 | bale.75 | Display pass: keep the stage when the device can't create shader-writable display images (never seen on the console) |

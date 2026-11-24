@@ -357,12 +357,13 @@ Frame grabbers never use it. With `"1"`, `bale_zero_copy`, `bale_d3d11_upload` a
 Code: generic `GpuVideoDecoder.h` (decoder interface), `GpuDecoderImagePool.h` (output
 images), `GpuDecoderSampleProvider.h` (the provider); all rav1g glue in `BaleRav1g.h`.
 `Source/rav1g.h` is rav1g's `crates/rav1g/include/rav1g.h`, copied verbatim (rav1g
-v0.7.0-alpha.1, `9f834c7`, interface version 2 since bale.74; version 1 before; copy it again, unchanged,
-when rav1g changes it). The loader accepts exactly the header's version, so bale.74 and later need a
-rav1g.dll of interface version 2 (v0.7.0-alpha.1 on) and wrappers up to bale.73 need version 1: a
+v0.8.0-alpha.1, `93bb36b`, interface version 3 since bale.78; version 2 in bale.74–77, version 1 before;
+copy it again, unchanged, when rav1g changes it). The loader accepts exactly the header's version, so
+bale.78 and later need a rav1g.dll of interface version 3 (v0.8.0-alpha.1 on), bale.74–77 version 2
+(v0.7.x) and wrappers up to bale.73 version 1: a
 mismatch logs `Bale rav1g: interface version N, expected M` and the stream falls back to dav1d. Pin
 wrapper and DLL together.
-`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.7.0-alpha.1 (`9f834c7`; 640 bytes, with the GPU stage `AV1_PERF_GPU_DISPLAY` and `user_data` at 632; 632 bytes in v0.6.0-alpha.3), copied verbatim
+`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.8.0-alpha.1 (`93bb36b`; 640 bytes, with the GPU stage `AV1_PERF_GPU_DISPLAY` and `user_data` at 632, unchanged since v0.7.0-alpha.1; 632 bytes in v0.6.0-alpha.3), copied verbatim
 (only for `bale_rav1g_perf`). No new
 native FFmpeg build is needed; Bale ships `rav1g.dll` in its package.
 
@@ -674,6 +675,15 @@ display pass against 3.4–4.9% with the stage; HDR10: 0% against 12–13%. The 
 1.18 ms (HDR10) of GPU per frame. rav1g's output images: 47.5 MiB (8 at 1080p) against 237.3 MiB at 4K
 with the stage.
 Design: rav1g `docs/bale-display-pass.md` at v0.7.0-alpha.1.
+
+Since bale.78 (rav1g interface version 3) the fork also passes the container's MaxCLL and mastering
+display maximum as `Rav1gDisplay::max_cll_nits` / `mastering_max_nits` (0 unknown; the stream's own
+metadata OBUs win), so rav1g tone-maps from the content's peak as Bale's stage does, and logs `Bale
+rav1g: display source peak N nits` whenever the peak a frame used changes
+(`Rav1gFrame::display_source_peak_nits`). Debug A/B against the stage's `fixedpeak` / `bilinearchroma`:
+`bale_rav1g_display_fixed_peak` and `bale_rav1g_display_bilinear_chroma` (0/1, default 0) set rav1g's
+process-wide `av1_set_display_fixed_peak` / `av1_set_display_bilinear_chroma` at each decoder
+creation (resolved optionally; a library without them ignores the keys).
 
 ## Console evidence (Xbox Series X, app mode, SDR display)
 

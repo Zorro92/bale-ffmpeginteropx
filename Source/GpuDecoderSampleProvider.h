@@ -158,11 +158,15 @@ public:
     // runs for this stream; the stage stays for frames the decoder didn't process. Before the first
     // sample. True when the decoder will try.
     // whiteNits: the SDR white the stage maps to (the same value the stage itself got).
-    bool UseDecoderDisplay(float whiteNits = 100.0f)
+    bool UseDecoderDisplay(float whiteNits = 100.0f, bool fixedPeak = false, bool bilinearChroma = false)
     {
         if (!frameProcessor) return false;
         GpuDisplayOutput output;
         output.whiteNits = whiteNits;
+        output.maxCllNits = streamColor.hasContentLight ? static_cast<float>(streamColor.maxCLL) : 0.0f;
+        output.masteringMaxNits = streamColor.hasMasteringLuminance ? streamColor.masteringMaxNits : 0.0f;
+        output.fixedPeak = fixedPeak;
+        output.bilinearChroma = bilinearChroma;
         output.width = static_cast<UINT>(processedWidth);
         output.height = static_cast<UINT>(processedHeight);
         output.depth = outputP010 ? 10 : 8;

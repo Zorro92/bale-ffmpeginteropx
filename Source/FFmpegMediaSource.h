@@ -373,6 +373,10 @@ namespace winrt::FFmpegInteropX::implementation
         // Bale: 1 = rav1g writes the tone-mapped, display-size image itself (its display pass) where the
         // stage would run; 0 = the stage (BaleToneMap) as before.
         int baleRav1gDisplay = 0;
+        // Bale debug A/B for rav1g's display pass (process-wide in rav1g): 1 = the configured source peak
+        // instead of the metadata's; 1 = bilinear chroma. Unset = rav1g's defaults.
+        int baleRav1gDisplayFixedPeak = 0;
+        int baleRav1gDisplayBilinearChroma = 0;
         // Bale: access units a GPU decoder stream keeps in flight (0 = the provider's default, 3).
         int baleGpuDecodeInflight = 0;
         // Bale: most player-side textures a GPU decoder stream keeps (0 = no limit; below 4 acts as 4).

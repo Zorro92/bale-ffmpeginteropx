@@ -1366,7 +1366,8 @@ namespace winrt::FFmpegInteropX::implementation
         // Bale: rav1g's display pass (interface version 2) does the stage's work for BT.2390 (curve 1);
         // Hable (2) keeps the stage.
         if (baleRav1gDisplay > 0 && baleToneMap != 2 &&
-            provider->UseDecoderDisplay(baleToneMapWhiteNits > 0 ? static_cast<float>((std::max)(80, (std::min)(baleToneMapWhiteNits, 400))) : 100.0f))
+            provider->UseDecoderDisplay(baleToneMapWhiteNits > 0 ? static_cast<float>((std::max)(80, (std::min)(baleToneMapWhiteNits, 400))) : 100.0f,
+                baleRav1gDisplayFixedPeak > 0, baleRav1gDisplayBilinearChroma > 0))
         {
             av_log(nullptr, AV_LOG_INFO, "Bale rav1g: display pass requested\n");
         }
@@ -2751,6 +2752,8 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_compressed_color_info") { target = &baleCompressedColorInfo; minimum = 0; maximum = 1; }
         else if (key == "bale_rav1g_parse") { target = &baleRav1gParse; minimum = 0; maximum = 8; }
         else if (key == "bale_rav1g_display") { target = &baleRav1gDisplay; minimum = 0; maximum = 1; }
+        else if (key == "bale_rav1g_display_fixed_peak") { target = &baleRav1gDisplayFixedPeak; minimum = 0; maximum = 1; }
+        else if (key == "bale_rav1g_display_bilinear_chroma") { target = &baleRav1gDisplayBilinearChroma; minimum = 0; maximum = 1; }
         else if (key == "bale_rav1g_perf") { target = &baleRav1gPerf; minimum = 0; maximum = 2; }
         else if (key == "bale_gpu_decode_inflight") { target = &baleGpuDecodeInflight; minimum = 1; maximum = 8; }
         else if (key == "bale_gpu_output_images") { target = &baleGpuOutputImages; minimum = 0; maximum = 16; }

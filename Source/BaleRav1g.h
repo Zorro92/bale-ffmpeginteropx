@@ -3,6 +3,7 @@
 #include <d3d11_4.h>
 #include <d3d12.h>
 #include <dxgi1_2.h>
+#include <cmath>
 #include <cstdio>
 #include <mutex>
 #include "GpuVideoDecoder.h"
@@ -14,18 +15,18 @@ extern "C"
 }
 
 // The record of rav1g's timing run (av1_perf_frame, for rav1g_set_perf_callback), copied verbatim
-// from Zorro92/rav1g libav1/dx/av1_perf.h at tag v0.7.0-alpha.1 (commit 9f834c7). The record is not
+// from Zorro92/rav1g libav1/dx/av1_perf.h at tag v0.8.0-alpha.1 (commit 93bb36b). The record is not
 // covered by rav1g's interface version: copy it again, unchanged, from the rav1g release Bale ships,
 // and check its size below against rav1g's (crates/rav1g-sys/src/perf.rs). Included before rav1g.h,
 // which then takes the full definition instead of declaring the struct.
 #include "av1_perf.h"
-static_assert(sizeof(void*) != 8 || sizeof(av1_perf_frame) == 640, "av1_perf_frame differs from rav1g v0.7.0-alpha.1's");
+static_assert(sizeof(void*) != 8 || sizeof(av1_perf_frame) == 640, "av1_perf_frame differs from rav1g v0.8.0-alpha.1's");
 
 // rav1g's C interface, copied verbatim from Zorro92/rav1g crates/rav1g/include/rav1g.h (tag
-// v0.7.0-alpha.1, commit 9f834c7, interface version 2). rav1g owns the header: copy it again, unchanged, whenever rav1g
+// v0.8.0-alpha.1, commit 93bb36b, interface version 3). rav1g owns the header: copy it again, unchanged, whenever rav1g
 // changes it, and raise the expected version below with it.
 #include "rav1g.h"
-static_assert(RAV1G_ABI_VERSION == 2, "BaleRav1g.h is written against rav1g interface version 2");
+static_assert(RAV1G_ABI_VERSION == 3, "BaleRav1g.h is written against rav1g interface version 3");
 
 // Bale glue for rav1g (GPU AV1 decoding in D3D12 compute shaders): loading rav1g.dll from the app
 // package, the process-wide device, and (below) the GpuVideoDecoder implementation. Nothing outside
@@ -50,6 +51,9 @@ struct BaleRav1gExports
     decltype(&rav1g_decoder_destroy) decoderDestroy = nullptr;
     // Optional (diagnostics only): null when the library does not export it.
     decltype(&rav1g_set_perf_callback) setPerfCallback = nullptr;
+    // Optional diagnostics of the display pass (av1_perf.h): process-wide A/B switches.
+    decltype(&av1_set_display_fixed_peak) setDisplayFixedPeak = nullptr;
+    decltype(&av1_set_display_bilinear_chroma) setDisplayBilinearChroma = nullptr;
     HRESULT status = HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
     const char* failure = "library not loaded";
 
@@ -80,6 +84,8 @@ struct BaleRav1gExports
             api.decoderOutputFence = Resolve<decltype(api.decoderOutputFence)>(module, "rav1g_decoder_output_fence");
             api.decoderDestroy = Resolve<decltype(api.decoderDestroy)>(module, "rav1g_decoder_destroy");
             api.setPerfCallback = Resolve<decltype(api.setPerfCallback)>(module, "rav1g_set_perf_callback");
+            api.setDisplayFixedPeak = Resolve<decltype(api.setDisplayFixedPeak)>(module, "av1_set_display_fixed_peak");
+            api.setDisplayBilinearChroma = Resolve<decltype(api.setDisplayBilinearChroma)>(module, "av1_set_display_bilinear_chroma");
             if (!api.abiVersion || !api.version || !api.peekStreamInfo || !api.deviceCreate || !api.deviceD3D12Device ||
                 !api.settingsDefault || !api.decoderCreate || !api.decoderDecode || !api.decoderDrain ||
                 !api.decoderConfiguration || !api.decoderOutputFence || !api.decoderDestroy)
@@ -475,6 +481,12 @@ public:
             settings.display.tone_curve = RAV1G_TONE_CURVE_BT2390;
             settings.display.source_peak_nits = 1000.0f;
             settings.display.target_white_nits = display.whiteNits;
+            // The container's HDR peaks; the stream's own metadata OBUs win, 0 is unknown.
+            settings.display.max_cll_nits = display.maxCllNits;
+            settings.display.mastering_max_nits = display.masteringMaxNits;
+            // Process-wide A/B switches, set at every create so a stream without them gets the default.
+            if (api.setDisplayFixedPeak) api.setDisplayFixedPeak(display.fixedPeak ? 1 : 0);
+            if (api.setDisplayBilinearChroma) api.setDisplayBilinearChroma(display.bilinearChroma ? 1 : 0);
             settings.display.desaturation = 0.0f;
             settings.display.depth = display.depth;
             settings.display.dither = display.depth == 8 && display.dither ? RAV1G_DISPLAY_DITHER_AUTO : RAV1G_DISPLAY_DITHER_OFF;
@@ -774,6 +786,12 @@ private:
         decoded.userData = frame->user_data;
         if (frame->display_transform != RAV1G_DISPLAY_TRANSFORM_NONE)
         {
+            // The peak the pass tone-mapped from (metadata, else the configured 1000), logged when it changes.
+            if (std::abs(frame->display_source_peak_nits - self->loggedPeakNits) >= 1.0f)
+            {
+                self->loggedPeakNits = frame->display_source_peak_nits;
+                av_log(nullptr, AV_LOG_INFO, "Bale rav1g: display source peak %.0f nits\n", frame->display_source_peak_nits);
+            }
             decoded.displayOutput = true;
             decoded.sourceWidth = frame->source_width;
             decoded.sourceHeight = frame->source_height;
@@ -814,4 +832,5 @@ private:
     bool sendConfig = false;
     GpuDisplayOutput display;
     bool displayRequested = false;
+    float loggedPeakNits = -1.0f; // completion thread
 };
