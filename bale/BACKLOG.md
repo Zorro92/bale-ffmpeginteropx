@@ -37,7 +37,6 @@ Last updated: 2026-11-23 (wrapper 2.1.0-bale.74).
 ## Owner to-dos
 
 - Check whether ~115 MB of FFmpeg PDBs ship in Bale's MSIX.
-- Delete the old copy of this repo on the previous (exFAT) drive once the move to the new SSD is settled.
 
 ## Done recently
 
