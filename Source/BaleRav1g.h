@@ -468,13 +468,13 @@ public:
         if (displayRequested)
         {
             // The stage's work in rav1g's own command list (Bale's configuration: BT.2390, 1000-nit
-            // peak, 100-nit white, no desaturation); the images come at the display size.
+            // peak, the stage's SDR white, no desaturation); the images come at the display size.
             settings.display.width = display.width;
             settings.display.height = display.height;
             settings.display.transform = RAV1G_DISPLAY_TRANSFORM_AUTO;
             settings.display.tone_curve = RAV1G_TONE_CURVE_BT2390;
             settings.display.source_peak_nits = 1000.0f;
-            settings.display.target_white_nits = 100.0f;
+            settings.display.target_white_nits = display.whiteNits;
             settings.display.desaturation = 0.0f;
             settings.display.depth = display.depth;
             settings.display.dither = display.depth == 8 && display.dither ? RAV1G_DISPLAY_DITHER_AUTO : RAV1G_DISPLAY_DITHER_OFF;

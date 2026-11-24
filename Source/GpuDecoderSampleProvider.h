@@ -157,10 +157,12 @@ public:
     // depth and dither the stage would use, and the container's colour code points. Only when the stage
     // runs for this stream; the stage stays for frames the decoder didn't process. Before the first
     // sample. True when the decoder will try.
-    bool UseDecoderDisplay()
+    // whiteNits: the SDR white the stage maps to (the same value the stage itself got).
+    bool UseDecoderDisplay(float whiteNits = 100.0f)
     {
         if (!frameProcessor) return false;
         GpuDisplayOutput output;
+        output.whiteNits = whiteNits;
         output.width = static_cast<UINT>(processedWidth);
         output.height = static_cast<UINT>(processedHeight);
         output.depth = outputP010 ? 10 : 8;

@@ -116,7 +116,9 @@ public:
 
     // targetWidth/Height: the requested output size (0 = none); BT.709 SDR is eligible only when the
     // video is larger than it, i.e. when the stage downscales.
-    static std::unique_ptr<VideoFrameProcessor> Create(int curve, const AVCodecParameters* parameters, int targetWidth = 0, int targetHeight = 0)
+    // whiteNits: the SDR white the curve maps to (BaleToneMapConfig::target_white_nits; 0 = 100).
+    static std::unique_ptr<VideoFrameProcessor> Create(int curve, const AVCodecParameters* parameters, int targetWidth = 0, int targetHeight = 0,
+        int whiteNits = 0)
     {
         if (curve == 0) return nullptr;
         auto description = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(parameters->format));
@@ -143,6 +145,7 @@ public:
         }
         // Missing ABI/create/self-test failures latch on the first frame, with the MSS device ready.
         auto processor = std::make_unique<BaleToneMap>(curve);
+        if (whiteNits > 0) processor->targetWhiteNits = static_cast<float>((std::max)(80, (std::min)(whiteNits, 400)));
         if (sdr709 && assumeBt709)
         {
             processor->assumeBt709 = true;
@@ -160,9 +163,10 @@ public:
         config.width = width;
         config.height = height;
         config.curve = curve;
-        // Silo tonemapx bt2390 peak=100 defaults; curve 2 uses the same luminance/desaturation.
+        // Silo tonemapx bt2390 peak=100 defaults (the SDR white settable, bale_tonemap_white_nits); curve 2
+        // uses the same luminance/desaturation.
         config.source_peak_nits = 1000.0f;
-        config.target_white_nits = 100.0f;
+        config.target_white_nits = targetWhiteNits;
         config.desat = 0.0f;
         if (sourceWidth != width || sourceHeight != height)
         {
@@ -290,6 +294,7 @@ private:
     void* handle = nullptr;
     bool assumeBt709 = false;
     int curve;
+    float targetWhiteNits = 100.0f;
     bool activeLogged = false;
     bool failureLogged = false;
 };

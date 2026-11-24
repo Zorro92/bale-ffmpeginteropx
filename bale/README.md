@@ -93,6 +93,15 @@ Foundation's video processor downscales 4K SDR to a smaller display (the process
 after ~23 opens, also with Windows' own decoder and no FFmpeg), while 4K HDR
 passthrough, 1080p SDR, and 4K SDR converted at native size all survived 40 opens.
 
+### SDR white (brightness)
+
+`bale_tonemap_white_nits` (0–400, default 0 = 100 nits as before; 1–79 act as 80; bale.77) sets the SDR
+white the tone map maps to, `BaleToneMapConfig::target_white_nits` for the stage and
+`Rav1gDisplay::target_white_nits` for rav1g's display pass, so both give the same picture. The BT.2390
+EETF ends at 2.03 times it (203 nits for 100), so a higher value maps more of the source into the
+SDR range and makes the tone-mapped picture brighter. Bale exposes it as a setting. The source peak
+stays the stage's own choice (Bale picks it per frame from the metadata; rav1g applies the same rule).
+
 ### Output depth (dithered 8-bit)
 
 `bale_tonemap_output_depth` (0–10, default 0; bale.61) chooses the stage's output depth:

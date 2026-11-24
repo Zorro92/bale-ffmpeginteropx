@@ -35,13 +35,14 @@ struct GpuDecodedFrame
 
 // The processed output a decoder may write itself, at the end of its own GPU work, in place of the
 // provider's processing stage: the frame fitted into width x height and tone-mapped or gamut-converted
-// to BT.709 SDR (the stage's BT.2390 curve, 1000-nit source peak, 100-nit SDR white, no desaturation).
+// to BT.709 SDR (the stage's BT.2390 curve, 1000-nit source peak, whiteNits SDR white, no desaturation).
 struct GpuDisplayOutput
 {
     UINT width = 0;
     UINT height = 0;
     UINT depth = 10;       // 10: P010, 8: NV12
     bool dither = false;   // 8-bit codes ordered-dithered (else rounded)
+    float whiteNits = 100.0f; // the SDR white the tone curve maps to
     // The container's H.273 code points for what the bitstream leaves unspecified, 0 for none.
     uint8_t primaries = 0;
     uint8_t transfer = 0;

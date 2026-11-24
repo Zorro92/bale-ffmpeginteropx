@@ -1351,7 +1351,7 @@ namespace winrt::FFmpegInteropX::implementation
                 // SDR larger than the display is downscaled by the stage, which applies no curve to it.
                 curve = 1;
             }
-            processor = BaleToneMap::Create(curve, parameters, baleToneMapOutputWidth, baleToneMapOutputHeight);
+            processor = BaleToneMap::Create(curve, parameters, baleToneMapOutputWidth, baleToneMapOutputHeight, baleToneMapWhiteNits);
         }
         avcodec_parameters_free(&parameters);
 
@@ -1365,7 +1365,8 @@ namespace winrt::FFmpegInteropX::implementation
         if (baleRav1gPerf >= 2) provider->SetPerFrameLog(true);
         // Bale: rav1g's display pass (interface version 2) does the stage's work for BT.2390 (curve 1);
         // Hable (2) keeps the stage.
-        if (baleRav1gDisplay > 0 && baleToneMap != 2 && provider->UseDecoderDisplay())
+        if (baleRav1gDisplay > 0 && baleToneMap != 2 &&
+            provider->UseDecoderDisplay(baleToneMapWhiteNits > 0 ? static_cast<float>((std::max)(80, (std::min)(baleToneMapWhiteNits, 400))) : 100.0f))
         {
             av_log(nullptr, AV_LOG_INFO, "Bale rav1g: display pass requested\n");
         }
@@ -2606,7 +2607,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (avVideoCodecCtx->hw_device_ctx)
         {
             hardwareDecoderStatus = HardwareDecoderStatus::Available;
-            auto processor = BaleToneMap::Create(baleToneMap, avStream->codecpar, baleToneMapOutputWidth, baleToneMapOutputHeight);
+            auto processor = BaleToneMap::Create(baleToneMap, avStream->codecpar, baleToneMapOutputWidth, baleToneMapOutputHeight, baleToneMapWhiteNits);
             auto d3d11Provider = new D3D11VideoSampleProvider(m_pReader, avFormatCtx, avVideoCodecCtx, config.as<winrt::FFmpegInteropX::MediaSourceConfig>(), index, hardwareDecoderStatus, useHdr, std::move(processor), baleToneMapOutputWidth, baleToneMapOutputHeight, baleToneMapOutputDepth);
             d3d11Provider->PoolFromStream = baleD3d11vaPoolFromStream > 0;
             videoSampleProvider = std::shared_ptr<MediaSampleProvider>(d3d11Provider);
@@ -2741,6 +2742,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_tonemap_format") { target = &retired; minimum = 0; maximum = 3; }
         else if (key == "bale_tonemap_output_width") { target = &baleToneMapOutputWidth; minimum = 0; maximum = 8192; }
         else if (key == "bale_tonemap_output_height") { target = &baleToneMapOutputHeight; minimum = 0; maximum = 8192; }
+        else if (key == "bale_tonemap_white_nits") { target = &baleToneMapWhiteNits; minimum = 0; maximum = 400; }
         else if (key == "bale_tonemap_output_depth") { target = &baleToneMapOutputDepth; minimum = 0; maximum = 10; }
         else if (key == "bale_zero_copy") { target = &baleZeroCopy; minimum = 0; maximum = 1; }
         else if (key == "bale_decode_thread_priority") { target = &baleDecodeThreadPriority; minimum = 0; maximum = 2; }

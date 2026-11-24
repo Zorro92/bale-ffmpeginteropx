@@ -355,6 +355,9 @@ namespace winrt::FFmpegInteropX::implementation
         int baleToneMapOutputHeight = 0;
         // Bale: 8 = the stage writes dithered NV12 when it can (an 8-bit display); 0 or 10 = P010 as before.
         int baleToneMapOutputDepth = 0;
+        // Bale: the SDR white (nits) the tone map maps to, for the stage and rav1g's display pass (0 or unset =
+        // 100; 1-79 act as 80; at most 400).
+        int baleToneMapWhiteNits = 0;
         // 1 = software libdav1d decodes into bale_gpu zero-copy buffers (needs the D3D11 upload).
         // Zero-copy only: a stream it cannot take is refused or fails (no CPU fallback).
         int baleZeroCopy = 0;
