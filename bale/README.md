@@ -573,7 +573,12 @@ Since bale.79 a stream whose codec configuration has no parameter sets (e.g. a 2
 with VPS/SPS/PPS in-band only) is sized from the SPS of its key frames: before each key frame goes to
 the decoder the fork walks its NAL units (length-prefixed per hvcC/avcC, or Annex B), and the
 get_format that packet triggers uses the result. Bale found this on a library 4K HEVC Main 10 MKV
-that kept FFmpeg's 20 surfaces (478 MiB); its in-band SPS gives a buffer of 6, so 9 surfaces. Anything
+that kept FFmpeg's 20 surfaces (478 MiB); its in-band SPS gives a buffer of 6, so 9 surfaces. Console (Bale e894ac9, bale.79): that file logged
+`9 surfaces 3840x2176 (codec 173, stream buffer 6, FFmpeg's pool 20)`, ledger 9 surfaces / 215.2 MiB,
+a seek to 40 min and no missed frames; a 30-minute 4K HEVC HDR10 soak kept 8 surfaces throughout, app
+980–1030 MiB, no missed frames or stalls. Bale made the key its release default for hardware HEVC,
+H.264 and VP9 (Bale 8ed6c50). This console's H.264 decoder is 1080p only, so 4K H.264 never reaches
+d3d11va here. Anything
 it still can't read (a parse error, other codecs) keeps FFmpeg's pool. Logs (since bale.71 prefixed `Bale ` and logged for every branch): `Bale D3D11 decoder pool: N
 surfaces WxH (codec C, stream buffer B, FFmpeg's pool D)`, or why it kept FFmpeg's pool.
 

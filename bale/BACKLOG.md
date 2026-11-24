@@ -42,7 +42,7 @@ Last updated: 2026-11-24 (wrapper 2.1.0-bale.79).
 | Release | What |
 |---|---|
 | Bale (2026-11-22) | Stage fix in bale_gpu: 4K60 AV1 on rav1g 47.1 → 57.6 fps (missed 21.8% → 4.5%), same as without the stage. Owner approved `bale_d3d11va_pool_from_stream` as the HEVC default (debug builds now, release after a long HEVC play). |
-| bale.79 | Decoder pool from in-band parameter sets (MKV with a 23-byte hvcC): 4K HEVC 20 → 9 surfaces |
+| bale.79 | Decoder pool from in-band parameter sets (MKV with a 23-byte hvcC): 4K HEVC 20 → 9 surfaces; console-verified, plus a 30-min HEVC HDR10 soak. Now Bale's release default (8ed6c50) |
 | bale.78 | rav1g interface version 3 (v0.8.0-alpha.1): container HDR peaks to the display pass, peak log, fixed-peak/bilinear-chroma A/B keys; console-verified (452-nit film) |
 | bale.77 | `bale_tonemap_white_nits` (SDR white, 80–400) for the stage and rav1g's display pass; console-verified on both routes |
 | bale.76 | Retired the direct decoder-frame read experiment (`bale_d3d11va_shader_resource` accepted, ignored) |
