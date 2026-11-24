@@ -459,6 +459,12 @@ public:
         settings.output.frame = &Frame;
         settings.output.unused = &Unused;
         settings.output.end_of_frames = nullptr;
+        if (displayRequested && !CanWriteDisplayImages())
+        {
+            // The display pass writes the images with a shader; without that, the stage stays.
+            av_log(nullptr, AV_LOG_INFO, "Bale rav1g: display pass not used (no unordered-access images); the stage processes the frames\n");
+            displayRequested = false;
+        }
         if (displayRequested)
         {
             // The stage's work in rav1g's own command list (Bale's configuration: BT.2390, 1000-nit
@@ -598,6 +604,25 @@ public:
     }
 
     uint64_t DeviceBytes() const override { return deviceBytes; }
+
+    // Whether the renderer's device creates display-size images as the image pool does, with unordered
+    // access (the pool otherwise falls back to images without it, which the display pass can't write).
+    bool CanWriteDisplayImages() const
+    {
+        if (!device11) return false;
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = display.width;
+        desc.Height = display.height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = display.depth == 8 ? DXGI_FORMAT_NV12 : DXGI_FORMAT_P010;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+        desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED;
+        winrt::com_ptr<ID3D11Texture2D> texture;
+        return SUCCEEDED(device11->CreateTexture2D(&desc, nullptr, texture.put()));
+    }
 
     bool SetDisplayOutput(const GpuDisplayOutput& output) override
     {

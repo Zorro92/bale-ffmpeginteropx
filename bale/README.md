@@ -640,7 +640,9 @@ display-sized (4 x 5.9 MiB at 1080p instead of 4 x 23.7 MiB). It applies only wh
 on an SDR display, SDR larger than the display) and not for curve 2 (Hable). The container's colour
 code points fill what the sequence header leaves unspecified, and its chroma siting what it leaves
 unknown. If rav1g can't do the configuration (`RAV1G_STATUS_INCAPABLE`) the decoder is created without
-it and the stage processes the frames as before; the generic part is
+it and the stage processes the frames as before; so it is when the renderer's device can't create the
+display-size images with unordered access (checked once before the decoder is created, since bale.75;
+logged `display pass not used (no unordered-access images)`); the generic part is
 `GpuVideoDecoder::SetDisplayOutput` and `GpuDecodedFrame::displayOutput`. Logs: `Bale rav1g: display
 pass requested`, then `display pass WxH depth=D` or `display pass declined (incapable); the stage
 processes the frames`. The delivery line's perf part adds `display n= avg= max= ms` (the pass's GPU
