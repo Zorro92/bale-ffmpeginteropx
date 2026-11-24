@@ -29,6 +29,7 @@ Last updated: 2026-11-23 (wrapper 2.1.0-bale.77).
 - **D3D12 / SM6 tone map:** parked by the owner (2026-11-18).
 - **rav1g pipeline cache (ABI 2, `rav1g_device_create_with_cache`):** on hold; creating the device with the cache removed the GPU device on the console.
 - **Caller-supplied duration for forward-only inputs (engine player):** idea, never requested.
+- **Interlaced video through the stage (HDR, or larger than the display):** untested. Without the stage, 1080i H.264 and MPEG-2 are deinterlaced by Media Foundation on all three routes (Bale console check, 2026-11-23). The stage reads the woven frame, so combing is possible there. Rare; look at it if it shows up.
 - **dav1d zero-copy seek out-of-memory (4K AV1 normal seek exhausts the upload pool):** known, unfixed by choice; Bale uses fast seek for AV1 and the dav1d route no longer uses zero-copy.
 
 ## Owner to-dos
