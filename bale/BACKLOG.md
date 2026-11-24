@@ -5,13 +5,12 @@ item when work is proposed, move it when its state changes, and drop "Done" entr
 older than a few releases (the commits and `README.md` keep the details). Every design item is sized
 against the console limits in `AGENTS.md` ("Design against the console's limits").
 
-Last updated: 2026-11-23 (wrapper 2.1.0-bale.74).
+Last updated: 2026-11-23 (wrapper 2.1.0-bale.75).
 
 ## Open: fork work
 
 | Item | State | Why / sized against |
 |---|---|---|
-| Display pass: keep the stage when the device can't create UAV display images (662a0dd) | On main, not released (next release, bale.75) | Edge case that has never fired; rav1g's suggestion. |
 | rav1g route: avoid the per-frame copy of direct output into the player pool | Idea | One full-frame GPU copy per frame (GPU copies are ~2.4x slower in the idle state). The copy exists because handing decoder images to Media Foundation deadlocked the fixed image pool (bale.45), so any change needs a new design for that. |
 | FFmpeg 9.x | Deferred | 9.0/9.1 bring nothing the fork needs (HEVC hardening, a driver-compat SRV flag). Easier once Bale drops dav1d zero-copy, so native FFmpeg needs no dav1d patch (`p1`). |
 
@@ -19,6 +18,7 @@ Last updated: 2026-11-23 (wrapper 2.1.0-bale.74).
 
 | Item | Waiting for |
 |---|---|
+| rav1g display pass as Bale's default (owner, 2026-11-23) | Bale: send `bale_rav1g_display=1` by default on the rav1g route (0 stays the A/B switch). No fork change. |
 | Stream-sized decoder pool as the release default (HEVC, H.264, VP9) | Bale: long-play check, then release builds. Debug default since Bale b86a763 (2026-11-23). No fork change. |
 | Direct reads of decoder frames by the tone map (`bale_d3d11va_shader_resource`, bale.63/64; bale_gpu bit 64) | Bale: per-stage GPU timing (Bale `docs/resource-budget.md`). Off by default: the direct read removed the 23.9 MiB scratch, but app memory rose ~90 MiB unreported. Parked tests: does the extra stay flat or grow; read one fixed slice; GPU time on vs off. |
 | dav1d D3D11 GPU grain (`bale_film_grain_mode=3`, bale.60) | Owner: visual check on the TV. Console: works for NV12 and P010, 1.11 vs 1.51 cores (1080p 10-bit, Series X). |
@@ -43,6 +43,7 @@ Last updated: 2026-11-23 (wrapper 2.1.0-bale.74).
 | Release | What |
 |---|---|
 | Bale (2026-11-22) | Stage fix in bale_gpu: 4K60 AV1 on rav1g 47.1 → 57.6 fps (missed 21.8% → 4.5%), same as without the stage. Owner approved `bale_d3d11va_pool_from_stream` as the HEVC default (debug builds now, release after a long HEVC play). |
+| bale.75 | Display pass: keep the stage when the device can't create shader-writable display images (never seen on the console) |
 | bale.74 | rav1g interface version 2; opt-in rav1g display pass (`bale_rav1g_display`) in place of the stage on the rav1g route. Console: 4K60 AV1 60 Mbps 0% missed (SDR and HDR10; stage 3.4–4.9% / 12–13%), pass 1.0/1.18 ms, images 47.5 vs 237.3 MiB |
 | bale.73 | Per-frame `Bale rav1g frame u= pts= ...` line from av1_perf_frame (rav1g v0.6.0-alpha.3, 632 bytes) |
 | bale.72 | `bale_rav1g_perf=2`: per-frame stage line (take, submit, release, gpudone; QPC ms; u and pts) |
