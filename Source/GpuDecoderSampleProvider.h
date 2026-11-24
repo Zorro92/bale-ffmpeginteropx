@@ -667,6 +667,7 @@ private:
     struct StageTimes
     {
         const char* logName;
+        const char* mode; // stage: the provider's stage; display: the decoder's display output, copied; copy: direct output
         uint64_t unit;
         int64_t pts; // 100 ns, the sample's timestamp as handed to Media Foundation
         double takeMs, submitMs, releaseMs;
@@ -674,11 +675,11 @@ private:
         PTP_WAIT wait;
     };
 
-    void LogStageTimes(uint64_t unit, int64_t pts, uint64_t releaseValue, double submitMs, double releaseMs) noexcept
+    void LogStageTimes(const char* mode, uint64_t unit, int64_t pts, uint64_t releaseValue, double submitMs, double releaseMs) noexcept
     {
         try
         {
-            auto times = new StageTimes{ logName, unit, pts, frameTakeMs, submitMs, releaseMs, nullptr, nullptr };
+            auto times = new StageTimes{ logName, mode, unit, pts, frameTakeMs, submitMs, releaseMs, nullptr, nullptr };
             times->event = CreateEventExW(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
             if (times->event) times->wait = CreateThreadpoolWait(&OnStageDone, times, nullptr);
             if (!times->event || !times->wait || FAILED(releaseFence->SetEventOnCompletion(releaseValue, times->event)))
@@ -698,8 +699,8 @@ private:
     static void CALLBACK OnStageDone(PTP_CALLBACK_INSTANCE, void* context, PTP_WAIT wait, TP_WAIT_RESULT) noexcept
     {
         auto times = static_cast<StageTimes*>(context);
-        av_log(nullptr, AV_LOG_INFO, "%s stage u=%llu pts=%lld take=%.3f submit=%.3f release=%.3f gpudone=%.3f\n",
-            times->logName, static_cast<unsigned long long>(times->unit), static_cast<long long>(times->pts), times->takeMs,
+        av_log(nullptr, AV_LOG_INFO, "%s stage u=%llu pts=%lld mode=%s take=%.3f submit=%.3f release=%.3f gpudone=%.3f\n",
+            times->logName, static_cast<unsigned long long>(times->unit), static_cast<long long>(times->pts), times->mode, times->takeMs,
             times->submitMs, times->releaseMs, QpcMs());
         CloseHandle(times->event);
         CloseThreadpoolWait(wait);
@@ -1335,7 +1336,11 @@ private:
             // The processor or the copy has read the image (fenced); the sample carries the output.
             pool->Release(image, releaseValue);
             image = nullptr;
-            if (perFrameLog) LogStageTimes(timing.userData, ConvertPosition(timing.pts).count(), releaseValue, submitMs, QpcMs());
+            if (perFrameLog)
+            {
+                LogStageTimes(frame.displayOutput ? "display" : frameProcessor ? "stage" : "copy", timing.userData,
+                    ConvertPosition(timing.pts).count(), releaseValue, submitMs, QpcMs());
+            }
             pendingOutput = output;
             *surface = DirectXInteropHelper::GetSurface(output.as<IDXGISurface>());
             framesOut++;

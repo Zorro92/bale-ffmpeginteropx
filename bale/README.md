@@ -186,7 +186,8 @@ Images not created yet still count against `memory_available` (up to 10 × 23.7 
 
 `bale_rav1g_perf=2` (bale.72, debug only) adds one line per frame for the stage, host clock in ms
 (QPC ticks x 1000 / QPF, the base of rav1g's `complete_ms`): `Bale rav1g stage u=<unit> pts=<100 ns>
-take=.. submit=.. release=.. gpudone=..`. `u` is the fork's unit counter (rav1g's `user_data`), `pts`
+mode=stage|display|copy take=.. submit=.. release=.. gpudone=..` (since bale.74 `mode`: the provider's stage, rav1g's display
+output copied into the player texture, or direct output copied). `u` is the fork's unit counter (rav1g's `user_data`), `pts`
 the sample's timestamp in 100 ns as handed to Media Foundation (Bale keys its renderer log on it); take = the sample thread took the
 frame, submit = the stage or copy submitted and flushed, release = the image back in the pool,
 gpudone = the image's release fence passed (the D3D11 work on it finished; a thread-pool wait on the
@@ -628,7 +629,8 @@ default until per-stage GPU timing shows a saving.
 
 ## rav1g display pass (trial)
 
-`bale_rav1g_display` (0/1, default 0; bale.74, rav1g interface version 2) lets rav1g write what the
+`bale_rav1g_display` (0/1, default 0 = the stage, as upstream; Bale sets 1 by default and 0 for the
+A/B; bale.74, rav1g interface version 2) lets rav1g write what the
 stage would write for an AV1 stream on the rav1g route: the frame fitted into the stage's output size
 and tone-mapped (BT.2390, 1000-nit peak, 100-nit white, no desaturation) or gamut-converted to BT.709
 SDR, P010 (or NV12, dithered when the stage would dither it), by one compute pass at the end of
