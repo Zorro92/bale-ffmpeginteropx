@@ -18,7 +18,7 @@ Last updated: 2026-11-24 (wrapper 2.1.0-bale.78).
 
 | Item | Waiting for |
 |---|---|
-| Audio passthrough plumbing (debug): `bale_audio_out=<id>`; audio not exposed to MF; the fork decodes the chosen track (s32 8 ch 48 kHz, later compressed access units) on its own feeder thread and writes it with pts to bale_gpu's exclusive WASAPI renderer; flush on seek | Bale: the bale_audio_out ABI. Points sent 2026-11-24: clock sync (slave audio to MF's clock), the app drives pause, a small id rather than a pointer, a blocking write cap, track chosen at open. |
+| Audio passthrough plumbing (debug): `bale_audio_out=<id>`, `bale_audio_out_stream=<index>`; audio not exposed to MF; the fork decodes the chosen track on its own feeder thread and writes it with pts to bale_gpu's exclusive WASAPI renderer; flush on seek and stream switch | ABI landed (Bale 9e216fe, `bale_audio_out.h` ABI 1): id 1–65535; write(id, data, bytes, pts_100ns) of whole frames returns 0 = full (retry) or 0xFFFFFFFF = closed (stop and fall back); `bale_audio_out_format(id)` gives the format (TV path: PCM 8 ch 48 kHz, s32 container with 24 valid bits, mask 0x63F, FL FR FC LFE BL BR SL SR, the same order as FFmpeg's 7.1). Build only when the owner asks. |
 | dav1d D3D11 GPU grain (`bale_film_grain_mode=3`, bale.60) | Owner: visual check on the TV. Console: works for NV12 and P010, 1.11 vs 1.51 cores (1080p 10-bit, Series X). |
 | rav1g untested paths | Console runs: HDR passthrough (needs an HDR display), 8-bit NV12 direct output (shared UAV NV12 not yet confirmed on the console), film-grain films. |
 | rav1g as the production AV1 default | Owner's decision. Bale's debug builds already use it; release builds keep dav1d. |
