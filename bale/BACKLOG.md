@@ -18,7 +18,6 @@ Last updated: 2026-11-23 (wrapper 2.1.0-bale.76).
 
 | Item | Waiting for |
 |---|---|
-| rav1g display pass as Bale's default (owner, 2026-11-23) | Bale: send `bale_rav1g_display=1` by default on the rav1g route (0 stays the A/B switch). No fork change. |
 | dav1d D3D11 GPU grain (`bale_film_grain_mode=3`, bale.60) | Owner: visual check on the TV. Console: works for NV12 and P010, 1.11 vs 1.51 cores (1080p 10-bit, Series X). |
 | rav1g untested paths | Console runs: HDR passthrough (needs an HDR display), 8-bit NV12 direct output (shared UAV NV12 not yet confirmed on the console), film-grain films. |
 | rav1g as the production AV1 default | Owner's decision. Bale's debug builds already use it; release builds keep dav1d. |
