@@ -586,7 +586,13 @@ Console (bale.71, Bale b1e4261): a 4K VP9 film logged `Bale D3D11 decoder pool: 
 `8 surfaces 1920x1040 (codec 27, stream buffer 5, FFmpeg's pool 20)`, ledger 8 (22.9 MiB instead of
 57.1), no missed frames.
 
-## Shader-readable decoder pools (experiment)
+## Shader-readable decoder pools (retired experiment)
+
+Retired in bale.76: `bale_d3d11va_shader_resource` is still accepted (0/1) but ignored, and
+`Source/BaleD3D11vaShaderResource.h` is gone. The direct read it enabled removed the stage's 23.9 MiB
+scratch copy but raised app memory by ~70–90 MiB that nothing reports (likely driver shadow copies of
+decoder-layout surfaces), with no change in fps or drops; the owner dropped it (2026-11-23). The
+record of what was measured follows.
 
 `bale_d3d11va_shader_resource` (0/1, default 0) asks whether the stage could read d3d11va decoder
 frames in place instead of copying them. FFmpeg decodes into one texture array per pool, and

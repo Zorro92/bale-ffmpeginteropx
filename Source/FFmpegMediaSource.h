@@ -450,9 +450,6 @@ namespace winrt::FFmpegInteropX::implementation
         // Bale: with the GPU AV1 decoder requested, the tallest source the software fallback may take
         // when that decoder declines at open; a taller one is refused, so the app replans (0 = no limit).
         int baleAv1FallbackMaxHeight = 0;
-        // Bale experiment: 1 = probe whether decoder texture arrays take shader views and, if so,
-        // make the d3d11va decoder pools shader-readable (BaleD3D11vaShaderResource.h); 0 = as upstream.
-        int baleD3d11vaShaderResource = 0;
         // Bale: 1 = size the d3d11va decoder pool from the stream's SPS (HEVC); 0 = FFmpeg's pool.
         int baleD3d11vaPoolFromStream = 0;
         std::shared_ptr<MediaSampleProvider> CreateGpuDecoderStream(AVStream* avStream, int index);
