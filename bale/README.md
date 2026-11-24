@@ -683,7 +683,9 @@ rav1g: display source peak N nits` whenever the peak a frame used changes
 (`Rav1gFrame::display_source_peak_nits`). Debug A/B against the stage's `fixedpeak` / `bilinearchroma`:
 `bale_rav1g_display_fixed_peak` and `bale_rav1g_display_bilinear_chroma` (0/1, default 0) set rav1g's
 process-wide `av1_set_display_fixed_peak` / `av1_set_display_bilinear_chroma` at each decoder
-creation (resolved optionally; a library without them ignores the keys).
+creation (resolved optionally; a library without them ignores the keys). Console (Bale 463cc3e, bale.78 with rav1g
+v0.8.0-alpha.1, a 4K AV1 HDR10 film): `display source peak 452 nits` from the container's metadata,
+1000 with the fixed-peak switch; display pass 1920x1012 depth=10.
 
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
