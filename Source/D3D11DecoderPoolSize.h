@@ -2,6 +2,8 @@
 #include "pch.h"
 #include "FFmpegUtils.h"
 #include <algorithm>
+#include <map>
+#include <mutex>
 #include <vector>
 
 extern "C"
@@ -41,6 +43,7 @@ public:
         if (result != AV_PIX_FMT_D3D11 || !context->hw_device_ctx) return result;
         int codec = static_cast<int>(context->codec_id);
         int buffer = DecodedPictureBuffer(context);
+        if (buffer <= 0) buffer = InBandBuffer(context);
         if (buffer <= 0)
         {
             av_log(nullptr, AV_LOG_INFO, "Bale D3D11 decoder pool: stream buffer unknown (codec %d); FFmpeg's pool\n", codec);
@@ -80,6 +83,52 @@ public:
         return result;
     }
 
+    // For streams whose codec configuration carries no parameter sets (e.g. a 23-byte hvcC in MKV): call
+    // before each packet goes to the decoder. A key frame's in-band SPS gives the buffer, which the
+    // GetFormat that the same packet triggers then uses. Only while this get_format is installed and the
+    // configuration doesn't give it; cheap (walks the packet's NAL unit headers).
+    static void NoteInBandParameterSets(const AVCodecContext* context, const AVPacket* packet) noexcept
+    {
+        try
+        {
+            if (!context || !packet || context->get_format != &GetFormat || !(packet->flags & AV_PKT_FLAG_KEY)) return;
+            if (!packet->data || packet->size < 4 || DecodedPictureBuffer(context) > 0) return;
+            bool hevc = context->codec_id == AV_CODEC_ID_HEVC;
+            if (!hevc && context->codec_id != AV_CODEC_ID_H264) return;
+            int lengthSize = NalLengthSize(context, hevc);
+            int buffer = 0;
+            auto visit = [&](const uint8_t* nal, size_t size)
+            {
+                int found = 0;
+                if (hevc && size >= 3 && ((nal[0] >> 1) & 0x3f) == 33) found = HevcSpsBuffer(nal + 2, size - 2);
+                else if (!hevc && size >= 2 && (nal[0] & 0x1f) == 7) found = H264SpsBuffer(nal + 1, size - 1);
+                if (found > buffer) buffer = found;
+            };
+            if (lengthSize > 0) ForEachLengthPrefixedNal(packet->data, packet->size, lengthSize, visit);
+            else ForEachAnnexBNal(packet->data, packet->size, visit);
+            if (buffer <= 0) return;
+            std::lock_guard lock(InBandMutex());
+            InBandBuffers()[context] = buffer;
+        }
+        catch (...)
+        {
+        }
+    }
+
+    // Before a codec context is freed: drop what NoteInBandParameterSets kept for it.
+    static void Forget(const AVCodecContext* context) noexcept
+    {
+        try
+        {
+            if (!context) return;
+            std::lock_guard lock(InBandMutex());
+            InBandBuffers().erase(context);
+        }
+        catch (...)
+        {
+        }
+    }
+
     // The pictures the stream's decoder holds, current picture included, from its codec configuration
     // (fixed for VP9); 0 when unknown.
     static int DecodedPictureBuffer(const AVCodecContext* context)
@@ -101,6 +150,53 @@ public:
     }
 
 private:
+    // NoteInBandParameterSets' latest result per codec context (each key frame refreshes it; a format
+    // change or a second get_format reads it again), forgotten when the context is freed (Forget).
+    static std::mutex& InBandMutex()
+    {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    static std::map<const AVCodecContext*, int>& InBandBuffers()
+    {
+        static std::map<const AVCodecContext*, int> buffers;
+        return buffers;
+    }
+
+    static int InBandBuffer(const AVCodecContext* context)
+    {
+        std::lock_guard lock(InBandMutex());
+        auto& buffers = InBandBuffers();
+        auto entry = buffers.find(context);
+        return entry == buffers.end() ? 0 : entry->second;
+    }
+
+    // The NAL length size of length-prefixed packets (hvcC/avcC: lengthSizeMinusOne + 1), 0 for Annex B.
+    static int NalLengthSize(const AVCodecContext* context, bool hevc)
+    {
+        const uint8_t* data = context->extradata;
+        int size = context->extradata_size;
+        if (!data || size < 1 || data[0] != 1) return 0;
+        if (hevc) return size >= 22 ? (data[21] & 3) + 1 : 4;
+        return size >= 5 ? (data[4] & 3) + 1 : 4;
+    }
+
+    template <typename F>
+    static void ForEachLengthPrefixedNal(const uint8_t* data, int size, int lengthSize, F&& f)
+    {
+        int offset = 0;
+        while (offset + lengthSize <= size)
+        {
+            uint32_t length = 0;
+            for (int i = 0; i < lengthSize; i++) length = (length << 8) | data[offset + i];
+            offset += lengthSize;
+            if (length == 0 || length > static_cast<uint32_t>(size - offset)) return;
+            f(data + offset, static_cast<size_t>(length));
+            offset += static_cast<int>(length);
+        }
+    }
+
     // hvcC (configurationVersion 1) or Annex B start codes.
     template <typename F>
     static void ForEachHevcNal(const uint8_t* data, int size, F&& f)

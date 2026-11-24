@@ -23,6 +23,7 @@
 #include "StreamBuffer.h"
 #include "LanguageTagConverter.h"
 #include "AvCodecContextHelpers.h"
+#include "D3D11DecoderPoolSize.h"
 #include "Mfapi.h"
 
 extern "C"
@@ -73,6 +74,7 @@ MediaSampleProvider::~MediaSampleProvider()
 {
     DebugMessage(L"~MediaSampleProvider\n");
 
+    D3D11DecoderPoolSize::Forget(m_pAvCodecCtx);
     avcodec_free_context(&m_pAvCodecCtx);
 
     Flush(true);
@@ -495,6 +497,7 @@ void MediaSampleProvider::Detach()
 {
     Flush(false);
     m_pReader = nullptr;
+    D3D11DecoderPoolSize::Forget(m_pAvCodecCtx);
     avcodec_free_context(&m_pAvCodecCtx);
 }
 

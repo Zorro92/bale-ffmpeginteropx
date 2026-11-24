@@ -569,8 +569,12 @@ frame), never more than FFmpeg's own size. A typical 4K 10-bit film then gets ~9
   `max_num_ref_frames`; plus 3. Typical 1080p films: 20 → ~8 surfaces (~35 MiB less at 1080p 8-bit).
 - **VP9:** its 8 reference slots + the current frame, plus 2 (VP9 never holds frames back for output
   order): 12 → 11, one surface (23.7 MiB at 4K 10-bit) less.
-Anything it can't read (no SPS in the codec configuration, a parse error, other codecs) keeps
-FFmpeg's pool. Logs (since bale.71 prefixed `Bale ` and logged for every branch): `Bale D3D11 decoder pool: N
+Since bale.79 a stream whose codec configuration has no parameter sets (e.g. a 23-byte hvcC in MKV,
+with VPS/SPS/PPS in-band only) is sized from the SPS of its key frames: before each key frame goes to
+the decoder the fork walks its NAL units (length-prefixed per hvcC/avcC, or Annex B), and the
+get_format that packet triggers uses the result. Bale found this on a library 4K HEVC Main 10 MKV
+that kept FFmpeg's 20 surfaces (478 MiB); its in-band SPS gives a buffer of 6, so 9 surfaces. Anything
+it still can't read (a parse error, other codecs) keeps FFmpeg's pool. Logs (since bale.71 prefixed `Bale ` and logged for every branch): `Bale D3D11 decoder pool: N
 surfaces WxH (codec C, stream buffer B, FFmpeg's pool D)`, or why it kept FFmpeg's pool.
 
 Sized against: the app memory limit (3328 MiB with `hevcPlayback`, 1024 MiB without) and consoles

@@ -344,6 +344,7 @@ public:
     {
         auto hr = S_OK;
 
+        D3D11DecoderPoolSize::Forget(m_pAvCodecCtx);
         avcodec_free_context(&m_pAvCodecCtx);
 
         m_pAvCodecCtx = avcodec_alloc_context3(codec);

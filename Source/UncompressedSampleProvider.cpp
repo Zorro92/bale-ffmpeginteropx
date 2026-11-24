@@ -21,6 +21,7 @@
 
 #include "UncompressedSampleProvider.h"
 #include "DirectXInteropHelper.h"
+#include "D3D11DecoderPoolSize.h"
 
 using namespace winrt::FFmpegInteropX;
 
@@ -180,6 +181,8 @@ HRESULT UncompressedSampleProvider::FeedPacketToDecoder(int64_t& firstPacketPos)
         // Feed packet to decoder.
         if (!firstPacketPos)
             firstPacketPos = avPacket->pos;
+        // Bale: parameter sets carried only in-band size the d3d11va pool (no-op unless it's sized from the stream).
+        D3D11DecoderPoolSize::NoteInBandParameterSets(m_pAvCodecCtx, avPacket);
         int sendPacketResult = avcodec_send_packet(m_pAvCodecCtx, avPacket);
         if (sendPacketResult == AVERROR(EAGAIN))
         {
