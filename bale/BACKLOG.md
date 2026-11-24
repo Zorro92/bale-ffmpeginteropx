@@ -11,6 +11,7 @@ Last updated: 2026-11-23 (wrapper 2.1.0-bale.74).
 
 | Item | State | Why / sized against |
 |---|---|---|
+| Display pass: keep the stage when the device can't create UAV display images (662a0dd) | On main, not released (next release, bale.75) | Edge case that has never fired; rav1g's suggestion. |
 | rav1g route: avoid the per-frame copy of direct output into the player pool | Idea | One full-frame GPU copy per frame (GPU copies are ~2.4x slower in the idle state). The copy exists because handing decoder images to Media Foundation deadlocked the fixed image pool (bale.45), so any change needs a new design for that. |
 | FFmpeg 9.x | Deferred | 9.0/9.1 bring nothing the fork needs (HEVC hardening, a driver-compat SRV flag). Easier once Bale drops dav1d zero-copy, so native FFmpeg needs no dav1d patch (`p1`). |
 
