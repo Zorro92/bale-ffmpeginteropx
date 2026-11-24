@@ -101,6 +101,8 @@ white the tone map maps to, `BaleToneMapConfig::target_white_nits` for the stage
 EETF ends at 2.03 times it (203 nits for 100), so a higher value maps more of the source into the
 SDR range and makes the tone-mapped picture brighter. Bale exposes it as a setting. The source peak
 stays the stage's own choice (Bale picks it per frame from the metadata; rav1g applies the same rule).
+Console (Bale 0.1.749, bale.77): `white=200` gave `tone map SDR white=200 nits` both on the HEVC stage
+route and on the rav1g display-pass route (`display pass 1920x1080 depth=10`); playback was normal.
 
 ### Output depth (dithered 8-bit)
 
