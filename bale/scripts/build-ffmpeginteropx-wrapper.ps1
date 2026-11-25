@@ -29,8 +29,12 @@ try {
     New-Item -ItemType Directory $nativeDirectory | Out-Null
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [System.IO.Compression.ZipFile]::ExtractToDirectory($nativePackage, $nativeDirectory)
+    # The library major (avcodec-62 for FFmpeg 8, higher for later releases) follows the native pin.
+    $avcodec = @(Get-ChildItem (Join-Path $nativeDirectory 'runtimes/win-x64/native') -Filter 'avcodec-*.dll' |
+        Where-Object { $_.Name -cmatch '^avcodec-\d+\.dll$' })
+    if ($avcodec.Count -ne 1) { throw 'Native package must contain exactly one avcodec DLL' }
     & "$PSScriptRoot/check-dav1d-version.ps1" `
-        -Bytes ([System.IO.File]::ReadAllBytes((Join-Path $nativeDirectory 'runtimes/win-x64/native/avcodec-62.dll'))) `
+        -Bytes ([System.IO.File]::ReadAllBytes($avcodec[0].FullName)) `
         -ExpectedVersion $nativePin.dav1d_version
 
     # Restore only the three build-tool packages needed by the vcxproj's import guards. In
