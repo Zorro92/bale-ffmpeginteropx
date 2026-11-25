@@ -30,6 +30,7 @@ Last updated: 2026-11-25 (wrapper 2.1.0-bale.81).
 - **D3D12 / SM6 tone map:** parked by the owner (2026-11-18).
 - **rav1g pipeline cache (ABI 2, `rav1g_device_create_with_cache`):** on hold; creating the device with the cache removed the GPU device on the console.
 - **Caller-supplied duration for forward-only inputs (engine player):** idea, never requested.
+- **AC-3 audio encoding for optical / older HDMI ARC soundbars (owner: one of the project's last steps, 2026-11-25):** they take only compressed surround (AC-3/DTS), not multichannel PCM. Needs only FFmpeg's AC-3 encoder (`--enable-encoder=ac3`, LGPL; native builds keep `--disable-encoders` today), so a change to Bale's native build flags with the owner's approval, plus an encode step in the audio passthrough feeder. Small binary, little CPU (sized against the 4 shared cores).
 - **Interlaced video through the stage (HDR, or larger than the display):** untested. Without the stage, 1080i H.264 and MPEG-2 are deinterlaced by Media Foundation on all three routes (Bale console check, 2026-11-23). The stage reads the woven frame, so combing is possible there. Rare; look at it if it shows up.
 - **dav1d zero-copy seek out-of-memory (4K AV1 normal seek exhausts the upload pool):** known, unfixed by choice; Bale uses fast seek for AV1 and the dav1d route no longer uses zero-copy.
 
