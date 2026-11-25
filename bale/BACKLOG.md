@@ -12,7 +12,7 @@ Last updated: 2026-11-25 (wrapper 2.1.0-bale.81).
 | Item | State | Why / sized against |
 |---|---|---|
 | rav1g route: avoid the per-frame copy of direct output into the player pool | Idea | One full-frame GPU copy per frame (GPU copies are ~2.4x slower in the idle state). The copy exists because handing decoder images to Media Foundation deadlocked the fixed image pool (bale.45), so any change needs a new design for that. |
-| FFmpeg 9.x | Deferred | 9.0/9.1 bring nothing the fork needs (HEVC hardening, a driver-compat SRV flag). Easier once Bale drops dav1d zero-copy, so native FFmpeg needs no dav1d patch (`p1`). |
+| FFmpeg 9.1 | In progress (2026-11-25) | Owner approved. Bale builds native n9.1 + dav1d without `p1` (zero-copy is no longer used; its code stays, and on stock FFmpeg `bale_zero_copy=1` fails the first frame so Bale falls back). Fork: pin check accepts any FFmpeg version; then a dry run against the new package (check the pool's +3 assumption), a release and a console regression run. Gains: HEVC tile-parallel software decoding, HEVC hardening, a d3d11va data-race fix. |
 
 ## Waiting on others
 

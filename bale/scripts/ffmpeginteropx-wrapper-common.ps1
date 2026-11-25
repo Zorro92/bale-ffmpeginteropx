@@ -8,10 +8,15 @@ function Get-NativePin {
         $pin.upstream_repository -notmatch '^[\w.-]+/[\w.-]+$' -or
         $pin.upstream_commit -notmatch '^[0-9a-f]{40}$' -or
         $patchRevision -cnotmatch '^(p[1-9][0-9]*)?$' -or
-        $pin.version -ne "8.1.2-bale.dav1d.$($pin.dav1d_version)$(if ($patchRevision) { ".$patchRevision" })") {
+        "$($pin.version)" -cnotmatch '^\d+\.\d+(\.\d+)?-bale\.') {
         throw 'Invalid native FFmpeg package pin'
     }
-    if ($pin.release_tag -ne "native-ffmpeg-8.1.2-dav1d-$($pin.dav1d_version)$(if ($patchRevision) { "-$patchRevision" })") {
+    # The FFmpeg release (8.1.2, 9.1, ...) is the version's first part; version and tag must agree on it.
+    $ffmpegVersion = $pin.version.Substring(0, $pin.version.IndexOf('-bale.'))
+    if ($pin.version -ne "$ffmpegVersion-bale.dav1d.$($pin.dav1d_version)$(if ($patchRevision) { ".$patchRevision" })") {
+        throw 'Invalid native FFmpeg package pin'
+    }
+    if ($pin.release_tag -ne "native-ffmpeg-$ffmpegVersion-dav1d-$($pin.dav1d_version)$(if ($patchRevision) { "-$patchRevision" })") {
         throw 'Inconsistent native release tag'
     }
     return $pin
