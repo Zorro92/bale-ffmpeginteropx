@@ -778,7 +778,15 @@ open; nothing stays allocated). Why: upstream PR #484 adds D3D12 hardware decodi
 decoders use one texture per surface instead of a texture array, which could let the stage read
 decoder output in place (the array is why the retired direct-read experiment cost ~90 MiB) and size
 the pool per surface. Upstream's maintainers don't know whether the Xbox exposes D3D12 video
-decoding at all; this answers that before any decode route is written. Not console-tested yet.
+decoding at all; this answers that before any decode route is written.
+
+Console (bale.83, Bale 0.1.779, Series X): **D3D12 video decoding is available.** HEVC Main10
+3840x2160, H.264 High 1920x1080 and VP9 profile 0 at 1920x1080 and 3840x2160 all reported
+`supported`: `device=0` (D3D12CreateDevice at 11_0 succeeds), `level=0xB000` (11_0 is the highest
+feature level the app partition gets, which is why FFmpeg's 12_0 device creation fails), `video=0`,
+`profiles=11`, `flags=0x1`, `config=0x0` (no reference-only allocations or other constraints),
+`tier=2`, `ffmpeg=0` (FFmpeg's d3d12va accepts a caller-created device). Playback (d3d11va) was
+unaffected: 0 missed frames on all four.
 
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
