@@ -21,6 +21,7 @@
 #include "BaleRav1g.h"
 #include "D3D11DecoderPoolSize.h"
 #include "D3D12VideoDecodeProbe.h"
+#include "D3D12FrameInterop.h"
 // Bale: Media Foundation error codes for streams zero-copy refuses at open.
 #include <mferror.h>
 #include <atomic>
@@ -527,6 +528,18 @@ namespace winrt::FFmpegInteropX::implementation
         return desc->flags & AV_PIX_FMT_FLAG_HWACCEL;
     }
 
+    // Whether the decoder has a hwaccel for this hardware pixel format on a device context.
+    static bool HasHardwareConfig(const AVCodec* codec, AVPixelFormat format)
+    {
+        for (int i = 0; codec; i++)
+        {
+            auto hwConfig = avcodec_get_hw_config(codec, i);
+            if (!hwConfig) return false;
+            if (hwConfig->pix_fmt == format && (hwConfig->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) return true;
+        }
+        return false;
+    }
+
     static AVPixelFormat get_format(struct AVCodecContext* s, const enum AVPixelFormat* fmt)
     {
         AVPixelFormat result_sw = (AVPixelFormat)-1;
@@ -540,9 +553,13 @@ namespace winrt::FFmpegInteropX::implementation
             //		
             if (format != -1)
             {
-                if (s->hw_device_ctx && format == AV_PIX_FMT_D3D11)
+                if (s->hw_device_ctx && format == AV_PIX_FMT_D3D11 && !D3D12FrameInterop::IsD3D12(s->hw_device_ctx))
                 {
                     // we only support D3D11 HW format (not D3D11_VLD)
+                    result_hw = format;
+                }
+                else if (s->hw_device_ctx && format == AV_PIX_FMT_D3D12 && D3D12FrameInterop::IsD3D12(s->hw_device_ctx))
+                {
                     result_hw = format;
                 }
                 else if (result_sw == -1 && !is_hwaccel_pix_fmt(format))
@@ -1144,18 +1161,27 @@ namespace winrt::FFmpegInteropX::implementation
             // create and assign HW device context, if supported and requested
             if (SUCCEEDED(hr) && config->Video().VideoDecoderMode() == VideoDecoderMode::Automatic)
             {
+                // Bale: d3d12va instead of d3d11va (bale_d3d12_decode, D3D12FrameInterop.h) when the
+                // decoder has it. VC-1 and WMV3 keep d3d11va: they start on FFmpeg's own device, and
+                // FFmpeg cannot create a D3D12 device on Xbox (it asks for feature level 12_0). One
+                // hardware context serves every video stream, so the first stream decides.
+                bool useD3D12 = avHardwareContext ? D3D12FrameInterop::IsD3D12(avHardwareContext)
+                    : baleD3d12Decode > 0 && !config->IsFrameGrabber && avVideoCodecCtx->codec_id != AV_CODEC_ID_VC1 &&
+                        avVideoCodecCtx->codec_id != AV_CODEC_ID_WMV3 && HasHardwareConfig(avVideoCodec, AV_PIX_FMT_D3D12);
+                auto hwPixelFormat = useD3D12 ? AV_PIX_FMT_D3D12 : AV_PIX_FMT_D3D11;
+                auto hwDeviceType = useD3D12 ? AVHWDeviceType::AV_HWDEVICE_TYPE_D3D12VA : AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA;
                 int i = 0;
                 while (SUCCEEDED(hr))
                 {
                     auto hwConfig = avcodec_get_hw_config(avVideoCodec, i++);
                     if (hwConfig)
                     {
-                        if (hwConfig->pix_fmt == AV_PIX_FMT_D3D11 && hwConfig->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)
+                        if (hwConfig->pix_fmt == hwPixelFormat && hwConfig->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)
                         {
                             AVBufferRef* hwContext = NULL;
                             if (!avHardwareContext)
                             {
-                                avHardwareContext = av_hwdevice_ctx_alloc(AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
+                                avHardwareContext = av_hwdevice_ctx_alloc(hwDeviceType);
                             }
 
                             if (!avHardwareContext)
@@ -2795,6 +2821,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_av1_decoder") { target = &baleAv1Decoder; minimum = 0; maximum = 1; }
         else if (key == "bale_d3d11va_pool_from_stream") { target = &baleD3d11vaPoolFromStream; minimum = 0; maximum = 1; }
         else if (key == "bale_d3d12va_probe") { target = &baleD3d12vaProbe; minimum = 0; maximum = 1; }
+        else if (key == "bale_d3d12_decode") { target = &baleD3d12Decode; minimum = 0; maximum = 1; }
         // Retired experiment (bale.63-75): shader-readable decoder pools; accepted and ignored.
         else if (key == "bale_d3d11va_shader_resource") { target = &retired; minimum = 0; maximum = 1; }
         else if (key == "bale_av1_fallback_max_height") { target = &baleAv1FallbackMaxHeight; minimum = 0; maximum = 8192; }
@@ -3366,6 +3393,7 @@ namespace winrt::FFmpegInteropX::implementation
         if (hasDeviceChanged && avHardwareContext)
         {
             hr = S_OK;
+            auto hwDeviceType = reinterpret_cast<AVHWDeviceContext*>(avHardwareContext->data)->type;
             av_buffer_unref(&avHardwareContext);
             device = nullptr;
             deviceContext = nullptr;
@@ -3373,7 +3401,7 @@ namespace winrt::FFmpegInteropX::implementation
             if (deviceHandle && deviceManager)
                 deviceManager->CloseDeviceHandle(deviceHandle);
 
-            avHardwareContext = av_hwdevice_ctx_alloc(AVHWDeviceType::AV_HWDEVICE_TYPE_D3D11VA);
+            avHardwareContext = av_hwdevice_ctx_alloc(hwDeviceType);
 
             if (!avHardwareContext)
             {

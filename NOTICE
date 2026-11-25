@@ -12,6 +12,7 @@ Modifications by the Bale project, starting from upstream commit
   Added:     Source/BaleD3D11Upload.h
              Source/BaleFilmGrain.h
              Source/D3D11DecoderPoolSize.h
+             Source/D3D12FrameInterop.h
              Source/D3D12VideoDecodeProbe.h
              Source/ThreadedScaler.h
              Source/BaleMemoryLedger.h
@@ -34,9 +35,11 @@ Modifications by the Bale project, starting from upstream commit
              Source/D3D11VideoSampleProvider.h
              Source/FFmpegMediaSource.cpp, Source/FFmpegMediaSource.h
              Source/FFmpegReader.cpp, Source/FFmpegReader.h
+             Source/FFmpegUtils.h
              Source/MediaSampleProvider.cpp, Source/MediaSampleProvider.h
              Source/SubtitleProviderBitmap.h
              Source/TexturePool.h
+             Source/UncompressedFrameProvider.h
              Source/UncompressedSampleProvider.cpp, Source/UncompressedSampleProvider.h
              Source/UncompressedVideoSampleProvider.cpp, Source/UncompressedVideoSampleProvider.h
              README.md (this fork's section), NOTICE (this file)

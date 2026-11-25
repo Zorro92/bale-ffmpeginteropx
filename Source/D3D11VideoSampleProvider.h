@@ -9,6 +9,7 @@
 #include "FFmpegReader.h"
 #include "FFmpegUtils.h"
 #include "D3D11DecoderPoolSize.h"
+#include "D3D12FrameInterop.h"
 
 extern "C"
 {
@@ -69,6 +70,10 @@ public:
         av_log(nullptr, AV_LOG_INFO, "Bale video: d3d11 provider destroyed (tracked=%d output created=%u reused=%u)\n",
             static_cast<int>(trackedSamples.size()), processedTexturePool ? processedTexturePool->CreatedCount() : 0u,
             processedTexturePool ? processedTexturePool->ReusedCount() : 0u);
+        if (d3d12Interop)
+        {
+            av_log(nullptr, AV_LOG_INFO, "Bale video: d3d12 frames destroyed (opened=%d)\n", static_cast<int>(d3d12Interop->TextureCount()));
+        }
     }
 
     virtual void Flush(bool flushBuffers) override
@@ -98,10 +103,57 @@ public:
             // The decoder's texture array; counted once, so every later frame of the pool is a no-op.
             BaleMemTrackTexture(reinterpret_cast<ID3D11Texture2D*>(avFrame->data[0]), BaleMemCategory::DecoderFrames);
         }
-        if (frameProcessor) return CreateProcessedBufferFromFrame(surface, avFrame, framePts);
+        if (avFrame->format == AV_PIX_FMT_D3D12) return CreateBufferFromD3D12Frame(pBuffer, surface, avFrame, framePts, frameDuration);
+        return CreateBufferFromHardwareTexture(pBuffer, surface, avFrame, framePts, frameDuration,
+            avFrame->format == AV_PIX_FMT_D3D11 ? reinterpret_cast<ID3D11Texture2D*>(avFrame->data[0]) : nullptr,
+            static_cast<UINT>(reinterpret_cast<uintptr_t>(avFrame->data[1])));
+    }
+
+    // A d3d12va frame, read on the D3D11 device through its shared texture (D3D12FrameInterop); the
+    // stage or the copy below then reads it exactly as a d3d11va frame.
+    HRESULT CreateBufferFromD3D12Frame(IBuffer* pBuffer, IDirect3DSurface* surface, AVFrame* avFrame, int64_t& framePts, int64_t& frameDuration)
+    {
+        if (!poolLogged && avFrame->hw_frames_ctx)
+        {
+            poolLogged = true;
+            auto frames = reinterpret_cast<AVHWFramesContext*>(avFrame->hw_frames_ctx->data);
+            av_log(nullptr, AV_LOG_INFO, "Bale video: d3d12 provider created; decoder surfaces=%d %dx%d processed=%d\n",
+                frames->initial_pool_size, frames->width, frames->height, frameProcessor ? 1 : 0);
+        }
+        winrt::com_ptr<ID3D11Texture2D> input;
+        bool opened = false;
+        HRESULT hr = d3d12Interop ? d3d12Interop->Acquire(avFrame, input, opened) : E_NOT_VALID_STATE;
+        if (FAILED(hr))
+        {
+            if (!d3d12FailureLogged)
+            {
+                d3d12FailureLogged = true;
+                av_log(nullptr, AV_LOG_ERROR, "Bale video: d3d12 frame not readable on d3d11 (hr=0x%08X)\n", static_cast<unsigned>(hr));
+            }
+            return frameProcessor ? FailProcessing(hr) : hr;
+        }
+        if (opened)
+        {
+            // One shared texture per decoder frame; counted when it is first opened here.
+            BaleMemTrackTexture(input.get(), BaleMemCategory::DecoderFrames);
+        }
+        hr = CreateBufferFromHardwareTexture(pBuffer, surface, avFrame, framePts, frameDuration, input.get(), 0);
+        auto releaseHr = d3d12Interop->Release(avFrame);
+        if (SUCCEEDED(hr) && FAILED(releaseHr))
+        {
+            hr = frameProcessor ? FailProcessing(releaseHr) : releaseHr;
+        }
+        return hr;
+    }
+
+    // A decoded hardware frame as a D3D11 texture (and array slice), or a software frame (no texture).
+    HRESULT CreateBufferFromHardwareTexture(IBuffer* pBuffer, IDirect3DSurface* surface, AVFrame* avFrame, int64_t& framePts,
+        int64_t& frameDuration, ID3D11Texture2D* decodedTexture, UINT subresource)
+    {
+        if (frameProcessor) return CreateProcessedBufferFromFrame(surface, avFrame, framePts, decodedTexture, subresource);
 
         HRESULT hr = S_OK;
-        if (avFrame->format == AV_PIX_FMT_D3D11)
+        if (decodedTexture)
         {
             if (!texturePool)
             {
@@ -119,8 +171,6 @@ public:
             //copy texture data
             if (SUCCEEDED(hr))
             {
-                //cast the AVframe to texture 2D
-                auto decodedTexture = reinterpret_cast<ID3D11Texture2D*>(avFrame->data[0]);
                 winrt::com_ptr<ID3D11Texture2D> renderTexture;
                 //happy path:decoding and rendering on same GPU
                 {
@@ -132,7 +182,7 @@ public:
                     BaleMemTrackTexture(renderTexture.get(), BaleMemCategory::OtherTextures);
 
                     // copy the decoded texture to the render texture
-                    deviceContext->CopySubresourceRegion(renderTexture.get(), 0, 0, 0, 0, decodedTexture, (UINT)(unsigned long long)avFrame->data[1], NULL);
+                    deviceContext->CopySubresourceRegion(renderTexture.get(), 0, 0, 0, 0, decodedTexture, subresource, NULL);
                     deviceContext->Flush();
 
                     //create a IDXGISurface from the shared texture
@@ -302,11 +352,24 @@ public:
                 device = newDevice;
                 deviceContext = newDeviceContext;
 
-                if (needsReinit)
+                // d3d12va decoding: its frames are read on this D3D11 device through shared textures.
+                d3d12Interop.reset();
+                if (D3D12FrameInterop::IsD3D12(avHardwareContext))
+                {
+                    d3d12Interop = std::make_unique<D3D12FrameInterop>();
+                    hr = d3d12Interop->Initialize(avHardwareContext, device.get(), deviceContext.get());
+                    if (FAILED(hr))
+                    {
+                        av_log(nullptr, AV_LOG_ERROR, "Bale video: d3d12 interop failed (hr=0x%08X)\n", static_cast<unsigned>(hr));
+                        d3d12Interop.reset();
+                    }
+                }
+
+                if (SUCCEEDED(hr) && needsReinit)
                 {
                     hr = UpdateCodecContext(hwCodec, avHardwareContext);
                 }
-                else if (!m_pAvCodecCtx->hw_device_ctx || m_pAvCodecCtx->hw_device_ctx->data != avHardwareContext->data)
+                else if (SUCCEEDED(hr) && (!m_pAvCodecCtx->hw_device_ctx || m_pAvCodecCtx->hw_device_ctx->data != avHardwareContext->data))
                 {
                     av_buffer_unref(&m_pAvCodecCtx->hw_device_ctx);
                     m_pAvCodecCtx->hw_device_ctx = av_buffer_ref(avHardwareContext);
@@ -314,6 +377,7 @@ public:
             }
             else
             {
+                d3d12Interop.reset();
                 device = nullptr;
                 deviceContext = nullptr;
                 av_buffer_unref(&m_pAvCodecCtx->hw_device_ctx);
@@ -468,6 +532,25 @@ public:
 
         HRESULT hr = DirectXInteropHelper::GetDeviceFromStreamSource(deviceManager, device, deviceContext, videoDevice, outDeviceHandle);
 
+        if (D3D12FrameInterop::IsD3D12(avHardwareContext))
+        {
+            // d3d12va: a D3D12 device on the Media Foundation device's adapter; the D3D11 device stays
+            // the one samples are rendered on.
+            if (SUCCEEDED(hr))
+            {
+                auto multithread = device.try_as<ID3D10Multithread>();
+                if (multithread) multithread->SetMultithreadProtected(TRUE);
+                hr = D3D12FrameInterop::CreateDeviceContext(device.get(), avHardwareContext);
+            }
+            av_log(nullptr, AV_LOG_INFO, "Bale video: d3d12 device (hr=0x%08X)\n", static_cast<unsigned>(hr));
+            if (SUCCEEDED(hr))
+            {
+                outDevice = device;
+                outDeviceContext = deviceContext;
+            }
+            return hr;
+        }
+
         if (SUCCEEDED(hr)) hr = deviceContext->QueryInterface(videoContext.put());
 
         auto dataBuffer = (AVHWDeviceContext*)avHardwareContext->data;
@@ -585,24 +668,24 @@ private:
         return fatalHr;
     }
 
-    HRESULT CreateProcessedBufferFromFrame(IDirect3DSurface* surface, AVFrame* frame, int64_t& framePts)
+    HRESULT CreateProcessedBufferFromFrame(IDirect3DSurface* surface, AVFrame* frame, int64_t& framePts, ID3D11Texture2D* input,
+        UINT subresource)
     {
         try
         {
             // The declared output never changes; a fallback or size change cannot bypass processing.
-            if (frame->format != AV_PIX_FMT_D3D11 || frame->width != processorWidth || frame->height != processorHeight)
+            if ((frame->format != AV_PIX_FMT_D3D11 && frame->format != AV_PIX_FMT_D3D12) || !input || frame->width != processorWidth ||
+                frame->height != processorHeight)
             {
                 winrt::throw_hresult(E_INVALIDARG);
             }
-            if (!device || !deviceContext || !frame->data[0]) winrt::throw_hresult(E_NOINTERFACE);
+            if (!device || !deviceContext) winrt::throw_hresult(E_NOINTERFACE);
             if (processorWidth <= 0 || processorHeight <= 0 || (processorWidth & 1) || (processorHeight & 1))
             {
                 winrt::throw_hresult(E_INVALIDARG);
             }
-            auto input = reinterpret_cast<ID3D11Texture2D*>(frame->data[0]);
             D3D11_TEXTURE2D_DESC desc{};
             input->GetDesc(&desc);
-            auto subresource = reinterpret_cast<uintptr_t>(frame->data[1]);
             if (!frameProcessor->SupportsInputFormat(desc.Format) || desc.Width < static_cast<UINT>(processorWidth) ||
                 desc.Height < static_cast<UINT>(processorHeight) || subresource >= desc.ArraySize || desc.MipLevels != 1)
             {
@@ -632,8 +715,10 @@ private:
             multithread->SetMultithreadProtected(TRUE);
             if (!multithread->GetMultithreadProtected()) winrt::throw_hresult(E_FAIL);
             auto colorInfo = VideoFrameColorInfo::FromFrame(frame, m_pAvStream->codecpar);
+            // FFmpeg's D3D11 device lock; a d3d12va device has none on this D3D11 device.
             auto hardwareDevice = m_pAvCodecCtx->hw_device_ctx;
-            auto hardwareContext = hardwareDevice
+            auto hardwareContext = hardwareDevice &&
+                reinterpret_cast<AVHWDeviceContext*>(hardwareDevice->data)->type == AV_HWDEVICE_TYPE_D3D11VA
                 ? reinterpret_cast<AVD3D11VADeviceContext*>(reinterpret_cast<AVHWDeviceContext*>(hardwareDevice->data)->hwctx)
                 : nullptr;
             {
@@ -644,7 +729,7 @@ private:
                     winrt::check_hresult(frameProcessor->Initialize(device.get(), processedWidth, processedHeight, processorWidth, processorHeight));
                     processorInitialized = true;
                 }
-                winrt::check_hresult(frameProcessor->Process(deviceContext.get(), input, static_cast<UINT>(subresource), output.get(), colorInfo));
+                winrt::check_hresult(frameProcessor->Process(deviceContext.get(), input, subresource, output.get(), colorInfo));
                 deviceContext->Flush();
                 auto removed = device->GetDeviceRemovedReason();
                 if (FAILED(removed))
@@ -669,6 +754,8 @@ private:
     std::unique_ptr<VideoFrameProcessor> frameProcessor;
     bool processorInitialized = false;
     bool poolLogged = false;
+    bool d3d12FailureLogged = false;
+    std::unique_ptr<D3D12FrameInterop> d3d12Interop;
     int processorWidth = 0;   // visible decoded (source) size
     int processorHeight = 0;
     int processedWidth = 0;   // processed output size (smaller when downscaling)

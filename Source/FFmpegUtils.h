@@ -16,9 +16,15 @@ public:
             //		
             if (format != -1)
             {
-                if (s->hw_device_ctx && format == AV_PIX_FMT_D3D11)
+                if (s->hw_device_ctx && format == AV_PIX_FMT_D3D11 &&
+                    reinterpret_cast<AVHWDeviceContext*>(s->hw_device_ctx->data)->type == AV_HWDEVICE_TYPE_D3D11VA)
                 {
                     // we only support D3D11 HW format (not D3D11_VLD)
+                    result_hw = format;
+                }
+                else if (s->hw_device_ctx && format == AV_PIX_FMT_D3D12 &&
+                    reinterpret_cast<AVHWDeviceContext*>(s->hw_device_ctx->data)->type == AV_HWDEVICE_TYPE_D3D12VA)
+                {
                     result_hw = format;
                 }
                 else if (result_sw == -1 && !is_hwaccel_pix_fmt(format))

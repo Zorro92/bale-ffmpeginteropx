@@ -115,7 +115,7 @@ public:
                 // get from codec and feed to filter graph.
 
                 hr = GetFrameFromCodec(avFrame);
-                if (SUCCEEDED(hr) && (*avFrame)->format == AV_PIX_FMT_D3D11)
+                if (SUCCEEDED(hr) && ((*avFrame)->format == AV_PIX_FMT_D3D11 || (*avFrame)->format == AV_PIX_FMT_D3D12))
                 {
                     // this is a hardware frame, replace it with a software copy
                     hr = ConvertHwToSwFrame(avFrame);

@@ -930,7 +930,7 @@ int UncompressedVideoSampleProvider::get_buffer2(AVCodecContext* avCodecContext,
 {
     auto provider = reinterpret_cast<UncompressedVideoSampleProvider*>(avCodecContext->opaque);
 
-    if (frame->format == AV_PIX_FMT_D3D11 || frame->format == AV_PIX_FMT_D3D11VA_VLD)
+    if (frame->format == AV_PIX_FMT_D3D11 || frame->format == AV_PIX_FMT_D3D11VA_VLD || frame->format == AV_PIX_FMT_D3D12)
     {
         // custom buffer allocation not supported for HW formats. switch to default function.
         avCodecContext->get_buffer2 = avcodec_default_get_buffer2;
