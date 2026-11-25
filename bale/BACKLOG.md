@@ -5,7 +5,7 @@ item when work is proposed, move it when its state changes, and drop "Done" entr
 older than a few releases (the commits and `README.md` keep the details). Every design item is sized
 against the console limits in `AGENTS.md` ("Design against the console's limits").
 
-Last updated: 2026-11-25 (wrapper 2.1.0-bale.81).
+Last updated: 2026-11-25 (wrapper 2.1.0-bale.82).
 
 ## Open: fork work
 
@@ -45,6 +45,7 @@ Last updated: 2026-11-25 (wrapper 2.1.0-bale.81).
 
 | Release | What |
 |---|---|
+| bale.82 | Native FFmpeg 9.1 (dav1d 1.5.5, no patches); upstream crash fixes #488/#489; opt-in `bale_d3d12va_probe` |
 | Bale (2026-11-22) | Stage fix in bale_gpu: 4K60 AV1 on rav1g 47.1 → 57.6 fps (missed 21.8% → 4.5%), same as without the stage. Owner approved `bale_d3d11va_pool_from_stream` as the HEVC default (debug builds now, release after a long HEVC play). |
 | bale.81 | Threaded swscale (sws_scale_frame, up to 4 threads) for software frames beyond 4:2:0 8-bit |
 | bale.80 | Software frames through the stage (tone map, downscale, depth, white) on the staged D3D11 upload; console-verified with bale.81 (4K H.264 → 1080p, 25 opens without the leak, 4:2:2 HDR10 tone map) |
