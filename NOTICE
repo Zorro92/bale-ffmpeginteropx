@@ -12,6 +12,7 @@ Modifications by the Bale project, starting from upstream commit
   Added:     Source/BaleD3D11Upload.h
              Source/BaleFilmGrain.h
              Source/D3D11DecoderPoolSize.h
+             Source/D3D12VideoDecodeProbe.h
              Source/ThreadedScaler.h
              Source/BaleMemoryLedger.h
              Source/BaleRav1g.h

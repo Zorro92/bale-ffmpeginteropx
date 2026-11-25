@@ -459,6 +459,9 @@ namespace winrt::FFmpegInteropX::implementation
         int baleAv1FallbackMaxHeight = 0;
         // Bale: 1 = size the d3d11va decoder pool from the stream's SPS (HEVC); 0 = FFmpeg's pool.
         int baleD3d11vaPoolFromStream = 0;
+        // Bale: 1 = log whether the GPU would decode each hardware-decoded video stream through D3D12
+        // video (D3D12VideoDecodeProbe.h); diagnostic only, decoding is unchanged. 0 = off.
+        int baleD3d12vaProbe = 0;
         std::shared_ptr<MediaSampleProvider> CreateGpuDecoderStream(AVStream* avStream, int index);
         // Image pools of the GPU decoder streams, filled at open and never changed afterwards: a
         // Starting or Close request cancels their waits before it takes `mutex` (a decoder waiting for

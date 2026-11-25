@@ -735,6 +735,29 @@ threaded swscale left 1080p non-4:2:0 CPU flat to +9% against bale.79 (the threa
 don't remove it; the conversion's wall time per frame is what they shorten, which matters only
 where one core can't keep up).
 
+## D3D12 video decode probe
+
+`bale_d3d12va_probe=1` (default 0) logs, for each hardware-decoded video stream at open, whether the
+GPU would decode it through D3D12 video, FFmpeg's `d3d12va` hwaccel (`Source/D3D12VideoDecodeProbe.h`).
+Decoding is unchanged: the stream keeps d3d11va. One line:
+
+`Bale d3d12va probe: supported|not supported|no D3D12 profile for this stream (codec C profile P WxH
+D-bit): hwaccel=0|1 device=<av error> video=<hr> profiles=N check=<hr> flags=F config=C tier=T`
+
+- `hwaccel`: the FFmpeg decoder has a d3d12va hwaccel (native FFmpeg 9.1 builds them for H.264, HEVC,
+  VP9, AV1, MPEG-2 and VC-1, autodetected, no configure change).
+- `device`: `av_hwdevice_ctx_create(D3D12VA)` result (0 = FFmpeg created its D3D12 device).
+- `video`: `ID3D12VideoDevice` query; `profiles`: decode profiles the device reports.
+- `check`, `flags`, `config`, `tier`: `D3D12_FEATURE_VIDEO_DECODE_SUPPORT` for the stream's profile,
+  NV12/P010 and size (flag 1 = supported).
+
+The device is created and released inside the probe (one D3D12 device for a few milliseconds per
+open; nothing stays allocated). Why: upstream PR #484 adds D3D12 hardware decoding; FFmpeg's D3D12
+decoders use one texture per surface instead of a texture array, which could let the stage read
+decoder output in place (the array is why the retired direct-read experiment cost ~90 MiB) and size
+the pool per surface. Upstream's maintainers don't know whether the Xbox exposes D3D12 video
+decoding at all; this answers that before any decode route is written. Not console-tested yet.
+
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
 Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.

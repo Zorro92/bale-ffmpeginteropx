@@ -20,6 +20,7 @@
 #include "GpuDecoderSampleProvider.h"
 #include "BaleRav1g.h"
 #include "D3D11DecoderPoolSize.h"
+#include "D3D12VideoDecodeProbe.h"
 // Bale: Media Foundation error codes for streams zero-copy refuses at open.
 #include <mferror.h>
 #include <atomic>
@@ -1221,6 +1222,12 @@ namespace winrt::FFmpegInteropX::implementation
 
                 // initialize the stream parameters with demuxer information
                 hr = avcodec_parameters_to_context(avVideoCodecCtx, avStream->codecpar);
+            }
+
+            // Bale: diagnostic only; the stream keeps its d3d11va decoder.
+            if (SUCCEEDED(hr) && baleD3d12vaProbe > 0 && avVideoCodecCtx->hw_device_ctx && !config->IsFrameGrabber)
+            {
+                D3D12VideoDecodeProbe::Run(avVideoCodec, avStream->codecpar, avStream->avg_frame_rate);
             }
 
             if (SUCCEEDED(hr))
@@ -2787,6 +2794,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_subtitle_sink") { target = &baleSubtitleSink; minimum = 1; maximum = 999999999; }
         else if (key == "bale_av1_decoder") { target = &baleAv1Decoder; minimum = 0; maximum = 1; }
         else if (key == "bale_d3d11va_pool_from_stream") { target = &baleD3d11vaPoolFromStream; minimum = 0; maximum = 1; }
+        else if (key == "bale_d3d12va_probe") { target = &baleD3d12vaProbe; minimum = 0; maximum = 1; }
         // Retired experiment (bale.63-75): shader-readable decoder pools; accepted and ignored.
         else if (key == "bale_d3d11va_shader_resource") { target = &retired; minimum = 0; maximum = 1; }
         else if (key == "bale_av1_fallback_max_height") { target = &baleAv1FallbackMaxHeight; minimum = 0; maximum = 8192; }
