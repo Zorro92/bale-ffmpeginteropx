@@ -14,6 +14,19 @@ original winmd public type-name sets must match; this is not a full ABI/member
 comparison. Artifacts include the package and SHA256, provenance, comparison
 result, build log and corresponding source archive.
 
+## Native FFmpeg
+
+Since bale.82 the wrapper links Bale's native FFmpeg 9.1 (`bale/ffmpeg-native.json`: package
+`9.1.0-bale.dav1d.1.5.5`, tag `native-ffmpeg-9.1-dav1d-1.5.5`; NuGet writes 9.1 as 9.1.0, the tag
+keeps FFmpeg's name, and the pin check accepts both). It has no FFmpeg patches: Bale's dav1d
+user-picture-buffer patch (`p1`, 8.1.2) existed only for the zero-copy route, which Bale no longer
+uses. That code stays here, but on stock FFmpeg dav1d never asks for the caller's buffers, so a
+stream with `bale_zero_copy=1` fails its first frame (`ZeroCopyMissed`) and the app falls back. The
+build script finds the `avcodec-N.dll` (63 for FFmpeg 9) instead of naming the major. dav1d is 1.5.5:
+1.5.4's MSVC atomics shim no longer builds with current MSVC (C7780). FFmpeg 9 removed no API this
+fork uses; gains: HEVC tile-parallel software decoding, HEVC hardening, a d3d11va data-race fix, and
+autodetected d3d12va hwaccels (see "D3D12 video decode probe").
+
 ## Tone map option
 
 `MediaSourceConfig.FFmpegOptions["bale_tonemap"]` accepts decimal strings:
