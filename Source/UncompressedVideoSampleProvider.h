@@ -20,6 +20,7 @@
 #include "UncompressedSampleProvider.h"
 #include "BaleD3D11Upload.h"
 #include "VideoColorAttributes.h"
+#include "ThreadedScaler.h"
 #include <atomic>
 using namespace winrt::Windows::Media::Core;
 
@@ -199,6 +200,7 @@ private:
     DXGI_FORMAT stageInputFormat = DXGI_FORMAT_UNKNOWN;
     AVPixelFormat stageInputPixelFormat = AV_PIX_FMT_NONE;
     SwsContext* stageScaler = nullptr;
+    ThreadedScaler threadedScaler; // conversions beyond a 4:2:0 8-bit interleave (both paths)
     bool stageLogged = false;
     unsigned stageFrames = 0;
     bool stagedGrainLogged = false;

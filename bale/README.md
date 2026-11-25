@@ -719,6 +719,14 @@ leak) and need the tone map for HDR. Sized against: the ~3-core CPU budget (the 
 the CPU once, by swscale) and the idle state's GPU copies (one staging-to-texture copy per frame). Not
 console-tested yet.
 
+Since bale.81, conversions beyond a 4:2:0 8-bit interleave (4:2:2 and 4:4:4, more than 8 bits, other
+formats; in this stage path and in the regular CPU path) use swscale's slice threads
+(`Source/ThreadedScaler.h`: `sws_alloc_context`, the `threads` option, up to four, and
+`sws_scale_frame` into the caller's planes, the destination taking the source's colour description so
+only the format and size change). 8-bit 4:2:0 keeps the single `sws_scale`, a plain interleave. Frame
+grabbers keep the old path. Bale measured 4:2:2 10-bit 1080p30 at 1.8–2.1 cores with the single
+call; this is for 4K 4:2:2 and 1080p60.
+
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
 Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.

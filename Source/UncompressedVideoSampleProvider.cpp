@@ -18,6 +18,7 @@
 
 #include "pch.h"
 #include "UncompressedVideoSampleProvider.h"
+#include "ThreadedScaler.h"
 #include "NativeBufferFactory.h"
 #include <mfapi.h>
 #include <d3d10.h>
@@ -417,7 +418,10 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
     else
     {
         // Different format or size: Use scaler
-        hr = InitializeScalerIfRequired(avFrame);
+        // Bale: conversions beyond a 4:2:0 8-bit interleave use swscale's slice threads (ThreadedScaler).
+        bool threaded = ThreadedScaler::Wanted(static_cast<AVPixelFormat>(avFrame->format)) &&
+            !m_config.as<implementation::MediaSourceConfig>()->IsFrameGrabber;
+        hr = threaded ? S_OK : InitializeScalerIfRequired(avFrame);
 
         if (SUCCEEDED(hr))
         {
@@ -429,8 +433,13 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
 
             if (SUCCEEDED(hr))
             {
-                // Convert to output format using FFmpeg software scaler
-                if (sws_scale(m_pSwsCtx, (const UINT8**)(avFrame->data), avFrame->linesize, 0, avFrame->height, data, linesize) > 0)
+                // Convert to output format using FFmpeg software scaler (sws_scale_frame: >= 0 on success;
+                // sws_scale: the rows written)
+                bool scaled = threaded
+                    ? threadedScaler.Scale(avFrame, data, linesize, m_OutputPixelFormat, outputWidth, outputHeight,
+                        avFrame->width < outputWidth ? SWS_BICUBIC : SWS_BILINEAR) >= 0
+                    : sws_scale(m_pSwsCtx, (const UINT8**)(avFrame->data), avFrame->linesize, 0, avFrame->height, data, linesize) > 0;
+                if (scaled)
                 {
                     *pBuffer = NativeBufferFactory::CreateNativeBuffer(buffer->data, (UINT32)buffer->size, free_buffer, buffer);
                 }
@@ -596,9 +605,13 @@ HRESULT UncompressedVideoSampleProvider::SoftwareStageFrame(AVFrame* avFrame, ID
     bool hasGrain = StagedGrain && FilmGrain.Prepare(avFrame, stageInputPixelFormat, stageSourceWidth, stageSourceHeight, grainParams);
     try
     {
-        stageScaler = sws_getCachedContext(stageScaler, avFrame->width, avFrame->height, static_cast<AVPixelFormat>(avFrame->format),
-            stageSourceWidth, stageSourceHeight, stageInputPixelFormat, SWS_BILINEAR, nullptr, nullptr, nullptr);
-        if (!stageScaler) winrt::throw_hresult(E_OUTOFMEMORY);
+        bool threaded = ThreadedScaler::Wanted(static_cast<AVPixelFormat>(avFrame->format));
+        if (!threaded)
+        {
+            stageScaler = sws_getCachedContext(stageScaler, avFrame->width, avFrame->height, static_cast<AVPixelFormat>(avFrame->format),
+                stageSourceWidth, stageSourceHeight, stageInputPixelFormat, SWS_BILINEAR, nullptr, nullptr, nullptr);
+            if (!stageScaler) winrt::throw_hresult(E_OUTOFMEMORY);
+        }
         auto& timing = upload->timing;
         auto start = BaleUploadTiming::Now();
         if (timing.lastEnd) timing.Add(BaleUploadTiming::Gap, start - timing.lastEnd);
@@ -610,10 +623,10 @@ HRESULT UncompressedVideoSampleProvider::SoftwareStageFrame(AVFrame* avFrame, ID
         uint8_t* data[4] = { base, base + static_cast<size_t>(pitch) * stageSourceHeight, nullptr, nullptr };
         int linesize[4] = { pitch, pitch, 0, 0 };
         auto fillStart = BaleUploadTiming::Now();
-        if (sws_scale(stageScaler, (const UINT8**)(avFrame->data), avFrame->linesize, 0, avFrame->height, data, linesize) <= 0)
-        {
-            winrt::throw_hresult(E_FAIL);
-        }
+        bool scaled = threaded
+            ? threadedScaler.Scale(avFrame, data, linesize, stageInputPixelFormat, stageSourceWidth, stageSourceHeight) >= 0
+            : sws_scale(stageScaler, (const UINT8**)(avFrame->data), avFrame->linesize, 0, avFrame->height, data, linesize) > 0;
+        if (!scaled) winrt::throw_hresult(E_FAIL);
         timing.Add(BaleUploadTiming::Fill, BaleUploadTiming::Now() - fillStart);
         upload->SetOutput(stageOutputWidth, stageOutputHeight, stageOutputP010 ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12);
         ReadFrameProperties(avFrame, framePts);
