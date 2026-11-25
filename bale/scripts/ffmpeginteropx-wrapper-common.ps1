@@ -16,7 +16,10 @@ function Get-NativePin {
     if ($pin.version -ne "$ffmpegVersion-bale.dav1d.$($pin.dav1d_version)$(if ($patchRevision) { ".$patchRevision" })") {
         throw 'Invalid native FFmpeg package pin'
     }
-    if ($pin.release_tag -ne "native-ffmpeg-$ffmpegVersion-dav1d-$($pin.dav1d_version)$(if ($patchRevision) { "-$patchRevision" })") {
+    # NuGet normalizes a two-part release (9.1) to 9.1.0 in the package version; the tag keeps FFmpeg's name.
+    $tagVersion = $ffmpegVersion -creplace '^(\d+\.\d+)\.0$', '$1'
+    if ($pin.release_tag -ne "native-ffmpeg-$ffmpegVersion-dav1d-$($pin.dav1d_version)$(if ($patchRevision) { "-$patchRevision" })" -and
+        $pin.release_tag -ne "native-ffmpeg-$tagVersion-dav1d-$($pin.dav1d_version)$(if ($patchRevision) { "-$patchRevision" })") {
         throw 'Inconsistent native release tag'
     }
     return $pin
