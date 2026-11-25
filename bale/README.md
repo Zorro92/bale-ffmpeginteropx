@@ -727,6 +727,14 @@ only the format and size change). 8-bit 4:2:0 keeps the single `sws_scale`, a pl
 grabbers keep the old path. Bale measured 4:2:2 10-bit 1080p30 at 1.8–2.1 cores with the single
 call; this is for 4K 4:2:2 and 1080p60.
 
+Console (Bale 63349b5, bale.81): the stage ran on 4K H.264 software to 1080p at 1.6/1.9/2.8 cores
+(the three bitrates tested), with app memory ~400 MiB lower than with Media Foundation scaling; 25
+consecutive 4K opens had no missed frames and no leak; a 4:2:2 HEVC HDR10 software stream was
+tone-mapped (P010 to NV12), no missed frames; the hardware and AV1 routes were unchanged. The
+threaded swscale left 1080p non-4:2:0 CPU flat to +9% against bale.79 (the threads add work, they
+don't remove it; the conversion's wall time per frame is what they shorten, which matters only
+where one core can't keep up).
+
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
 Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.
