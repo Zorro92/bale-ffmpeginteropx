@@ -13,6 +13,8 @@ Last updated: 2026-11-25 (wrapper 2.1.0-bale.81).
 |---|---|---|
 | rav1g route: avoid the per-frame copy of direct output into the player pool | Idea | One full-frame GPU copy per frame (GPU copies are ~2.4x slower in the idle state). The copy exists because handing decoder images to Media Foundation deadlocked the fixed image pool (bale.45), so any change needs a new design for that. |
 | FFmpeg 9.1 | In progress (2026-11-25) | Owner approved. Bale builds native n9.1 + dav1d without `p1` (zero-copy is no longer used; its code stays, and on stock FFmpeg `bale_zero_copy=1` fails the first frame so Bale falls back). Fork: pin check accepts any FFmpeg version; then a dry run against the new package (check the pool's +3 assumption), a release and a console regression run. Gains: HEVC tile-parallel software decoding, HEVC hardening, a d3d11va data-race fix. |
+| Upstream PR #487: the source holds strong references to itself while playing, and handles the stream source's Closed event (issue #486, teardown crashes) | Wait for upstream to merge | Changes when the source is freed. Bale closes it explicitly, so it matters less here; if the source outlived Bale's close, a 4K decoder pool (~190–480 MiB) would stay allocated against the 3328 MiB app limit. Take it with a console open/close loop. |
+| Upstream PR #484: experimental D3D12 hardware decoding | Watch | Changes the public API (frozen here). Relevant only if FFmpeg's D3D12 filters become useful; Bale's GPU work already runs in bale_gpu and rav1g. |
 
 ## Waiting on others
 
@@ -27,6 +29,7 @@ Last updated: 2026-11-25 (wrapper 2.1.0-bale.81).
 
 - **HEVC/H.264 passthrough media-type attributes (sequence header, level, interlace, NALU length):** not needed. The first-10-bit-after-boot slowdown no longer reproduces (likely an OS update), and the 8 vs 21 attributes made no difference (Bale `player-plan.md`, 2026-11-23).
 - **Upstream pull requests:** not before Bale is stable, and only with the owner's approval.
+  Candidates to offer then: the stream-sized d3d11va pool (4K HEVC 478 → 191 MiB), threaded swscale for formats beyond 4:2:0 8-bit (pairs with upstream PR #485), dithered 8-bit output, dav1d GPU film grain, and a generic processed GPU-frame path (upstream issues #465, #467). Upstream issue #460 (2x speed with the system decoder): check against Bale's passthrough route.
 - **D3D12 / SM6 tone map:** parked by the owner (2026-11-18).
 - **rav1g pipeline cache (ABI 2, `rav1g_device_create_with_cache`):** on hold; creating the device with the cache removed the GPU device on the console.
 - **Caller-supplied duration for forward-only inputs (engine player):** idea, never requested.
