@@ -127,16 +127,18 @@ public:
                     std::lock_guard lock(samplesMutex);
                     hr = texturePool->GetCopyTexture(decodedTexture, renderTexture);
                 }
-                if (SUCCEEDED(hr)) BaleMemTrackTexture(renderTexture.get(), BaleMemCategory::OtherTextures);
-                deviceContext->CopySubresourceRegion(renderTexture.get(), 0, 0, 0, 0, decodedTexture, (UINT)(unsigned long long)avFrame->data[1], NULL);
-                deviceContext->Flush();
-
-                //create a IDXGISurface from the shared texture
-                auto finalSurface = renderTexture.as<IDXGISurface>();
-
-                //get the IDirect3DSurface pointer
                 if (SUCCEEDED(hr))
                 {
+                    BaleMemTrackTexture(renderTexture.get(), BaleMemCategory::OtherTextures);
+
+                    // copy the decoded texture to the render texture
+                    deviceContext->CopySubresourceRegion(renderTexture.get(), 0, 0, 0, 0, decodedTexture, (UINT)(unsigned long long)avFrame->data[1], NULL);
+                    deviceContext->Flush();
+
+                    //create a IDXGISurface from the shared texture
+                    auto finalSurface = renderTexture.as<IDXGISurface>();
+
+                    //get the IDirect3DSurface pointer
                     *surface = DirectXInteropHelper::GetSurface(finalSurface);
                 }
 
