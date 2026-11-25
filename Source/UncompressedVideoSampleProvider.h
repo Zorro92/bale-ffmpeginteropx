@@ -89,6 +89,14 @@ public:
     // the D3D11 grain pass draws it into the MF texture; no D3D12, no zero-copy. Failures after the
     // open fail the stream (FatalError), since dav1d cannot apply the grain itself any more.
     int StagedGrain = 0;
+    // Bale: runs a processing stage (tone map, downscale, dither) on the software frames, as the D3D11
+    // provider does on hardware frames. Before the stream descriptor is created: swscale converts each
+    // frame into a STAGING texture of the stage's input format (NV12 for 8-bit when the stage reads it,
+    // else P010), and the stage writes the processed output on the upload device. The stage's
+    // failures fail the stream (FatalError), never an unprocessed frame. False (no stage) when the
+    // stage can't take the stream. outputDepth: as D3D11VideoSampleProvider's.
+    bool SetSoftwareStage(std::unique_ptr<VideoFrameProcessor> processor, int targetWidth, int targetHeight, int outputDepth);
+    bool HasSoftwareStage() const { return softwareStage != nullptr; }
     BYTE* TargetBuffer = NULL;
 
     // Bale: independent of SetHardwareDevice/AVHWDeviceContext; never changes the decoder engine.
@@ -128,13 +136,19 @@ public:
     }
 
 protected:
-    virtual bool HasProcessedOutput() const { return false; }
-    virtual AVPixelFormat ProcessedOutputPixelFormat() const { return AV_PIX_FMT_NV12; }
-    // Processed output size; default: the decoded size (unchanged).
-    virtual void ProcessedOutputSize(int& width, int& height) const { UNREFERENCED_PARAMETER(width); UNREFERENCED_PARAMETER(height); }
+    // Processed output: the software stage's (SetSoftwareStage) unless a subclass has its own.
+    virtual bool HasProcessedOutput() const { return softwareStage != nullptr; }
+    virtual AVPixelFormat ProcessedOutputPixelFormat() const { return stageOutputP010 ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12; }
+    // Processed output size; default: the stage's, else the decoded size (unchanged).
+    virtual void ProcessedOutputSize(int& width, int& height) const
+    {
+        if (!softwareStage) return;
+        width = stageOutputWidth;
+        height = stageOutputHeight;
+    }
     virtual void AddProcessedOutputAttributes(winrt::Windows::Media::MediaProperties::MediaPropertySet const& properties) const
     {
-        UNREFERENCED_PARAMETER(properties);
+        if (softwareStage) softwareStage->DescribeOutput(properties);
     }
     HRESULT LatchFatalError(HRESULT hr)
     {
@@ -175,6 +189,18 @@ private:
     HRESULT CreateZeroCopy(winrt::com_ptr<ID3D11Device> const& device, winrt::com_ptr<ID3D11DeviceContext> const& context);
     HRESULT ZeroCopyFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts);
     HRESULT StagedGrainFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts);
+    HRESULT SoftwareStageFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts);
+    std::unique_ptr<VideoFrameProcessor> softwareStage;
+    int stageSourceWidth = 0;
+    int stageSourceHeight = 0;
+    int stageOutputWidth = 0;
+    int stageOutputHeight = 0;
+    bool stageOutputP010 = false;
+    DXGI_FORMAT stageInputFormat = DXGI_FORMAT_UNKNOWN;
+    AVPixelFormat stageInputPixelFormat = AV_PIX_FMT_NONE;
+    SwsContext* stageScaler = nullptr;
+    bool stageLogged = false;
+    unsigned stageFrames = 0;
     bool stagedGrainLogged = false;
     unsigned stagedGrainFrames = 0;     // Frames out through the staged upload.
     unsigned stagedGrainAppliedFrames = 0; // Of those, with grain applied.

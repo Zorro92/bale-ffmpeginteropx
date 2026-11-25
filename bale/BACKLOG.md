@@ -5,12 +5,13 @@ item when work is proposed, move it when its state changes, and drop "Done" entr
 older than a few releases (the commits and `README.md` keep the details). Every design item is sized
 against the console limits in `AGENTS.md` ("Design against the console's limits").
 
-Last updated: 2026-11-24 (wrapper 2.1.0-bale.79).
+Last updated: 2026-11-25 (wrapper 2.1.0-bale.80).
 
 ## Open: fork work
 
 | Item | State | Why / sized against |
 |---|---|---|
+| Software decode phase B, item 2: threaded swscale (`sws_alloc_context` + `threads` + `sws_scale_frame`) for software streams not 4:2:0 8-bit | Next, after item 1 (bale.80) | Bale spec docs/software-decode.md. An optimisation: 4:2:2 10-bit 1080p30 already decodes in 1.8–2.1 cores; may matter at 4K 4:2:2 or 1080p60. |
 | rav1g route: avoid the per-frame copy of direct output into the player pool | Idea | One full-frame GPU copy per frame (GPU copies are ~2.4x slower in the idle state). The copy exists because handing decoder images to Media Foundation deadlocked the fixed image pool (bale.45), so any change needs a new design for that. |
 | FFmpeg 9.x | Deferred | 9.0/9.1 bring nothing the fork needs (HEVC hardening, a driver-compat SRV flag). Easier once Bale drops dav1d zero-copy, so native FFmpeg needs no dav1d patch (`p1`). |
 
@@ -42,6 +43,7 @@ Last updated: 2026-11-24 (wrapper 2.1.0-bale.79).
 | Release | What |
 |---|---|
 | Bale (2026-11-22) | Stage fix in bale_gpu: 4K60 AV1 on rav1g 47.1 → 57.6 fps (missed 21.8% → 4.5%), same as without the stage. Owner approved `bale_d3d11va_pool_from_stream` as the HEVC default (debug builds now, release after a long HEVC play). |
+| bale.80 | Software frames through the stage (tone map, downscale, depth, white) on the staged D3D11 upload |
 | bale.79 | Decoder pool from in-band parameter sets (MKV with a 23-byte hvcC): 4K HEVC 20 → 9 surfaces; console-verified, plus a 30-min HEVC HDR10 soak. Now Bale's release default (8ed6c50) |
 | bale.78 | rav1g interface version 3 (v0.8.0-alpha.1): container HDR peaks to the display pass, peak log, fixed-peak/bilinear-chroma A/B keys; console-verified (452-nit film) |
 | bale.77 | `bale_tonemap_white_nits` (SDR white, 80–400) for the stage and rav1g's display pass; console-verified on both routes |

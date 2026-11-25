@@ -2513,6 +2513,7 @@ namespace winrt::FFmpegInteropX::implementation
     {
         std::shared_ptr<MediaSampleProvider> videoSampleProvider = nullptr;
         winrt::FFmpegInteropX::HardwareDecoderStatus hardwareDecoderStatus = HardwareDecoderStatus::Unknown;
+        bool softwareStaged = false;
 
 #pragma warning (disable: 4973)
 
@@ -2627,12 +2628,35 @@ namespace winrt::FFmpegInteropX::implementation
             uncompressed->FilmGrain.eightInP010 = uncompressed->ZeroCopyEightBit;
             uncompressed->FilmGrain.mode = filmGrainMode;
             uncompressed->StagedGrain = filmGrainMode == 3 && !zeroCopyStream ? 1 : 0;
+            // Bale: the stage for software frames too (tone map, downscale to the target size, dither), as
+            // for d3d11va: bale_tonemap, or an SDR source larger than the target. Its input is NV12/P010.
+            if (!zeroCopyStream && !config->IsFrameGrabber)
+            {
+                auto parameters = avcodec_parameters_alloc();
+                if (parameters && avcodec_parameters_copy(parameters, avStream->codecpar) >= 0)
+                {
+                    auto description = av_pix_fmt_desc_get(avVideoCodecCtx->pix_fmt);
+                    int depth = description && description->nb_components > 0 ? description->comp[0].depth : 8;
+                    parameters->format = depth > 8 ? AV_PIX_FMT_YUV420P10LE : AV_PIX_FMT_YUV420P;
+                    int curve = baleToneMap;
+                    bool larger = baleToneMapOutputWidth > 0 && baleToneMapOutputHeight > 0 &&
+                        (parameters->width > baleToneMapOutputWidth || parameters->height > baleToneMapOutputHeight);
+                    if (curve == 0 && larger && !BaleToneMap::IsSupportedSource(parameters)) curve = 1;
+                    if (curve > 0)
+                    {
+                        auto processor = BaleToneMap::Create(curve, parameters, baleToneMapOutputWidth, baleToneMapOutputHeight, baleToneMapWhiteNits);
+                        softwareStaged = uncompressed->SetSoftwareStage(std::move(processor), baleToneMapOutputWidth, baleToneMapOutputHeight,
+                            baleToneMapOutputDepth);
+                    }
+                }
+                avcodec_parameters_free(&parameters);
+            }
             videoSampleProvider = std::shared_ptr<MediaSampleProvider>(uncompressed);
         }
 
 #pragma warning (default: 4973)
 
-        if (baleToneMap > 0 && videoSampleProvider->Decoder() != DecoderEngine::FFmpegD3D11HardwareDecoder)
+        if (baleToneMap > 0 && videoSampleProvider->Decoder() != DecoderEngine::FFmpegD3D11HardwareDecoder && !softwareStaged)
         {
             BaleToneMap::LogIneligible();
         }
@@ -3029,7 +3053,7 @@ namespace winrt::FFmpegInteropX::implementation
             if (stream->Decoder() == DecoderEngine::FFmpegSoftwareDecoder)
             {
                 auto uncompressed = std::dynamic_pointer_cast<UncompressedVideoSampleProvider>(stream);
-                if (uncompressed && uncompressed->StagedGrain > 0) return true;
+                if (uncompressed && (uncompressed->StagedGrain > 0 || uncompressed->HasSoftwareStage())) return true;
             }
         }
         return false;

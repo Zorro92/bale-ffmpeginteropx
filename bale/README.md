@@ -696,6 +696,29 @@ creation (resolved optionally; a library without them ignores the keys). Console
 v0.8.0-alpha.1, a 4K AV1 HDR10 film): `display source peak 452 nits` from the container's metadata,
 1000 with the fixed-peak switch; display pass 1920x1012 depth=10.
 
+## Software frames through the stage
+
+Since bale.80 software-decoded video (any codec, `UncompressedVideoSampleProvider`) goes through the
+same stage as d3d11va frames: `bale_tonemap`, `bale_tonemap_output_width/height` (an SDR source larger
+than the target is downscaled without a curve), `bale_tonemap_output_depth` and
+`bale_tonemap_white_nits` apply as on the hardware path. It reuses the staged upload of
+`bale_film_grain_mode=3`: swscale writes each frame into a mapped STAGING texture (ring of three) of
+the stage's input format at the decoded size (NV12 for 8-bit when the stage reads NV12, else P010; so
+4:2:2, 4:4:4 and 12-bit sources reach the stage as P010), the upload copies it (or applies the D3D11
+grain pass) into a shader-readable texture, and the `VideoFrameProcessor` writes the processed
+output, which the stream presents with the fixed BT.709 contract and the tone-map mark, like the D3D11
+provider. A device, upload or stage failure fails the stream (`NotifyError`), never an unprocessed
+frame; so does a frame whose size differs from the stream's. Not for zero-copy streams or frame
+grabbers. Logs: `Bale software stage: WxH NV12|P010 -> wxh NV12|P010`, `... active`, `... frames=N`
+every 240 frames, or `declined` (odd size, or an input the stage can't read). Media Foundation's own
+CPU copy of the frame goes away too (swscale writes the GPU staging texture directly).
+
+Why: Bale's software claims (H.264 High10/4:2:2, HEVC RExt, VP9 profiles 1/3 at 1080p; 4K30 H.264
+next) must not let Media Foundation scale 4K software frames to a 1080p display (the per-open msvproc
+leak) and need the tone map for HDR. Sized against: the ~3-core CPU budget (the frame is touched on
+the CPU once, by swscale) and the idle state's GPU copies (one staging-to-texture copy per frame). Not
+console-tested yet.
+
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
 Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.

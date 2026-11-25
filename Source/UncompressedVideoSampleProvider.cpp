@@ -274,7 +274,7 @@ HRESULT UncompressedVideoSampleProvider::InitializeScalerIfRequired(AVFrame* avF
 // Only zero-copy and staged grain streams get an uploader; any setup failure fails the stream.
 HRESULT UncompressedVideoSampleProvider::SetUploadDevice(winrt::com_ptr<ID3D11Device> newDevice, winrt::com_ptr<ID3D11DeviceContext> newContext, int variant)
 {
-    if (!ZeroCopy && !StagedGrain) return S_FALSE;
+    if (!ZeroCopy && !StagedGrain && !softwareStage) return S_FALSE;
     auto fatalHr = FatalError();
     if (FAILED(fatalHr)) return fatalHr;
     try
@@ -299,15 +299,16 @@ HRESULT UncompressedVideoSampleProvider::SetUploadDevice(winrt::com_ptr<ID3D11De
         }
         else
         {
-            // Staged grain: plain render-target pool; the grain handle (and its self-test) now.
+            // Staged grain or the software stage: plain render-target pool; the grain handle (and its
+            // self-test) now when grain is on.
             upload = std::make_shared<BaleD3D11Upload>(newDevice, newContext, BaleD3D11Upload::Pool::Plain);
-            upload->PrepareGrain(FilmGrain);
+            if (StagedGrain) upload->PrepareGrain(FilmGrain);
         }
         return S_OK;
     }
     catch (...)
     {
-        return Fail(winrt::to_hresult(), ZeroCopy ? "upload device or zero-copy setup failed" : "upload device or D3D11 grain setup failed");
+        return Fail(winrt::to_hresult(), ZeroCopy ? "upload device or zero-copy setup failed" : "upload device or D3D11 grain/stage setup failed");
     }
 }
 
@@ -315,7 +316,7 @@ void UncompressedVideoSampleProvider::DisableUpload(HRESULT hr)
 {
     // Zero-copy and staged grain have no CPU output path: losing the upload device fails the stream.
     // Other streams never get an uploader.
-    if (ZeroCopy || StagedGrain) Fail(hr, "upload device lost or unavailable");
+    if (ZeroCopy || StagedGrain || softwareStage) Fail(hr, "upload device lost or unavailable");
 }
 
 // Bale: latches the first failure. Afterwards CreateBufferFromFrame/CreateNextSampleBuffer return
@@ -351,6 +352,10 @@ UncompressedVideoSampleProvider::~UncompressedVideoSampleProvider()
     {
         sws_freeContext(m_pSwsCtx);
     }
+    if (stageScaler)
+    {
+        sws_freeContext(stageScaler);
+    }
 
     if (sourceBufferPool)
     {
@@ -372,6 +377,9 @@ HRESULT UncompressedVideoSampleProvider::CreateBufferFromFrame(IBuffer* pBuffer,
     if (FAILED(fatalHr)) return fatalHr;
 
     HRESULT hr = S_OK;
+    // Bale: the software stage's output size is the media type's for the stream's lifetime; CheckFrameSize
+    // would take a frame of the decoded size as a size change.
+    if (softwareStage) return SoftwareStageFrame(avFrame, surface, framePts);
     CheckFrameSize(avFrame);
 
     // Bale: zero-copy and staged grain streams have no CPU output path; every other stream is upstream.
@@ -531,6 +539,105 @@ HRESULT UncompressedVideoSampleProvider::StagedGrainFrame(AVFrame* avFrame, IDir
     if (stagedGrainFrames % 240 == 0)
     {
         av_log(nullptr, AV_LOG_INFO, "Bale film grain: D3D11 staged frames=%u grained=%u.\n", stagedGrainFrames, stagedGrainAppliedFrames);
+    }
+    return S_OK;
+}
+
+bool UncompressedVideoSampleProvider::SetSoftwareStage(std::unique_ptr<VideoFrameProcessor> processor, int targetWidth, int targetHeight, int outputDepth)
+{
+    if (!processor || ZeroCopy || m_config.as<implementation::MediaSourceConfig>()->IsFrameGrabber) return false;
+    int width = m_pAvCodecCtx->width;
+    int height = m_pAvCodecCtx->height;
+    auto description = av_pix_fmt_desc_get(m_pAvCodecCtx->pix_fmt);
+    int depth = 0;
+    if (description)
+    {
+        for (int i = 0; i < description->nb_components; i++) depth = (std::max)(depth, description->comp[i].depth);
+    }
+    // Source depth: 8-bit stays NV12 when the stage reads it; deeper sources (and 8-bit otherwise) P010.
+    auto input = depth > 0 && depth <= 8 && processor->SupportsInputFormat(DXGI_FORMAT_NV12) ? DXGI_FORMAT_NV12 : DXGI_FORMAT_P010;
+    if (width <= 0 || height <= 0 || (width & 1) || (height & 1) || depth <= 0 || !processor->SupportsInputFormat(input))
+    {
+        av_log(nullptr, AV_LOG_WARNING, "Bale software stage: declined for %dx%d depth=%d\n", width, height, depth);
+        return false;
+    }
+    stageSourceWidth = width;
+    stageSourceHeight = height;
+    stageInputFormat = input;
+    stageInputPixelFormat = input == DXGI_FORMAT_NV12 ? AV_PIX_FMT_NV12 : AV_PIX_FMT_P010LE;
+    stageOutputP010 = VideoFrameProcessor::SelectOutputFormat(*processor, outputDepth) == DXGI_FORMAT_P010;
+    stageOutputWidth = width;
+    stageOutputHeight = height;
+    VideoFrameProcessor::SelectOutputSize(*processor, width, height, targetWidth, targetHeight, stageOutputWidth, stageOutputHeight);
+    softwareStage = std::move(processor);
+    av_log(nullptr, AV_LOG_INFO, "Bale software stage: %dx%d %s -> %dx%d %s\n", width, height,
+        input == DXGI_FORMAT_NV12 ? "NV12" : "P010", stageOutputWidth, stageOutputHeight, stageOutputP010 ? "P010" : "NV12");
+    return true;
+}
+
+// Bale: the software stage. swscale converts the frame into a mapped STAGING texture of the stage's
+// input format at the decoded size; the upload copies it (or applies GPU grain) into a shader-readable
+// texture, and the stage writes the processed output into a pooled texture. Any failure fails the stream.
+HRESULT UncompressedVideoSampleProvider::SoftwareStageFrame(AVFrame* avFrame, IDirect3DSurface* surface, int64_t& framePts)
+{
+    if (!upload)
+    {
+        *surface = nullptr;
+        return Fail(E_UNEXPECTED, "frame decoded without the software stage's upload device");
+    }
+    if (avFrame->width != stageSourceWidth || avFrame->height != stageSourceHeight)
+    {
+        *surface = nullptr;
+        av_log(nullptr, AV_LOG_ERROR, "Bale software stage: frame %dx%d, stream %dx%d\n", avFrame->width, avFrame->height,
+            stageSourceWidth, stageSourceHeight);
+        return Fail(E_INVALIDARG, "software stage: the frame size changed");
+    }
+    BaleGrainParams grainParams{};
+    bool hasGrain = StagedGrain && FilmGrain.Prepare(avFrame, stageInputPixelFormat, stageSourceWidth, stageSourceHeight, grainParams);
+    try
+    {
+        stageScaler = sws_getCachedContext(stageScaler, avFrame->width, avFrame->height, static_cast<AVPixelFormat>(avFrame->format),
+            stageSourceWidth, stageSourceHeight, stageInputPixelFormat, SWS_BILINEAR, nullptr, nullptr, nullptr);
+        if (!stageScaler) winrt::throw_hresult(E_OUTOFMEMORY);
+        auto& timing = upload->timing;
+        auto start = BaleUploadTiming::Now();
+        if (timing.lastEnd) timing.Add(BaleUploadTiming::Gap, start - timing.lastEnd);
+        BaleD3D11Upload::Mapping staging;
+        winrt::check_hresult(upload->MapStaging(stageSourceWidth, stageSourceHeight, stageInputFormat, staging));
+        // A mapped planar texture: the chroma plane follows the luma plane's rows at the same pitch.
+        auto base = static_cast<uint8_t*>(staging.mapped.pData);
+        auto pitch = static_cast<int>(staging.mapped.RowPitch);
+        uint8_t* data[4] = { base, base + static_cast<size_t>(pitch) * stageSourceHeight, nullptr, nullptr };
+        int linesize[4] = { pitch, pitch, 0, 0 };
+        auto fillStart = BaleUploadTiming::Now();
+        if (sws_scale(stageScaler, (const UINT8**)(avFrame->data), avFrame->linesize, 0, avFrame->height, data, linesize) <= 0)
+        {
+            winrt::throw_hresult(E_FAIL);
+        }
+        timing.Add(BaleUploadTiming::Fill, BaleUploadTiming::Now() - fillStart);
+        upload->SetOutput(stageOutputWidth, stageOutputHeight, stageOutputP010 ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12);
+        ReadFrameProperties(avFrame, framePts);
+        auto color = VideoFrameColorInfo::FromFrame(avFrame, m_pAvStream->codecpar);
+        uploadSample = upload->CreateProcessedSample(staging, ConvertPosition(framePts), surface, FilmGrain,
+            hasGrain ? &grainParams : nullptr, *softwareStage, color, stageSourceWidth, stageSourceHeight);
+        timing.EndFrame(0);
+    }
+    catch (...)
+    {
+        HRESULT hr = winrt::to_hresult();
+        *surface = nullptr;
+        if (softwareStage) softwareStage->NotifyError(SUCCEEDED(hr) ? E_UNEXPECTED : hr);
+        return Fail(SUCCEEDED(hr) ? E_UNEXPECTED : hr, "software stage failed");
+    }
+    if (!stageLogged)
+    {
+        stageLogged = true;
+        av_log(nullptr, AV_LOG_INFO, "Bale software stage active: %dx%d -> %dx%d\n", stageSourceWidth, stageSourceHeight,
+            stageOutputWidth, stageOutputHeight);
+    }
+    if (++stageFrames % 240 == 0)
+    {
+        av_log(nullptr, AV_LOG_INFO, "Bale software stage: frames=%u\n", stageFrames);
     }
     return S_OK;
 }

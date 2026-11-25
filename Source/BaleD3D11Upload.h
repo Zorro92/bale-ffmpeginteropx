@@ -6,6 +6,7 @@
 #include "BaleFilmGrain.h"
 #include "BaleMemoryLedger.h"
 #include "DirectXInteropHelper.h"
+#include "VideoFrameProcessor.h"
 
 // Bale: bale_gpu.dll zero-copy ABI 1. dav1d decodes into GPU-visible buffers from bale_zc_alloc and
 // bale_zc_repack turns one into a P010 texture on the MSS device, with no staging map or CPU fill.
@@ -188,7 +189,6 @@ public:
             outputDesc.Width = width;
             outputDesc.Height = height;
             outputDesc.Format = format;
-            for (auto& staging : stagingTextures) staging = nullptr;
         }
     }
 
@@ -197,6 +197,20 @@ public:
     HRESULT Map(UINT width, UINT height, DXGI_FORMAT format, Mapping& target)
     {
         SetOutput(width, height, format);
+        return MapStaging(width, height, format, target);
+    }
+
+    // Staged, with a processing stage: the ring at the decoded size and the stage's input format, which
+    // differ from the pooled output's (SetOutput: the stage's output size and format).
+    HRESULT MapStaging(UINT width, UINT height, DXGI_FORMAT format, Mapping& target)
+    {
+        if (width != stagingWidth || height != stagingHeight || format != stagingFormat)
+        {
+            for (auto& texture : stagingTextures) texture = nullptr;
+            stagingWidth = width;
+            stagingHeight = height;
+            stagingFormat = format;
+        }
         auto& staging = stagingTextures[nextStaging];
         if (!staging)
         {
@@ -239,6 +253,51 @@ public:
             {
                 if (params) ApplyGrain(grain, *params, source.texture.get(), texture);
                 else context->CopyResource(texture, source.texture.get());
+                return true;
+            });
+    }
+
+    // Staged, with a processing stage: unmaps `source` (the decoded size, the stage's input format), moves
+    // it into a shader-readable texture (with GPU grain when `params`, else a copy) and runs `processor`
+    // into a pooled texture of the SetOutput size and format. The processor is initialized on this
+    // uploader's device the first time. Any failure throws (the stream fails; never an unprocessed frame).
+    MediaStreamSample CreateProcessedSample(Mapping& source, TimeSpan position, IDirect3DSurface* surface, BaleFilmGrain& grain,
+        const BaleGrainParams* params, VideoFrameProcessor& processor, const VideoFrameColorInfo& color, UINT sourceWidth, UINT sourceHeight)
+    {
+        auto unmapStart = BaleUploadTiming::Now();
+        source.Unmap();
+        timing.Add(BaleUploadTiming::Unmap, BaleUploadTiming::Now() - unmapStart);
+        return Publish(position, surface, "staged stage", [&](ID3D11Texture2D* texture)
+            {
+                D3D11_TEXTURE2D_DESC sourceDesc{};
+                source.texture->GetDesc(&sourceDesc);
+                D3D11_TEXTURE2D_DESC landingDesc{};
+                if (landing) landing->GetDesc(&landingDesc);
+                if (!landing || landingDesc.Width != sourceDesc.Width || landingDesc.Height != sourceDesc.Height ||
+                    landingDesc.Format != sourceDesc.Format)
+                {
+                    landing = nullptr;
+                    D3D11_TEXTURE2D_DESC desc{};
+                    desc.Width = sourceDesc.Width;
+                    desc.Height = sourceDesc.Height;
+                    desc.MipLevels = 1;
+                    desc.ArraySize = 1;
+                    desc.Format = sourceDesc.Format;
+                    desc.SampleDesc.Count = 1;
+                    desc.Usage = D3D11_USAGE_DEFAULT;
+                    // The grain pass draws into it; the stage reads it.
+                    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+                    winrt::check_hresult(device->CreateTexture2D(&desc, nullptr, landing.put()));
+                    BaleMemTrackTexture(landing.get(), BaleMemCategory::OtherTextures);
+                }
+                if (params) ApplyGrain(grain, *params, source.texture.get(), landing.get());
+                else context->CopyResource(landing.get(), source.texture.get());
+                if (!processorReady)
+                {
+                    winrt::check_hresult(processor.Initialize(device.get(), outputDesc.Width, outputDesc.Height, sourceWidth, sourceHeight));
+                    processorReady = true;
+                }
+                winrt::check_hresult(processor.Process(context.get(), landing.get(), 0, texture, color));
                 return true;
             });
     }
@@ -470,6 +529,11 @@ private:
     unsigned processedSamples = 0;
     D3D11_TEXTURE2D_DESC outputDesc{}; // Pooled output size/format; only Width/Height/Format are used.
     std::array<winrt::com_ptr<ID3D11Texture2D>, 3> stagingTextures; // Staged path; producer-only.
+    UINT stagingWidth = 0;
+    UINT stagingHeight = 0;
+    DXGI_FORMAT stagingFormat = DXGI_FORMAT_UNKNOWN;
+    winrt::com_ptr<ID3D11Texture2D> landing; // Staged with a stage: the stage's shader-readable input.
+    bool processorReady = false;             // The stage was initialized on this device.
     size_t nextStaging = 0;
     std::map<winrt::Windows::Foundation::IUnknown, TrackedSample> trackedSamples;
     std::mutex samplesMutex;
