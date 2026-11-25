@@ -41,9 +41,11 @@
 
 #include <d3d11.h>
 // Before the headers below: their "using namespace winrt::Windows::Foundation" makes IUnknown
-// ambiguous in Direct3D headers included later. Fences (D3D11.4) and D3D12 for GPU decoders.
+// ambiguous in Direct3D headers included later. Fences (D3D11.4), D3D12 for GPU decoders and D3D12
+// video for the decode probe.
 #include <d3d11_4.h>
 #include <d3d12.h>
+#include <d3d12video.h>
 #include <dxgi1_2.h>
 #include <windows.graphics.directx.direct3d11.interop.h>
 
