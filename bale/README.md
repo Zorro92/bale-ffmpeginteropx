@@ -755,14 +755,23 @@ GPU would decode it through D3D12 video, FFmpeg's `d3d12va` hwaccel (`Source/D3D
 Decoding is unchanged: the stream keeps d3d11va. One line:
 
 `Bale d3d12va probe: supported|not supported|no D3D12 profile for this stream (codec C profile P WxH
-D-bit): hwaccel=0|1 device=<av error> video=<hr> profiles=N check=<hr> flags=F config=C tier=T`
+D-bit): hwaccel=0|1 device=<hr> level=<max feature level> video=<hr> profiles=N check=<hr> flags=F
+config=C tier=T ffmpeg=<av error>`
 
 - `hwaccel`: the FFmpeg decoder has a d3d12va hwaccel (native FFmpeg 9.1 builds them for H.264, HEVC,
   VP9, AV1, MPEG-2 and VC-1, autodetected, no configure change).
-- `device`: `av_hwdevice_ctx_create(D3D12VA)` result (0 = FFmpeg created its D3D12 device).
+- `device`: `D3D12CreateDevice` at feature level 11_0 on the default adapter; `level`: the highest
+  feature level it reports (0xc000 = 12_0).
 - `video`: `ID3D12VideoDevice` query; `profiles`: decode profiles the device reports.
 - `check`, `flags`, `config`, `tier`: `D3D12_FEATURE_VIDEO_DECODE_SUPPORT` for the stream's profile,
   NV12/P010 and size (flag 1 = supported).
+- `ffmpeg`: `av_hwdevice_ctx_init` of a d3d12va context on that device (0 = FFmpeg accepts it).
+
+The probe creates the device itself: FFmpeg's `av_hwdevice_ctx_create(D3D12VA)` asks for feature
+level 12_0 and failed on the console with `AVERROR_UNKNOWN` (bale.82, Bale 0.1.778: HEVC 4K 10-bit,
+H.264 1080p and VP9 1080p/4K all `device=-1313558101`), so bale.82's lines only showed that FFmpeg
+can't create its own D3D12 device there, not whether the console decodes through D3D12. rav1g creates
+its D3D12 device at 11_0 on the console.
 
 The device is created and released inside the probe (one D3D12 device for a few milliseconds per
 open; nothing stays allocated). Why: upstream PR #484 adds D3D12 hardware decoding; FFmpeg's D3D12

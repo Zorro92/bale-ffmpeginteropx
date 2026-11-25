@@ -37,17 +37,29 @@ public:
         int depth = BitDepth(parameters);
         bool mapped = DecodeProfile(parameters, depth, profile, format);
 
-        AVBufferRef* deviceRef = nullptr;
-        int created = av_hwdevice_ctx_create(&deviceRef, AV_HWDEVICE_TYPE_D3D12VA, nullptr, nullptr, 0);
-        HRESULT videoHr = E_FAIL;
+        // The caller creates the device (feature level 11_0) and hands it to FFmpeg, as a decode route
+        // would: FFmpeg's own av_hwdevice_ctx_create asks for feature level 12_0, which the console's
+        // app partition does not create (AVERROR_UNKNOWN there; rav1g also creates its device at 11_0).
+        winrt::com_ptr<ID3D12Device> device;
+        HRESULT deviceHr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(device.put()));
+        unsigned maxLevel = 0;
+        HRESULT videoHr = E_NOT_SET;
         UINT profiles = 0;
         D3D12_FEATURE_DATA_VIDEO_DECODE_SUPPORT support{};
         HRESULT supportHr = E_NOT_SET;
-        if (created >= 0)
+        int ffmpegInit = AVERROR(ENOSYS);
+        if (SUCCEEDED(deviceHr))
         {
-            auto context = reinterpret_cast<AVD3D12VADeviceContext*>(reinterpret_cast<AVHWDeviceContext*>(deviceRef->data)->hwctx);
+            const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
+                D3D_FEATURE_LEVEL_12_1, static_cast<D3D_FEATURE_LEVEL>(0xc200) };
+            D3D12_FEATURE_DATA_FEATURE_LEVELS levelData{ ARRAYSIZE(levels), levels };
+            if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &levelData, sizeof(levelData))))
+            {
+                maxLevel = static_cast<unsigned>(levelData.MaxSupportedFeatureLevel);
+            }
+
             winrt::com_ptr<ID3D12VideoDevice> videoDevice;
-            videoHr = context->device ? context->device->QueryInterface(IID_PPV_ARGS(videoDevice.put())) : E_POINTER;
+            videoHr = device->QueryInterface(IID_PPV_ARGS(videoDevice.put()));
             if (SUCCEEDED(videoHr))
             {
                 D3D12_FEATURE_DATA_VIDEO_DECODE_PROFILE_COUNT count{};
@@ -67,18 +79,32 @@ public:
                     supportHr = videoDevice->CheckFeatureSupport(D3D12_FEATURE_VIDEO_DECODE_SUPPORT, &support, sizeof(support));
                 }
             }
+
+            // FFmpeg's d3d12va device context on the caller's device. FFmpeg releases only the video
+            // device it queries itself; the device stays owned here.
+            AVBufferRef* deviceRef = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D12VA);
+            if (deviceRef)
+            {
+                auto context = reinterpret_cast<AVD3D12VADeviceContext*>(reinterpret_cast<AVHWDeviceContext*>(deviceRef->data)->hwctx);
+                context->device = device.get();
+                ffmpegInit = av_hwdevice_ctx_init(deviceRef);
+                av_buffer_unref(&deviceRef);
+            }
+            else
+            {
+                ffmpegInit = AVERROR(ENOMEM);
+            }
         }
-        av_buffer_unref(&deviceRef);
 
         bool supported = SUCCEEDED(supportHr) && (support.SupportFlags & D3D12_VIDEO_DECODE_SUPPORT_FLAG_SUPPORTED);
         av_log(nullptr, AV_LOG_INFO,
-            "Bale d3d12va probe: %s (codec %d profile %d %dx%d %d-bit): hwaccel=%d device=%d video=0x%08X profiles=%u "
-            "check=0x%08X flags=0x%X config=0x%X tier=%d\n",
+            "Bale d3d12va probe: %s (codec %d profile %d %dx%d %d-bit): hwaccel=%d device=0x%08X level=0x%X video=0x%08X "
+            "profiles=%u check=0x%08X flags=0x%X config=0x%X tier=%d ffmpeg=%d\n",
             supported ? "supported" : (mapped ? "not supported" : "no D3D12 profile for this stream"),
             static_cast<int>(parameters->codec_id), parameters->profile, parameters->width, parameters->height, depth,
-            hwaccel ? 1 : 0, created, static_cast<unsigned>(videoHr), profiles, static_cast<unsigned>(supportHr),
-            static_cast<unsigned>(support.SupportFlags), static_cast<unsigned>(support.ConfigurationFlags),
-            static_cast<int>(support.DecodeTier));
+            hwaccel ? 1 : 0, static_cast<unsigned>(deviceHr), maxLevel, static_cast<unsigned>(videoHr), profiles,
+            static_cast<unsigned>(supportHr), static_cast<unsigned>(support.SupportFlags),
+            static_cast<unsigned>(support.ConfigurationFlags), static_cast<int>(support.DecodeTier), ffmpegInit);
     }
 
 private:
