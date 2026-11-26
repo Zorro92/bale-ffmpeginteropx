@@ -667,6 +667,12 @@ namespace winrt::FFmpegInteropX::implementation
                 }
                 if (stream)
                 {
+                    // Bale: in-band captions of every video stream (each route) go to the app's caption
+                    // decoder bound to bale_cc_sink (BaleCaptionSink.h); only the playing stream reads packets.
+                    if (baleCcSink > 0 && !config->IsFrameGrabber)
+                    {
+                        stream->CaptionTap.Enable(static_cast<uint64_t>(baleCcSink), avStream->codecpar);
+                    }
                     if (index == videoStreamIndex)
                     {
                         stream->VideoInfo().as<implementation::VideoStreamInfo>()->isDefault = true;
@@ -2792,6 +2798,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_system_decoder_dolby") { target = &baleSystemDecoderDolby; minimum = 0; maximum = 1; }
         else if (key == "bale_subtitle_stream") { target = &baleSubtitleStream; minimum = 0; maximum = 65535; }
         else if (key == "bale_subtitle_sink") { target = &baleSubtitleSink; minimum = 1; maximum = 999999999; }
+        else if (key == "bale_cc_sink") { target = &baleCcSink; minimum = 1; maximum = 999999999; }
         else if (key == "bale_av1_decoder") { target = &baleAv1Decoder; minimum = 0; maximum = 1; }
         else if (key == "bale_d3d11va_pool_from_stream") { target = &baleD3d11vaPoolFromStream; minimum = 0; maximum = 1; }
         else if (key == "bale_d3d12va_probe") { target = &baleD3d12vaProbe; minimum = 0; maximum = 1; }

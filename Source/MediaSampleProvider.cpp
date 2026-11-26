@@ -289,6 +289,10 @@ HRESULT MediaSampleProvider::GetNextPacket(AVPacket** avPacket, LONGLONG& packet
         auto packet = packetBuffer->PopPacket();
 
         *avPacket = packet;
+        if (CaptionTap.Enabled())
+        {
+            CaptionTap.Push(packet, packet->pts != AV_NOPTS_VALUE ? ConvertPosition(packet->pts).count() : INT64_MIN);
+        }
 
         packetDuration = packet->duration;
 
@@ -383,6 +387,7 @@ void MediaSampleProvider::Flush(bool flushBuffers)
     }
     m_isDiscontinuous = true;
     IsCleanSample = false;
+    CaptionTap.Flush();
 }
 
 void MediaSampleProvider::EnableStream()

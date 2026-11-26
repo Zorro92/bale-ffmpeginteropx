@@ -19,6 +19,7 @@
 #pragma once
 #include "pch.h"
 #include <functional>
+#include "BaleCaptionSink.h"
 
 
 using namespace winrt::Windows::Storage::Streams;
@@ -214,6 +215,8 @@ private:
 
 public:
     std::shared_ptr<StreamBuffer> packetBuffer;
+    // Bale: in-band caption packets to the app (BaleCaptionSink.h); off unless enabled.
+    BaleCaptionTap CaptionTap;
 
 
 protected:

@@ -9,7 +9,8 @@ affiliated with or endorsed by the FFmpegInteropX project.
 Modifications by the Bale project, starting from upstream commit
 88428c66e106852338b48554a4a00c9e48da588f (see the git history for details):
 
-  Added:     Source/BaleD3D11Upload.h
+  Added:     Source/BaleCaptionSink.h
+             Source/BaleD3D11Upload.h
              Source/BaleFilmGrain.h
              Source/D3D11DecoderPoolSize.h
              Source/D3D12VideoDecodeProbe.h

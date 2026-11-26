@@ -391,6 +391,9 @@ namespace winrt::FFmpegInteropX::implementation
         // bound to bale_subtitle_sink (a token); -1/0 = none, the upstream ImageCue path.
         int baleSubtitleStream = -1;
         int baleSubtitleSink = 0;
+        // Bale: token of the app's in-band caption decoder (bale_gpu bale_cc_*, BaleCaptionSink.h);
+        // video packets of H.264, HEVC and MPEG-2 streams are handed to it. 0 = off.
+        int baleCcSink = 0;
         bool TryParseBaleOption(std::string const& key, hstring const& value, HRESULT& hr);
         void SetBaleDecoderProperties(Windows::Media::MediaProperties::VideoEncodingProperties const& videoProperties);
 

@@ -324,6 +324,7 @@ public:
         }
         m_isDiscontinuous = true;
         IsCleanSample = false;
+        CaptionTap.Flush();
 
         // Frames decoded before this point are never sent; decoding resumes at a key frame. The media
         // source has paused the feeder already (this pause only nests); it resumes after the flush.

@@ -788,6 +788,36 @@ feature level the app partition gets, which is why FFmpeg's 12_0 device creation
 `tier=2`, `ffmpeg=0` (FFmpeg's d3d12va accepts a caller-created device). Playback (d3d11va) was
 unaffected: 0 missed frames on all four.
 
+## In-band caption packet tap
+
+`bale_cc_sink=<token>` (decimal, 1..999999999; unset = off) hands every compressed packet of a
+H.264, HEVC or MPEG-2 video stream to Bale's caption decoder in `bale_gpu.dll`, which parses A/53
+cc_data (SEI) or GA94 user data, reorders by PTS, decodes CEA-608/708 and renders. The fork parses
+nothing (`Source/BaleCaptionSink.h`). ABI 1, resolved with `LoadPackagedLibrary`/`GetProcAddress`:
+
+```c
+uint32_t bale_cc_abi_version(void);  /* must be 1 */
+int32_t  bale_cc_push(uint64_t token, const uint8_t *data, size_t len, int64_t pts_100ns,
+                      uint32_t codec, uint32_t nal_length_size);
+int32_t  bale_cc_flush(uint64_t token);
+```
+
+- `codec`: 1 H.264, 2 HEVC, 3 MPEG-2 (other codecs are not tapped).
+- `nal_length_size`: 1, 2 or 4 for length-prefixed H.264/HEVC (from avcC/hvcC, MP4/MKV); 0 for
+  Annex B (MPEG-TS, raw) and MPEG-2.
+- `pts_100ns`: the packet's PTS on the timeline of the `MediaStreamSample` timestamps (start offset
+  and stream delay applied); `INT64_MIN` when the packet has none. Packets arrive in decode order.
+- `data` is the demuxed packet, read-only and valid only during the call.
+- Where: `MediaSampleProvider::GetNextPacket`, as a provider takes the packet for decoding, so every
+  route (system decoder, d3d11va, software, GPU decoder) is covered and a buffered seek hands the
+  kept packets again. Called on the sample thread (or a GPU decoder's feeder thread): return quickly,
+  never block, never call back into the player.
+- `bale_cc_flush` on every flush of the stream: seek, stream switch, close.
+- Off: one compare per packet, no copy, no call. A missing export or another ABI version logs
+  `Bale captions: sink unavailable; tap off` once. Each tapped stream logs `Bale captions: tap on
+  (codec N nal_length_size N)` and, when it closes, `Bale captions: tap closed (packets=N flushes=N)`.
+- Frame grabbers are never tapped. A remount is a new media source: pass the key again.
+
 ## Console evidence (Xbox Series X, app mode, SDR display)
 
 Measured through Bale's debug server; full notes are in Bale's `docs/player-plan.md`.
