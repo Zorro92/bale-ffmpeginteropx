@@ -817,6 +817,9 @@ int32_t  bale_cc_flush(uint64_t token);
   `Bale captions: sink unavailable; tap off` once. Each tapped stream logs `Bale captions: tap on
   (codec N nal_length_size N)` and, when it closes, `Bale captions: tap closed (packets=N flushes=N)`.
 - Frame grabbers are never tapped. A remount is a new media source: pass the key again.
+- Console (bale.84, Bale 0.1.790/791, 2026-11-26): the six cea608 test clips (H.264 in MP4, MKV
+  and TS) showed captions; the length-prefixed clips logged `tap on (codec 1 nal_length_size 4)`, and
+  the packet and flush counts matched playback and seeks.
 
 ## Console evidence (Xbox Series X, app mode, SDR display)
 

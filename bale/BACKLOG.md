@@ -45,7 +45,7 @@ Last updated: 2026-11-26 (wrapper 2.1.0-bale.84).
 | Release | What |
 |---|---|
 | bale.83 | D3D12 probe creates its device at feature level 11_0 and hands it to FFmpeg (bale.82's probe failed at FFmpeg's 12_0 device creation) |
-| bale.84 | In-band caption packet tap `bale_cc_sink` (H.264/HEVC/MPEG-2 packets to bale_gpu `bale_cc_push`, flush on every stream flush); console check on the cea608 clips pending in Bale |
+| bale.84 | In-band caption packet tap `bale_cc_sink` (H.264/HEVC/MPEG-2 packets to bale_gpu `bale_cc_push`, flush on every stream flush). Console (Bale 0.1.790/791): worked on the six cea608 clips (H.264 MP4/MKV/TS), `tap on (codec 1 nal_length_size 4)`, packet and flush counts as expected |
 | bale.82 | Native FFmpeg 9.1 (dav1d 1.5.5, no patches); upstream crash fixes #488/#489; opt-in `bale_d3d12va_probe`. Console regression passed (Bale 0.1.778: rav1g, HEVC 4K HDR/SDR, H.264, VP9, MPEG-2, 5 software routes, seeks, HLS; 0 missed frames). FFmpeg's pools unchanged (HEVC/H.264 20, VP9 12), so the +3 assumption holds |
 | Bale (2026-11-22) | Stage fix in bale_gpu: 4K60 AV1 on rav1g 47.1 → 57.6 fps (missed 21.8% → 4.5%), same as without the stage. Owner approved `bale_d3d11va_pool_from_stream` as the HEVC default (debug builds now, release after a long HEVC play). |
 | bale.81 | Threaded swscale (sws_scale_frame, up to 4 threads) for software frames beyond 4:2:0 8-bit |
