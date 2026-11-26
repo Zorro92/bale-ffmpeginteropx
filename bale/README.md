@@ -492,6 +492,24 @@ Media Foundation releases enough samples for 8 images (MSS `BufferTime` on this 
 should stay below 8 frames), the direct-write path (`OUTPUT ... direct` in rav1g's log) and
 both fallbacks.
 
+(That note predates the console runs; Bale's debug builds have used rav1g since.) Console, film
+grain and 4K60 (Bale's report, Series X, Bale 0.1.791 / bale.84 / rav1g 0.8.0-alpha.1, 2026-11-26):
+
+- Film grain: on a paused heavy-grain frame (cropped to the picture), rav1g is pixel-identical to
+  dav1d with CPU grain and with D3D11 GPU grain (RMSE 0); each differs from grain off by 1.38%.
+  rav1g logs no separate grain line.
+- 1080p60 10-bit grain clip (SVT-AV1), two runs: 0 missed frames, decode 58.8/60 fps, 0
+  discarded, P010 direct output. Device Portal CPU about 5.4% and 4.7% on average, against about
+  12–14% (dav1d, D3D11 GPU grain) and 30–53% (dav1d CPU grain); GPU busiest engine 24–35%; rav1g
+  device 132.6 MiB.
+- 4K60 10-bit at 40 Mbps, output 1080p P010 processed: 0 missed frames, 58.8/60 fps, CPU about
+  22%, GPU busiest engine 65–86%, rav1g device 488.5 MiB (slots=4 parse=4 threads=4). Four seeks
+  completed (8 frames discarded, starved=48 across them); destroyed cleanly. No fallback, failure,
+  device removal, or rav1g warning in the session.
+
+Sized against: the GPU is the limit at 4K60 (65–86% of the busiest engine on a ~1.86 TFLOP/s GPU),
+while CPU stays far below the 4 shared cores; the device's 488.5 MiB fits the 3328 MiB per app.
+
 ## D3D11 GPU film grain without zero-copy
 
 `bale_film_grain_mode=3` (bale.60) puts AV1 film grain on the GPU for software libdav1d streams

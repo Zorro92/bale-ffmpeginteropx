@@ -19,7 +19,7 @@ Last updated: 2026-11-26 (wrapper 2.1.0-bale.84).
 | Item | Waiting for |
 |---|---|
 | Audio passthrough plumbing (debug): `bale_audio_out=<id>`, `bale_audio_out_stream=<index>`; audio not exposed to MF; the fork decodes the chosen track on its own feeder thread and writes it with pts to bale_gpu's exclusive WASAPI renderer; flush on seek and stream switch | ABI landed (Bale 9e216fe, `bale_audio_out.h` ABI 1): id 1–65535; write(id, data, bytes, pts_100ns) of whole frames returns 0 = full (retry) or 0xFFFFFFFF = closed (stop and fall back); `bale_audio_out_format(id)` gives the format (TV path: PCM 8 ch 48 kHz, s32 container with 24 valid bits, mask 0x63F, FL FR FC LFE BL BR SL SR, the same order as FFmpeg's 7.1). Build only when the owner asks. |
-| rav1g untested paths | Console runs: HDR passthrough (needs an HDR display), 8-bit NV12 direct output (shared UAV NV12 not yet confirmed on the console), film-grain films. |
+| rav1g untested paths | Console runs: HDR passthrough (needs an HDR display), 8-bit NV12 direct output (shared UAV NV12 not yet confirmed on the console). Film grain and 4K60 40 Mbps passed on 2026-11-26 (README, rav1g section). |
 | rav1g as the production AV1 default | Owner decided 2026-11-26: rav1g becomes the default in release builds too. Bale changes its decoder policy (`bale_av1_decoder=1` in release builds); no fork change. Close when Bale ships it. |
 
 ## Parked or on hold (owner decisions)
