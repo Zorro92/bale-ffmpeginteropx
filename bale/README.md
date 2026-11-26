@@ -520,7 +520,12 @@ and the upload timing line with `repack=0` (fill = swscale, gpu = grain or copy)
 
 Measured before this path existed (Series X, 1080p 10-bit AV1 with grain, Bale 0.1.695, 23.97 fps,
 no drops): dav1d CPU grain 1.39–1.51 cores, grain off 1.23, D3D12 zero-copy GPU grain 0.95.
-Not console-tested yet.
+
+Console check (Bale's report, Series X, Bale 0.1.791 / bale.84, 2026-11-26; 1080p60 10-bit AV1
+film-grain clips encoded with SVT-AV1, two runs each): `Bale film grain: mode=gpu-d3d11`, 0 missed
+frames. Device Portal CPU averaged about 12–14% (steady) with this path against about 30–53%
+(bursty) with dav1d's CPU grain. On the same paused frame, GPU and CPU grain differ by RMSE 0.73%,
+less than either differs from grain off (1.24–1.32%); visually identical.
 
 ## GPU memory ledger
 
