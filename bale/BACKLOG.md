@@ -20,7 +20,6 @@ Last updated: 2026-11-26 (wrapper 2.1.0-bale.84).
 |---|---|
 | Audio passthrough plumbing (debug): `bale_audio_out=<id>`, `bale_audio_out_stream=<index>`; audio not exposed to MF; the fork decodes the chosen track on its own feeder thread and writes it with pts to bale_gpu's exclusive WASAPI renderer; flush on seek and stream switch | ABI landed (Bale 9e216fe, `bale_audio_out.h` ABI 1): id 1–65535; write(id, data, bytes, pts_100ns) of whole frames returns 0 = full (retry) or 0xFFFFFFFF = closed (stop and fall back); `bale_audio_out_format(id)` gives the format (TV path: PCM 8 ch 48 kHz, s32 container with 24 valid bits, mask 0x63F, FL FR FC LFE BL BR SL SR, the same order as FFmpeg's 7.1). Build only when the owner asks. |
 | rav1g untested paths | Console runs: HDR passthrough (needs an HDR display), 8-bit NV12 direct output (shared UAV NV12 not yet confirmed on the console). Film grain and 4K60 40 Mbps passed on 2026-11-26 (README, rav1g section). |
-| rav1g as the production AV1 default | Owner decided 2026-11-26: rav1g becomes the default in release builds too. Bale changes its decoder policy (`bale_av1_decoder=1` in release builds); no fork change. Close when Bale ships it. |
 
 ## Parked or on hold (owner decisions)
 
@@ -46,6 +45,7 @@ Last updated: 2026-11-26 (wrapper 2.1.0-bale.84).
 | bale.83 | D3D12 probe creates its device at feature level 11_0 and hands it to FFmpeg (bale.82's probe failed at FFmpeg's 12_0 device creation) |
 | bale.84 | In-band caption packet tap `bale_cc_sink` (H.264/HEVC/MPEG-2 packets to bale_gpu `bale_cc_push`, flush on every stream flush). Console (Bale 0.1.790/791, as Bale reported): worked on the six cea608 clips (H.264 MP4/MKV/TS), `tap on (codec 1 nal_length_size 4)`, packet and flush counts as expected |
 | (bale.60 check) | dav1d D3D11 GPU grain (`bale_film_grain_mode=3`) closed: on the console with Bale 0.1.791 and bale.84, 1080p60 10-bit AV1 grain clips: `mode=gpu-d3d11`, 0 missed frames, Device Portal CPU ≈12–14% steady vs ≈30–53% bursty with dav1d grain; GPU vs CPU grain on the same paused frame RMSE 0.73% (each vs grain off 1.24–1.32%), visually identical |
+| (Bale 0.2.805) | rav1g is the default AV1 decoder in release builds too (owner decision 2026-11-26; Bale commit 382d095 passes `bale_av1_decoder=1`); verified on the console (`AV1 open used rav1g`). No fork change. |
 | bale.82 | Native FFmpeg 9.1 (dav1d 1.5.5, no patches); upstream crash fixes #488/#489; opt-in `bale_d3d12va_probe`. Console regression passed (Bale 0.1.778: rav1g, HEVC 4K HDR/SDR, H.264, VP9, MPEG-2, 5 software routes, seeks, HLS; 0 missed frames). FFmpeg's pools unchanged (HEVC/H.264 20, VP9 12), so the +3 assumption holds |
 | Bale (2026-11-22) | Stage fix in bale_gpu: 4K60 AV1 on rav1g 47.1 → 57.6 fps (missed 21.8% → 4.5%), same as without the stage. Owner approved `bale_d3d11va_pool_from_stream` as the HEVC default (debug builds now, release after a long HEVC play). |
 | bale.81 | Threaded swscale (sws_scale_frame, up to 4 threads) for software frames beyond 4:2:0 8-bit |
