@@ -400,7 +400,10 @@ created on the first temporal unit, after Media Foundation's device is known; a 
 from then on (creation refused, decode or drain status, device removed, fence wait, a
 frame the declared type can't carry) latches a fatal stream error, logged once as
 `Bale rav1g: stream failed (reason, hr=0x..)` and raised through `NotifyError` (status
-`0x80042B2N` = rav1g status N; `E_INVALIDARG` → unsupported media format).
+`0x80042B2N` = rav1g status N; `E_INVALIDARG` → unsupported media format). Since bale.85 a failed
+decode or drain adds ` decoder: <kind>: <detail>`: rav1g's `rav1g_decoder_error` and
+`rav1g_decoder_error_detail`, copied right after the failed call (fixed library texts, kept to
+printable ASCII and 240 characters; cleared by a successful call).
 
 **Device.** One `Rav1gDevice` per process, created on the first rav1g stream, never reset.
 rav1g creates the D3D12 device and queue itself on the first hardware adapter (this DLL has
