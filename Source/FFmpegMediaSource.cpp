@@ -1335,6 +1335,8 @@ namespace winrt::FFmpegInteropX::implementation
             rav1gDecoder->parseFrames = static_cast<uint32_t>(baleRav1gParse);
             if (baleRav1gPerf > 0) rav1gDecoder->EnablePerfStatistics(baleRav1gPerf >= 2);
         }
+        // Owned by the provider below; kept for the device creation once the display pass is decided.
+        auto rav1g = rav1gDecoder.get();
         std::unique_ptr<GpuVideoDecoder> gpuDecoder = std::move(rav1gDecoder);
         if (!gpuDecoder)
         {
@@ -1378,11 +1380,18 @@ namespace winrt::FFmpegInteropX::implementation
         if (baleRav1gPerf >= 2) provider->SetPerFrameLog(true);
         // Bale: rav1g's display pass (interface version 2) does the stage's work for BT.2390 (curve 1);
         // Hable (2) keeps the stage.
-        if (baleRav1gDisplay > 0 && baleToneMap != 2 &&
+        bool displayPass = baleRav1gDisplay > 0 && baleToneMap != 2 &&
             provider->UseDecoderDisplay(baleToneMapWhiteNits > 0 ? static_cast<float>((std::max)(80, (std::min)(baleToneMapWhiteNits, 400))) : 100.0f,
-                baleRav1gDisplayFixedPeak > 0, baleRav1gDisplayBilinearChroma > 0))
+                baleRav1gDisplayFixedPeak > 0, baleRav1gDisplayBilinearChroma > 0);
+        if (displayPass)
         {
             av_log(nullptr, AV_LOG_INFO, "Bale rav1g: display pass requested\n");
+        }
+        // The process device: the prewarmed one, or created now with this stream's pipeline states
+        // (rav1g interface version 4). Without one the stream falls back to dav1d.
+        if (!rav1g->EnsureDevice(rav1g->PrepareBits(displayPass, static_cast<int>(avStream->codecpar->color_trc))))
+        {
+            return nullptr;
         }
         auto hr = provider->Initialize();
         if (FAILED(hr))

@@ -319,7 +319,14 @@ OK, -1 = the library lacks the export); prepare is the device's (a stream that o
 it with every state). Up to bale.84 the line printed only D (e.g. `ms=24` with rav1g alpha.2), not
 the compiles. The adapter is rav1g's choice,
 the first hardware adapter (the only one, and Media Foundation's, on Xbox); each stream still
-checks it against MF's. Without prewarm, the first stream creates the device with 2 threads.
+checks it against MF's. Without prewarm, the first stream creates the device when it opens (after
+the display pass is decided) with 4 threads and only its own states (bale.86; every state on 2
+threads before): `RAV1G_PREPARE_ONLY`, its bit depth, film grain and super-resolution when the
+container's sequence header has them, and the display pass of its transfer when the pass was
+requested (PQ for transfer 16, HLG for 18, else SDR). Its decoder creation waits for those states
+before the first frame anyway (rav1g: ~56 states on 4 threads is ~6 s, 96 on 2 ~15 s). The device
+logs `Bale rav1g: device created (threads=N prepare=0x.. ok=N)` once; without it the stream falls
+back to dav1d.
 
 `FFmpegMediaSource` members that take the source lock can block while the sample thread waits on
 a decoder: `CurrentVideoStream`, `CurrentAudioStream`, `MetadataTags`, `PlaybackItem`,

@@ -165,8 +165,9 @@ struct BaleRav1gDevice
     // 5.8 s); a decoder creation compiles what its stream needs beyond that (Rav1gSettings::stream).
     // The first caller decides; the device is created once per process. Prewarming
     // (bale_rav1g_prewarm, bale_rav1g_prewarm_prepare) asks for 6 threads; a first stream without
-    // it uses 2 and every state.
-    static const BaleRav1gDevice& Get(uint32_t pipelineThreads = 2, uint32_t prepare = RAV1G_PREPARE_ALL)
+    // it uses 4 and its own states (BaleRav1gDecoder::PrepareBits): its decoder creation waits for
+    // them before the first frame anyway, so nothing else wants the CPU then.
+    static const BaleRav1gDevice& Get(uint32_t pipelineThreads = 4, uint32_t prepare = RAV1G_PREPARE_ALL)
     {
         static const BaleRav1gDevice shared = [pipelineThreads, prepare]
         {
@@ -185,6 +186,8 @@ struct BaleRav1gDevice
             deviceSettings.prepare = prepare;
             result.prepare = prepare;
             result.device = api.deviceCreateWithSettings(nullptr, nullptr, &deviceSettings);
+            av_log(nullptr, AV_LOG_INFO, "Bale rav1g: device created (threads=%u prepare=0x%X ok=%d)\n", pipelineThreads, prepare,
+                result.device ? 1 : 0);
             if (!result.device)
             {
                 av_log(nullptr, AV_LOG_WARNING, "Bale rav1g: device creation failed\n");
@@ -374,9 +377,10 @@ public:
     BaleRav1gDecoder(const BaleRav1gDecoder&) = delete;
     BaleRav1gDecoder& operator=(const BaleRav1gDecoder&) = delete;
 
-    // The open-time check: library, interface version, profile, the container's sequence header and
-    // the process device. Null, logged once as a fallback to dav1d, when rav1g cannot take the stream.
-    // bitDepth: the depth the stream's frames will have (8 or 10).
+    // The open-time check: library, interface version, profile and the container's sequence header.
+    // Null, logged once as a fallback to dav1d, when rav1g cannot take the stream. bitDepth: the depth
+    // the stream's frames will have (8 or 10). The caller then creates the process device (or takes
+    // the prewarmed one) with EnsureDevice, once it knows whether the display pass will run.
     static std::unique_ptr<BaleRav1gDecoder> TryOpen(const AVCodecParameters* parameters, int& bitDepth)
     {
         const auto& api = BaleRav1gExports::Get();
@@ -395,6 +399,7 @@ public:
             auto status = api.peekStreamInfo(result->configObus.data(), result->configObus.size(), &info);
             if (status != RAV1G_STATUS_OK) return Fallback("stream info unsupported", status);
             depth = static_cast<int>(info.bit_depth);
+            result->openInfo = info;
         }
         else
         {
@@ -403,10 +408,40 @@ public:
             depth = description && description->nb_components > 0 ? description->comp[0].depth : parameters->bits_per_raw_sample;
         }
         if (depth != 8 && depth != 10) return Fallback("bit depth unsupported", depth);
-        const auto& shared = BaleRav1gDevice::Get();
-        if (FAILED(shared.status)) return Fallback("device unavailable", shared.status);
+        result->openDepth = depth;
         bitDepth = depth;
         return result;
+    }
+
+    // The pipeline states this stream needs (RAV1G_PREPARE_ONLY with its bits): its bit depth, film
+    // grain and super-resolution when the container's sequence header has them, and the display pass
+    // of its transfer when the pass was requested (containerTransfer: H.273, the container's, used
+    // when the sequence header has none). A state it needs beyond these is compiled when needed.
+    uint32_t PrepareBits(bool displayPass, int containerTransfer) const
+    {
+        uint32_t prepare = RAV1G_PREPARE_ONLY | (openDepth > 8 ? RAV1G_PREPARE_BIT_DEPTH_10 : RAV1G_PREPARE_BIT_DEPTH_8);
+        if (openInfo.film_grain_params_present) prepare |= RAV1G_PREPARE_FILM_GRAIN;
+        if (openInfo.enable_superres) prepare |= RAV1G_PREPARE_SUPERRES;
+        if (displayPass)
+        {
+            int transfer = openInfo.color.description_present && openInfo.color.transfer_characteristics != 2
+                ? openInfo.color.transfer_characteristics : containerTransfer;
+            prepare |= transfer == 16 ? RAV1G_PREPARE_DISPLAY_PQ : transfer == 18 ? RAV1G_PREPARE_DISPLAY_HLG : RAV1G_PREPARE_DISPLAY_SDR;
+        }
+        return prepare;
+    }
+
+    // The process device: the prewarmed one, or created now with this stream's states. False (logged
+    // as a fallback to dav1d) when it does not exist.
+    bool EnsureDevice(uint32_t prepare)
+    {
+        const auto& shared = BaleRav1gDevice::Get(4, prepare);
+        if (FAILED(shared.status))
+        {
+            Fallback("device unavailable", shared.status);
+            return false;
+        }
+        return true;
     }
 
     static std::nullptr_t Fallback(const char* reason, HRESULT status)
@@ -896,6 +931,9 @@ private:
 
 private:
     std::vector<uint8_t> configObus;
+    // The container's sequence header (zero without one) and the stream's depth, from TryOpen.
+    Rav1gStreamInfo openInfo{};
+    int openDepth = 0;
     uint64_t deviceBytes = 0;
     // Bytes reported to the memory ledger for this decoder, 0 when none.
     uint64_t ledgerBytes = 0;
