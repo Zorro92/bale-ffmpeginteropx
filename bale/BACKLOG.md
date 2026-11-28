@@ -5,7 +5,7 @@ item when work is proposed, move it when its state changes, and drop "Done" entr
 older than a few releases (the commits and `README.md` keep the details). Every design item is sized
 against the console limits in `AGENTS.md` ("Design against the console's limits").
 
-Last updated: 2026-11-26 (wrapper 2.1.0-bale.84).
+Last updated: 2026-11-28 (wrapper 2.1.0-bale.85).
 
 ## Open: fork work
 
@@ -45,6 +45,7 @@ Last updated: 2026-11-26 (wrapper 2.1.0-bale.84).
 |---|---|
 | bale.83 | D3D12 probe creates its device at feature level 11_0 and hands it to FFmpeg (bale.82's probe failed at FFmpeg's 12_0 device creation) |
 | bale.84 | In-band caption packet tap `bale_cc_sink` (H.264/HEVC/MPEG-2 packets to bale_gpu `bale_cc_push`, flush on every stream flush). Console (Bale 0.1.790/791, as Bale reported): worked on the six cea608 clips (H.264 MP4/MKV/TS), `tap on (codec 1 nal_length_size 4)`, packet and flush counts as expected |
+| bale.85 | rav1g prewarm timed until its pipeline states exist (`prewarm ready ms=N (device ms=D pipelines=S)`; bale.84 timed only the device creation); rav1g error kind and detail in the `stream failed` line (rav1g's request); rav1g.h/av1_perf.h synced to v0.8.0-alpha.3 |
 | (bale.60 check) | dav1d D3D11 GPU grain (`bale_film_grain_mode=3`) closed: on the console with Bale 0.1.791 and bale.84, 1080p60 10-bit AV1 grain clips: `mode=gpu-d3d11`, 0 missed frames, Device Portal CPU ≈12–14% steady vs ≈30–53% bursty with dav1d grain; GPU vs CPU grain on the same paused frame RMSE 0.73% (each vs grain off 1.24–1.32%), visually identical |
 | (Bale 0.2.805) | rav1g is the default AV1 decoder in release builds too (owner decision 2026-11-26; Bale commit 382d095 passes `bale_av1_decoder=1`); verified on the console (`AV1 open used rav1g`). No fork change. |
 | bale.82 | Native FFmpeg 9.1 (dav1d 1.5.5, no patches); upstream crash fixes #488/#489; opt-in `bale_d3d12va_probe`. Console regression passed (Bale 0.1.778: rav1g, HEVC 4K HDR/SDR, H.264, VP9, MPEG-2, 5 software routes, seeks, HLS; 0 missed frames). FFmpeg's pools unchanged (HEVC/H.264 20, VP9 12), so the +3 assumption holds |
