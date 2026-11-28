@@ -20,6 +20,7 @@ Last updated: 2026-11-26 (wrapper 2.1.0-bale.84).
 |---|---|
 | Audio passthrough plumbing (debug): `bale_audio_out=<id>`, `bale_audio_out_stream=<index>`; audio not exposed to MF; the fork decodes the chosen track on its own feeder thread and writes it with pts to bale_gpu's exclusive WASAPI renderer; flush on seek and stream switch | ABI landed (Bale 9e216fe, `bale_audio_out.h` ABI 1): id 1–65535; write(id, data, bytes, pts_100ns) of whole frames returns 0 = full (retry) or 0xFFFFFFFF = closed (stop and fall back); `bale_audio_out_format(id)` gives the format (TV path: PCM 8 ch 48 kHz, s32 container with 24 valid bits, mask 0x63F, FL FR FC LFE BL BR SL SR, the same order as FFmpeg's 7.1). Build only when the owner asks. |
 | rav1g untested paths | Console runs: HDR passthrough (needs an HDR display), 8-bit NV12 direct output (shared UAV NV12 not yet confirmed on the console). Film grain and 4K60 40 Mbps passed on 2026-11-26 (README, rav1g section). |
+| Retire the dav1d zero-copy route (`bale_zero_copy`, `BaleZeroCopyExports`, the bale_zc_* repack path) | Dormant: needs native p1, which 9.1 dropped, and Bale never sent the key. Bale stopped sending `bale_d3d11_upload=6` and `bale_film_grain_mode=2` and calling `bale_zc_register_d3d12` (Bale d8520c6, 2026-11-27) and may drop its bale_zc_* exports any time (resolved with GetProcAddress, only on that route). Cleanup only: keep mode 3 (bale_grain_*) and the staged upload; console regression of the software routes after. |
 
 ## Parked or on hold (owner decisions)
 
