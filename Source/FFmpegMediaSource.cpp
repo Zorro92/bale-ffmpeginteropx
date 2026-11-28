@@ -3737,10 +3737,20 @@ extern "C" __declspec(dllexport) int bale_rav1g_prewarm(void)
             auto start = std::chrono::steady_clock::now();
             av_log(nullptr, AV_LOG_INFO, "Bale rav1g: prewarm started\n");
             const auto& device = BaleRav1gDevice::Get(6);
-            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+            auto elapsed = [start]
+            {
+                return static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
+            };
+            auto ms = elapsed();
             if (SUCCEEDED(device.status))
             {
-                av_log(nullptr, AV_LOG_INFO, "Bale rav1g: prewarm ready ms=%lld\n", static_cast<long long>(ms));
+                // Device creation returns while the pipeline states still compile; ready is when they
+                // all exist (rav1g_device_wait_pipelines; the first decoder creation would wait too).
+                const auto& api = BaleRav1gExports::Get();
+                auto deviceMs = ms;
+                int pipelines = api.deviceWaitPipelines ? static_cast<int>(api.deviceWaitPipelines(device.device)) : -1;
+                ms = elapsed();
+                av_log(nullptr, AV_LOG_INFO, "Bale rav1g: prewarm ready ms=%lld (device ms=%lld pipelines=%d)\n", ms, deviceMs, pipelines);
             }
             else
             {

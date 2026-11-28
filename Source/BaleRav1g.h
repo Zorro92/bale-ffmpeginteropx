@@ -49,6 +49,8 @@ struct BaleRav1gExports
     decltype(&rav1g_decoder_configuration) decoderConfiguration = nullptr;
     decltype(&rav1g_decoder_output_fence) decoderOutputFence = nullptr;
     decltype(&rav1g_decoder_destroy) decoderDestroy = nullptr;
+    // Optional (the prewarm's timing only): null when the library does not export it.
+    decltype(&rav1g_device_wait_pipelines) deviceWaitPipelines = nullptr;
     // Optional (diagnostics only): null when the library does not export it.
     decltype(&rav1g_set_perf_callback) setPerfCallback = nullptr;
     // Optional diagnostics of the display pass (av1_perf.h): process-wide A/B switches.
@@ -83,6 +85,7 @@ struct BaleRav1gExports
             api.decoderConfiguration = Resolve<decltype(api.decoderConfiguration)>(module, "rav1g_decoder_configuration");
             api.decoderOutputFence = Resolve<decltype(api.decoderOutputFence)>(module, "rav1g_decoder_output_fence");
             api.decoderDestroy = Resolve<decltype(api.decoderDestroy)>(module, "rav1g_decoder_destroy");
+            api.deviceWaitPipelines = Resolve<decltype(api.deviceWaitPipelines)>(module, "rav1g_device_wait_pipelines");
             api.setPerfCallback = Resolve<decltype(api.setPerfCallback)>(module, "rav1g_set_perf_callback");
             api.setDisplayFixedPeak = Resolve<decltype(api.setDisplayFixedPeak)>(module, "av1_set_display_fixed_peak");
             api.setDisplayBilinearChroma = Resolve<decltype(api.setDisplayBilinearChroma)>(module, "av1_set_display_bilinear_chroma");

@@ -299,7 +299,10 @@ seek right after another seek could read the rest of the file and stall the seek
 change). It creates rav1g's process-wide D3D12 device and starts compiling its pipeline states
 (~99, about 6.5 s on a Series X) on a background thread with 6 compile threads, and returns at
 once: 0 = started, 1 = already started, -1 = could not start a thread. Logs `Bale rav1g: prewarm
-started` and `prewarm ready ms=N` (or `prewarm failed (status=..)`). The adapter is rav1g's choice,
+started` and `prewarm ready ms=N (device ms=D pipelines=S)` (or `prewarm failed (status=..)`):
+since bale.85, N runs until every pipeline state exists (`rav1g_device_wait_pipelines`), D is the
+device creation alone and S that call's status (0 = OK, -1 = the library lacks the export). Up to
+bale.84 the line printed only D (e.g. `ms=24` with rav1g alpha.2), not the compiles. The adapter is rav1g's choice,
 the first hardware adapter (the only one, and Media Foundation's, on Xbox); each stream still
 checks it against MF's. Without prewarm, the first stream creates the device with 2 threads.
 
