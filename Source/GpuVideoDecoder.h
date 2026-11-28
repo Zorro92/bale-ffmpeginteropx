@@ -105,6 +105,9 @@ public:
     virtual void Destroy() = 0;
     // GPU memory the decoder allocated for its own work (not the output images); 0 if unknown.
     virtual uint64_t DeviceBytes() const { return 0; }
+    // The decoder's own description of its last failed Decode or Drain (a fixed diagnostic text of the
+    // library, no stream data), empty when that call succeeded or the decoder has none. Any thread.
+    virtual std::string LastError() const { return {}; }
 
     // Asks the decoder to write the processed output itself (before Create). True when it will try; it
     // may still decline at Create, and then its frames carry displayOutput = false (the provider runs

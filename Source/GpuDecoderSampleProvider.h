@@ -951,7 +951,9 @@ private:
         HRESULT expected = S_OK;
         if (fatal.compare_exchange_strong(expected, hr))
         {
-            av_log(nullptr, AV_LOG_ERROR, "%s: stream failed (%s, hr=0x%08X)\n", logName, reason, static_cast<unsigned>(hr));
+            auto detail = gpuDecoder ? gpuDecoder->LastError() : std::string();
+            av_log(nullptr, AV_LOG_ERROR, "%s: stream failed (%s, hr=0x%08X)%s%s\n", logName, reason, static_cast<unsigned>(hr),
+                detail.empty() ? "" : " decoder: ", detail.c_str());
         }
         // A waiting sample thread returns the failure (its wait times out if this wake-up is lost).
         framesChanged.notify_all();

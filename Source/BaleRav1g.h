@@ -51,6 +51,9 @@ struct BaleRav1gExports
     decltype(&rav1g_decoder_destroy) decoderDestroy = nullptr;
     // Optional (the prewarm's timing only): null when the library does not export it.
     decltype(&rav1g_device_wait_pipelines) deviceWaitPipelines = nullptr;
+    // Optional (the failure line's detail only).
+    decltype(&rav1g_decoder_error) decoderError = nullptr;
+    decltype(&rav1g_decoder_error_detail) decoderErrorDetail = nullptr;
     // Optional (diagnostics only): null when the library does not export it.
     decltype(&rav1g_set_perf_callback) setPerfCallback = nullptr;
     // Optional diagnostics of the display pass (av1_perf.h): process-wide A/B switches.
@@ -86,6 +89,8 @@ struct BaleRav1gExports
             api.decoderOutputFence = Resolve<decltype(api.decoderOutputFence)>(module, "rav1g_decoder_output_fence");
             api.decoderDestroy = Resolve<decltype(api.decoderDestroy)>(module, "rav1g_decoder_destroy");
             api.deviceWaitPipelines = Resolve<decltype(api.deviceWaitPipelines)>(module, "rav1g_device_wait_pipelines");
+            api.decoderError = Resolve<decltype(api.decoderError)>(module, "rav1g_decoder_error");
+            api.decoderErrorDetail = Resolve<decltype(api.decoderErrorDetail)>(module, "rav1g_decoder_error_detail");
             api.setPerfCallback = Resolve<decltype(api.setPerfCallback)>(module, "rav1g_set_perf_callback");
             api.setDisplayFixedPeak = Resolve<decltype(api.setDisplayFixedPeak)>(module, "av1_set_display_fixed_peak");
             api.setDisplayBilinearChroma = Resolve<decltype(api.setDisplayBilinearChroma)>(module, "av1_set_display_bilinear_chroma");
@@ -576,6 +581,7 @@ public:
         }
         if (status == RAV1G_STATUS_NEEDS_RECONFIGURE) return ReconfigureRequired;
         sendConfig = false;
+        KeepError(status);
         return status == RAV1G_STATUS_OK ? S_OK : StatusError(status);
     }
 
@@ -583,7 +589,14 @@ public:
     {
         if (!decoder) return S_OK;
         auto status = BaleRav1gExports::Get().decoderDrain(decoder);
+        KeepError(status);
         return status == RAV1G_STATUS_OK ? S_OK : StatusError(status);
+    }
+
+    std::string LastError() const override
+    {
+        std::lock_guard lock(errorMutex);
+        return lastError;
     }
 
     void Destroy() override
@@ -669,6 +682,34 @@ public:
     }
 
 private:
+    // rav1g's error texts are valid only until the next call on the decoder: copied here, on the
+    // calling thread, right after the failed call ("kind: detail"; printable ASCII, at most 240
+    // characters). A successful call clears them.
+    void KeepError(Rav1gStatus status)
+    {
+        std::string text;
+        const auto& api = BaleRav1gExports::Get();
+        if (status != RAV1G_STATUS_OK && decoder && api.decoderError)
+        {
+            auto append = [&text](const char* part)
+            {
+                for (; part && *part && text.size() < 240; part++)
+                {
+                    text.push_back(*part >= 0x20 && *part < 0x7F ? *part : '?');
+                }
+            };
+            append(api.decoderError(decoder));
+            const char* detail = api.decoderErrorDetail ? api.decoderErrorDetail(decoder) : nullptr;
+            if (detail && *detail)
+            {
+                append(": ");
+                append(detail);
+            }
+        }
+        std::lock_guard lock(errorMutex);
+        lastError = std::move(text);
+    }
+
     // A rav1g status as an HRESULT: 0x80042B20 + status.
     static HRESULT StatusError(Rav1gStatus status)
     {
@@ -836,4 +877,6 @@ private:
     GpuDisplayOutput display;
     bool displayRequested = false;
     float loggedPeakNits = -1.0f; // completion thread
+    mutable std::mutex errorMutex;
+    std::string lastError;
 };
