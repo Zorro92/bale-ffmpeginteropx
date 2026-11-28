@@ -15,15 +15,15 @@ extern "C"
 }
 
 // The record of rav1g's timing run (av1_perf_frame, for rav1g_set_perf_callback), copied verbatim
-// from Zorro92/rav1g libav1/dx/av1_perf.h at tag v0.8.0-alpha.2 (commit 9e00534). The record is not
+// from Zorro92/rav1g libav1/dx/av1_perf.h at tag v0.8.0-alpha.3 (commit 25f8a04). The record is not
 // covered by rav1g's interface version: copy it again, unchanged, from the rav1g release Bale ships,
 // and check its size below against rav1g's (crates/rav1g-sys/src/perf.rs). Included before rav1g.h,
 // which then takes the full definition instead of declaring the struct.
 #include "av1_perf.h"
-static_assert(sizeof(void*) != 8 || sizeof(av1_perf_frame) == 640, "av1_perf_frame differs from rav1g v0.8.0-alpha.2's");
+static_assert(sizeof(void*) != 8 || sizeof(av1_perf_frame) == 640, "av1_perf_frame differs from rav1g v0.8.0-alpha.3's");
 
 // rav1g's C interface, copied verbatim from Zorro92/rav1g crates/rav1g/include/rav1g.h (tag
-// v0.8.0-alpha.2, commit 9e00534, interface version 3). rav1g owns the header: copy it again, unchanged, whenever rav1g
+// v0.8.0-alpha.3, commit 25f8a04, interface version 3). rav1g owns the header: copy it again, unchanged, whenever rav1g
 // changes it, and raise the expected version below with it.
 #include "rav1g.h"
 static_assert(RAV1G_ABI_VERSION == 3, "BaleRav1g.h is written against rav1g interface version 3");

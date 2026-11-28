@@ -370,13 +370,13 @@ Frame grabbers never use it. With `"1"`, `bale_zero_copy`, `bale_d3d11_upload` a
 Code: generic `GpuVideoDecoder.h` (decoder interface), `GpuDecoderImagePool.h` (output
 images), `GpuDecoderSampleProvider.h` (the provider); all rav1g glue in `BaleRav1g.h`.
 `Source/rav1g.h` is rav1g's `crates/rav1g/include/rav1g.h`, copied verbatim (rav1g
-v0.8.0-alpha.2, `9e00534`, whose changes over alpha.1 are comments only; interface version 3 since bale.78; version 2 in bale.74–77, version 1 before;
+v0.8.0-alpha.3, `25f8a04`, whose changes over alpha.1 are comments only; interface version 3 since bale.78; version 2 in bale.74–77, version 1 before;
 copy it again, unchanged, when rav1g changes it). The loader accepts exactly the header's version, so
 bale.78 and later need a rav1g.dll of interface version 3 (v0.8.0-alpha.1 on), bale.74–77 version 2
 (v0.7.x) and wrappers up to bale.73 version 1: a
 mismatch logs `Bale rav1g: interface version N, expected M` and the stream falls back to dav1d. Pin
 wrapper and DLL together.
-`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.8.0-alpha.2 (`9e00534`, unchanged since alpha.1; 640 bytes, with the GPU stage `AV1_PERF_GPU_DISPLAY` and `user_data` at 632, unchanged since v0.7.0-alpha.1; 632 bytes in v0.6.0-alpha.3), copied verbatim
+`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.8.0-alpha.3 (`25f8a04`; the record unchanged since alpha.1, alpha.3 removes the declarations of its retired test switches; 640 bytes, with the GPU stage `AV1_PERF_GPU_DISPLAY` and `user_data` at 632, unchanged since v0.7.0-alpha.1; 632 bytes in v0.6.0-alpha.3), copied verbatim
 (only for `bale_rav1g_perf`). No new
 native FFmpeg build is needed; Bale ships `rav1g.dll` in its package.
 
