@@ -4,6 +4,7 @@
 #include <d3d12.h>
 #include <dxgi1_2.h>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <mutex>
 #include "GpuVideoDecoder.h"
@@ -48,6 +49,8 @@ struct BaleRav1gExports
     decltype(&rav1g_decoder_decode) decoderDecode = nullptr;
     decltype(&rav1g_decoder_drain) decoderDrain = nullptr;
     decltype(&rav1g_decoder_flush) decoderFlush = nullptr;
+    // Optional (rav1g's own log lines into FFmpeg's log).
+    decltype(&rav1g_set_log_callback) setLogCallback = nullptr;
     decltype(&rav1g_decoder_configuration) decoderConfiguration = nullptr;
     decltype(&rav1g_decoder_output_fence) decoderOutputFence = nullptr;
     decltype(&rav1g_decoder_destroy) decoderDestroy = nullptr;
@@ -91,6 +94,7 @@ struct BaleRav1gExports
             api.decoderOutputFence = Resolve<decltype(api.decoderOutputFence)>(module, "rav1g_decoder_output_fence");
             api.deviceCreateWithSettings = Resolve<decltype(api.deviceCreateWithSettings)>(module, "rav1g_device_create_with_settings");
             api.decoderFlush = Resolve<decltype(api.decoderFlush)>(module, "rav1g_decoder_flush");
+            api.setLogCallback = Resolve<decltype(api.setLogCallback)>(module, "rav1g_set_log_callback");
             api.decoderDestroy = Resolve<decltype(api.decoderDestroy)>(module, "rav1g_decoder_destroy");
             api.deviceWaitPipelines = Resolve<decltype(api.deviceWaitPipelines)>(module, "rav1g_device_wait_pipelines");
             api.decoderError = Resolve<decltype(api.decoderError)>(module, "rav1g_decoder_error");
@@ -123,6 +127,10 @@ struct BaleRav1gExports
             // rav1g_version is the library's fixed build description, meant for a log.
             auto text = api.version();
             av_log(nullptr, AV_LOG_INFO, "Bale rav1g: loaded %s (interface %u)\n", text ? text : "(no version)", abi);
+            // rav1g's log lines (FLUSH, SKIPPED, PIPELINE, MEMORY, errors) go to FFmpeg's log, which
+            // is off in production builds. They are rav1g's fixed diagnostics, not stream data; kept
+            // to printable ASCII and 240 characters all the same.
+            if (api.setLogCallback) api.setLogCallback(&LogLine, nullptr);
             api.status = S_OK;
             api.failure = nullptr;
             return api;
@@ -131,6 +139,20 @@ struct BaleRav1gExports
     }
 
 private:
+    static void LogLine(void* context, bool isError, const char* line)
+    {
+        UNREFERENCED_PARAMETER(context);
+        char text[241];
+        size_t length = 0;
+        for (; line && line[length] && length < sizeof(text) - 1; length++)
+        {
+            auto c = line[length];
+            text[length] = c >= 0x20 && c < 0x7F ? c : '?';
+        }
+        text[length] = 0;
+        av_log(nullptr, isError ? AV_LOG_WARNING : AV_LOG_INFO, "Bale rav1g log: %s\n", text);
+    }
+
     template <typename T>
     static T Resolve(HMODULE module, const char* name)
     {
@@ -612,9 +634,9 @@ public:
         // A decoder with no device bytes is not counted: Destroy subtracts only when ledgerBytes is set.
         ledgerBytes = deviceBytes;
         if (ledgerBytes) BaleMemAccount(BaleMemCategory::Rav1gDecoderBuffers, static_cast<int64_t>(ledgerBytes), 1);
-        av_log(nullptr, AV_LOG_INFO, "Bale rav1g: active %ux%u bits=%u slots=%u parse=%u threads=%u device=%.1f MiB\n",
+        av_log(nullptr, AV_LOG_INFO, "Bale rav1g: active %ux%u bits=%u slots=%u parse=%u threads=%u device=%.1f MiB prepare=0x%X\n",
             info.width, info.height, settings.bit_depth, configuration.frame_slots, configuration.frames_in_parse,
-            configuration.threads, configuration.device_size / (1024.0 * 1024.0));
+            configuration.threads, configuration.device_size / (1024.0 * 1024.0), shared.prepare);
         sendConfig = !ownSequence;
         return S_OK;
     }
@@ -625,6 +647,15 @@ public:
     {
         if (!decoder) return E_NOT_VALID_STATE;
         const auto& api = BaleRav1gExports::Get();
+        if (unitsSinceFlush < 3)
+        {
+            // Diagnostics: what the first units after a flush (or the creation) are.
+            Rav1gStreamInfo unitInfo{};
+            auto peek = data && size ? api.peekStreamInfo(data, size, &unitInfo) : RAV1G_STATUS_INVALID_PARAM;
+            av_log(nullptr, AV_LOG_INFO, "Bale rav1g: unit %u since create/flush size=%zu peek=%d key=%d sequence=%d config=%d\n",
+                unitsSinceFlush, size, static_cast<int>(peek), unitInfo.is_key_frame ? 1 : 0, unitInfo.bit_depth ? 1 : 0, sendConfig ? 1 : 0);
+            unitsSinceFlush++;
+        }
         Rav1gStatus status;
         if (sendConfig)
         {
@@ -653,8 +684,18 @@ public:
     HRESULT Flush() override
     {
         if (!decoder) return S_OK;
+        if (!flushOnSeek)
+        {
+            // bale_rav1g_flush=0 (A/B): the drain alone, as up to bale.85.
+            av_log(nullptr, AV_LOG_INFO, "Bale rav1g: flush skipped (bale_rav1g_flush=0)\n");
+            return S_FALSE;
+        }
+        auto start = std::chrono::steady_clock::now();
         auto status = BaleRav1gExports::Get().decoderFlush(decoder);
         KeepError(status);
+        av_log(nullptr, AV_LOG_INFO, "Bale rav1g: flushed (status=%d ms=%.1f)\n", static_cast<int>(status),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+        unitsSinceFlush = 0;
         return status == RAV1G_STATUS_OK ? S_OK : StatusError(status);
     }
 
@@ -923,6 +964,8 @@ private:
 public:
     // bale_rav1g_parse: frames in parse and parse threads for this stream's decoder (0 = rav1g's choice).
     uint32_t parseFrames = 0;
+    // bale_rav1g_flush: 1 (default) calls rav1g_decoder_flush on a seek after the drain; 0 drains only.
+    bool flushOnSeek = true;
 
 private:
     // bale_rav1g_perf: this decoder holds a use of the process-wide perf callback.
@@ -934,6 +977,8 @@ private:
     // The container's sequence header (zero without one) and the stream's depth, from TryOpen.
     Rav1gStreamInfo openInfo{};
     int openDepth = 0;
+    // Decode diagnostics: units fed since the creation or the last flush (logged up to 3).
+    uint32_t unitsSinceFlush = 0;
     uint64_t deviceBytes = 0;
     // Bytes reported to the memory ledger for this decoder, 0 when none.
     uint64_t ledgerBytes = 0;

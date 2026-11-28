@@ -414,6 +414,16 @@ OBUs are not passed again (rav1g keeps the sequence header). Images of dropped f
 through `unused`, also on rav1g's completion thread (the pool's Release is thread-safe). A failed
 flush logs `Bale rav1g: flush failed (hr=..)`; the next decode then fails the stream.
 
+Diagnostics (bale.87): `Bale rav1g: flushed (status=N ms=X)` after each flush; `bale_rav1g_flush=0`
+(A/B, default 1) skips the flush and drains only, as up to bale.85 (`flush skipped`). The first three
+units after a creation or flush log `Bale rav1g: unit N since create/flush size=B peek=S key=K
+sequence=Q config=C` (rav1g_peek_stream_info of the unit: key frame, own sequence header, and
+whether the container's config OBUs go in front). rav1g's own log lines (`FLUSH`, `SKIPPED`,
+`PIPELINE`, `MEMORY`, errors) come through `rav1g_set_log_callback` as `Bale rav1g log: <line>`
+(warning level for errors; printable ASCII, 240 characters at most). The `active` line names the
+device's prepare bits (`prepare=0x..`), since the device creation and prewarm lines can come
+before an app attaches its log capture.
+
 **Fallback at open.** `BaleRav1gDecoder::TryOpen` checks: `rav1g.dll` loads
 (`LoadPackagedLibrary`, no import library), every export it uses is there,
 `rav1g_abi_version()` equals the header's `RAV1G_ABI_VERSION`, the profile is Main (4:2:0 or

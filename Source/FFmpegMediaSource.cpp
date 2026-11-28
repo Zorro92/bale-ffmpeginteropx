@@ -1333,6 +1333,7 @@ namespace winrt::FFmpegInteropX::implementation
         if (rav1gDecoder)
         {
             rav1gDecoder->parseFrames = static_cast<uint32_t>(baleRav1gParse);
+            rav1gDecoder->flushOnSeek = baleRav1gFlush != 0;
             if (baleRav1gPerf > 0) rav1gDecoder->EnablePerfStatistics(baleRav1gPerf >= 2);
         }
         // Owned by the provider below; kept for the device creation once the display pass is decided.
@@ -2796,6 +2797,7 @@ namespace winrt::FFmpegInteropX::implementation
         else if (key == "bale_decoder_max_dpb_count") { target = &baleDecoderMaxDpbCount; minimum = 0; maximum = 16; }
         else if (key == "bale_compressed_color_info") { target = &baleCompressedColorInfo; minimum = 0; maximum = 1; }
         else if (key == "bale_rav1g_parse") { target = &baleRav1gParse; minimum = 0; maximum = 8; }
+        else if (key == "bale_rav1g_flush") { target = &baleRav1gFlush; minimum = 0; maximum = 1; }
         else if (key == "bale_rav1g_display") { target = &baleRav1gDisplay; minimum = 0; maximum = 1; }
         else if (key == "bale_rav1g_display_fixed_peak") { target = &baleRav1gDisplayFixedPeak; minimum = 0; maximum = 1; }
         else if (key == "bale_rav1g_display_bilinear_chroma") { target = &baleRav1gDisplayBilinearChroma; minimum = 0; maximum = 1; }

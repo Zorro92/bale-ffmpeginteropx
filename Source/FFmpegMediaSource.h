@@ -368,6 +368,8 @@ namespace winrt::FFmpegInteropX::implementation
         int baleCompressedColorInfo = 0;
         // Bale: rav1g frames in parse and parse threads (0 = rav1g's defaults).
         int baleRav1gParse = 0;
+        // Bale: 1 (default) = rav1g_decoder_flush on a seek after the drain; 0 = the drain only (A/B).
+        int baleRav1gFlush = 1;
         // Bale: 1 = rav1g's per-frame timing on the delivery line (diagnostic; process-wide callback).
         int baleRav1gPerf = 0;
         // Bale: 1 = rav1g writes the tone-mapped, display-size image itself (its display pass) where the
