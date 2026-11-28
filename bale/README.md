@@ -295,14 +295,29 @@ seek right after another seek could read the rest of the file and stall the seek
 
 ### rav1g prewarm and threading notes
 
-`FFmpegInteropX.dll` exports a plain C function, `int bale_rav1g_prewarm(void)` (no WinRT API
-change). It creates rav1g's process-wide D3D12 device and starts compiling its pipeline states
-(~99, about 6.5 s on a Series X) on a background thread with 6 compile threads, and returns at
-once: 0 = started, 1 = already started, -1 = could not start a thread. Logs `Bale rav1g: prewarm
-started` and `prewarm ready ms=N (device ms=D pipelines=S)` (or `prewarm failed (status=..)`):
-since bale.85, N runs until every pipeline state exists (`rav1g_device_wait_pipelines`), D is the
-device creation alone and S that call's status (0 = OK, -1 = the library lacks the export). Up to
-bale.84 the line printed only D (e.g. `ms=24` with rav1g alpha.2), not the compiles. The adapter is rav1g's choice,
+`FFmpegInteropX.dll` exports two plain C functions (no WinRT API change) that create rav1g's
+process-wide D3D12 device and start compiling its pipeline states on a background thread with 6
+compile threads. Both return at once; the first call of either decides the device: 0 = started,
+1 = already started, -1 = could not start a thread (or a bad bit).
+
+- `int bale_rav1g_prewarm(void)`: every state (`RAV1G_PREPARE_ALL`; 96 states, 8.5 s on 4 threads on
+  a Series X), for when the title is not known.
+- `int bale_rav1g_prewarm_prepare(uint32_t prepare)` (bale.86, rav1g interface version 4): rav1g's
+  `RAV1G_PREPARE_*` bits, passed through unchanged: `RAV1G_PREPARE_ONLY` (0x40000000) with the
+  title's bit depth (`_BIT_DEPTH_8` 1, `_BIT_DEPTH_10` 2), the display pass of its transfer when the
+  pass will run (`_DISPLAY_SDR` 4, `_PQ` 8, `_HLG` 16; none on an HDR display, where it passes
+  through), `_FILM_GRAIN` 32 and `_SUPERRES` 64 when its sequence header has them (and
+  `_SCALED_REFERENCES` 128). A 10-bit PQ prepare is 56 states in 5.8 s instead of 96 in 7.9 s (rav1g's
+  test player, 4 threads). Without `_ONLY` it prepares everything. A stream that needs more compiles
+  the rest at its decoder creation, which waits only for those (each decoder passes its key frame
+  unit's `Rav1gSettings::stream`).
+
+Logs `Bale rav1g: prewarm started (prepare=0x..)` and `prewarm ready ms=N (device ms=D pipelines=S
+prepare=0x..)` (or `prewarm failed (status=..)`): since bale.85, N runs until every prepared state
+exists (`rav1g_device_wait_pipelines`), D is the device creation alone and S that call's status (0 =
+OK, -1 = the library lacks the export); prepare is the device's (a stream that opened first creates
+it with every state). Up to bale.84 the line printed only D (e.g. `ms=24` with rav1g alpha.2), not
+the compiles. The adapter is rav1g's choice,
 the first hardware adapter (the only one, and Media Foundation's, on Xbox); each stream still
 checks it against MF's. Without prewarm, the first stream creates the device with 2 threads.
 
@@ -373,15 +388,24 @@ Frame grabbers never use it. With `"1"`, `bale_zero_copy`, `bale_d3d11_upload` a
 Code: generic `GpuVideoDecoder.h` (decoder interface), `GpuDecoderImagePool.h` (output
 images), `GpuDecoderSampleProvider.h` (the provider); all rav1g glue in `BaleRav1g.h`.
 `Source/rav1g.h` is rav1g's `crates/rav1g/include/rav1g.h`, copied verbatim (rav1g
-v0.8.0-alpha.3, `25f8a04`, whose changes over alpha.1 are comments only; interface version 3 since bale.78; version 2 in bale.74–77, version 1 before;
+v0.9.0-alpha.1, `b49f151`; interface version 4 since bale.86, version 3 in bale.78–85, version 2 in bale.74–77, version 1 before;
 copy it again, unchanged, when rav1g changes it). The loader accepts exactly the header's version, so
-bale.78 and later need a rav1g.dll of interface version 3 (v0.8.0-alpha.1 on), bale.74–77 version 2
+bale.86 and later need a rav1g.dll of interface version 4 (v0.9.0-alpha.1 on), bale.78–85 version 3
+(v0.8.x), bale.74–77 version 2
 (v0.7.x) and wrappers up to bale.73 version 1: a
 mismatch logs `Bale rav1g: interface version N, expected M` and the stream falls back to dav1d. Pin
 wrapper and DLL together.
-`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.8.0-alpha.3 (`25f8a04`; the record unchanged since alpha.1, alpha.3 removes the declarations of its retired test switches; 640 bytes, with the GPU stage `AV1_PERF_GPU_DISPLAY` and `user_data` at 632, unchanged since v0.7.0-alpha.1; 632 bytes in v0.6.0-alpha.3), copied verbatim
+`Source/av1_perf.h` is rav1g's `libav1/dx/av1_perf.h` at tag v0.9.0-alpha.1 (`b49f151`; the record unchanged since v0.8.0-alpha.1, which later tags only add or remove test switch declarations to; 640 bytes, with the GPU stage `AV1_PERF_GPU_DISPLAY` and `user_data` at 632, unchanged since v0.7.0-alpha.1; 632 bytes in v0.6.0-alpha.3), copied verbatim
 (only for `bale_rav1g_perf`). No new
 native FFmpeg build is needed; Bale ships `rav1g.dll` in its package.
+
+**Seeks (bale.86, interface version 4).** A seek or a resume after a cancelled image wait drains
+the decoder as before and then calls `rav1g_decoder_flush` (`GpuVideoDecoder::Flush`) with the image
+pool refusing waits, before the first unit from the new place: the decoder drops what it still holds
+and forgets its reference frames, so it decodes as a decoder started at that key frame. The config
+OBUs are not passed again (rav1g keeps the sequence header). Images of dropped frames come back
+through `unused`, also on rav1g's completion thread (the pool's Release is thread-safe). A failed
+flush logs `Bale rav1g: flush failed (hr=..)`; the next decode then fails the stream.
 
 **Fallback at open.** `BaleRav1gDecoder::TryOpen` checks: `rav1g.dll` loads
 (`LoadPackagedLibrary`, no import library), every export it uses is there,

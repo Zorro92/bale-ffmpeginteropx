@@ -15,18 +15,18 @@ extern "C"
 }
 
 // The record of rav1g's timing run (av1_perf_frame, for rav1g_set_perf_callback), copied verbatim
-// from Zorro92/rav1g libav1/dx/av1_perf.h at tag v0.8.0-alpha.3 (commit 25f8a04). The record is not
+// from Zorro92/rav1g libav1/dx/av1_perf.h at tag v0.9.0-alpha.1 (commit b49f151). The record is not
 // covered by rav1g's interface version: copy it again, unchanged, from the rav1g release Bale ships,
 // and check its size below against rav1g's (crates/rav1g-sys/src/perf.rs). Included before rav1g.h,
 // which then takes the full definition instead of declaring the struct.
 #include "av1_perf.h"
-static_assert(sizeof(void*) != 8 || sizeof(av1_perf_frame) == 640, "av1_perf_frame differs from rav1g v0.8.0-alpha.3's");
+static_assert(sizeof(void*) != 8 || sizeof(av1_perf_frame) == 640, "av1_perf_frame differs from rav1g v0.9.0-alpha.1's");
 
 // rav1g's C interface, copied verbatim from Zorro92/rav1g crates/rav1g/include/rav1g.h (tag
-// v0.8.0-alpha.3, commit 25f8a04, interface version 3). rav1g owns the header: copy it again, unchanged, whenever rav1g
+// v0.9.0-alpha.1, commit b49f151, interface version 4). rav1g owns the header: copy it again, unchanged, whenever rav1g
 // changes it, and raise the expected version below with it.
 #include "rav1g.h"
-static_assert(RAV1G_ABI_VERSION == 3, "BaleRav1g.h is written against rav1g interface version 3");
+static_assert(RAV1G_ABI_VERSION == 4, "BaleRav1g.h is written against rav1g interface version 4");
 
 // Bale glue for rav1g (GPU AV1 decoding in D3D12 compute shaders): loading rav1g.dll from the app
 // package, the process-wide device, and (below) the GpuVideoDecoder implementation. Nothing outside
@@ -41,11 +41,13 @@ struct BaleRav1gExports
     decltype(&rav1g_version) version = nullptr;
     decltype(&rav1g_peek_stream_info) peekStreamInfo = nullptr;
     decltype(&rav1g_device_create) deviceCreate = nullptr;
+    decltype(&rav1g_device_create_with_settings) deviceCreateWithSettings = nullptr;
     decltype(&rav1g_device_d3d12_device) deviceD3D12Device = nullptr;
     decltype(&rav1g_settings_default) settingsDefault = nullptr;
     decltype(&rav1g_decoder_create) decoderCreate = nullptr;
     decltype(&rav1g_decoder_decode) decoderDecode = nullptr;
     decltype(&rav1g_decoder_drain) decoderDrain = nullptr;
+    decltype(&rav1g_decoder_flush) decoderFlush = nullptr;
     decltype(&rav1g_decoder_configuration) decoderConfiguration = nullptr;
     decltype(&rav1g_decoder_output_fence) decoderOutputFence = nullptr;
     decltype(&rav1g_decoder_destroy) decoderDestroy = nullptr;
@@ -87,6 +89,8 @@ struct BaleRav1gExports
             api.decoderDrain = Resolve<decltype(api.decoderDrain)>(module, "rav1g_decoder_drain");
             api.decoderConfiguration = Resolve<decltype(api.decoderConfiguration)>(module, "rav1g_decoder_configuration");
             api.decoderOutputFence = Resolve<decltype(api.decoderOutputFence)>(module, "rav1g_decoder_output_fence");
+            api.deviceCreateWithSettings = Resolve<decltype(api.deviceCreateWithSettings)>(module, "rav1g_device_create_with_settings");
+            api.decoderFlush = Resolve<decltype(api.decoderFlush)>(module, "rav1g_decoder_flush");
             api.decoderDestroy = Resolve<decltype(api.decoderDestroy)>(module, "rav1g_decoder_destroy");
             api.deviceWaitPipelines = Resolve<decltype(api.deviceWaitPipelines)>(module, "rav1g_device_wait_pipelines");
             api.decoderError = Resolve<decltype(api.decoderError)>(module, "rav1g_decoder_error");
@@ -96,7 +100,8 @@ struct BaleRav1gExports
             api.setDisplayBilinearChroma = Resolve<decltype(api.setDisplayBilinearChroma)>(module, "av1_set_display_bilinear_chroma");
             if (!api.abiVersion || !api.version || !api.peekStreamInfo || !api.deviceCreate || !api.deviceD3D12Device ||
                 !api.settingsDefault || !api.decoderCreate || !api.decoderDecode || !api.decoderDrain ||
-                !api.decoderConfiguration || !api.decoderOutputFence || !api.decoderDestroy)
+                !api.decoderConfiguration || !api.decoderOutputFence || !api.decoderDestroy ||
+                !api.deviceCreateWithSettings || !api.decoderFlush)
             {
                 FreeLibrary(module);
                 BaleRav1gExports missing;
@@ -147,13 +152,23 @@ struct BaleRav1gDevice
     winrt::com_ptr<ID3D12Device> d3d12;
     LUID adapter{};
     HRESULT status = E_FAIL;
+    uint32_t prepare = RAV1G_PREPARE_ALL;
 
-    // pipelineThreads: threads that compile rav1g's pipeline states (~99, about 6.5 s on a Series X
-    // with 6) while the call returns. The first caller decides; the device is created once per
-    // process. Prewarming (bale_rav1g_prewarm) asks for 6; a first stream without it uses 2.
-    static const BaleRav1gDevice& Get(uint32_t pipelineThreads = 2)
+    // Bits of RAV1G_PREPARE_* the prewarm may ask for (bale_rav1g_prewarm_prepare).
+    static constexpr uint32_t PrepareBits = RAV1G_PREPARE_ONLY | RAV1G_PREPARE_BIT_DEPTH_8 | RAV1G_PREPARE_BIT_DEPTH_10 |
+        RAV1G_PREPARE_DISPLAY_SDR | RAV1G_PREPARE_DISPLAY_PQ | RAV1G_PREPARE_DISPLAY_HLG | RAV1G_PREPARE_FILM_GRAIN |
+        RAV1G_PREPARE_SUPERRES | RAV1G_PREPARE_SCALED_REFERENCES;
+
+    // pipelineThreads: threads that compile rav1g's pipeline states while the call returns (all 96
+    // took 8.5 s on 4 threads on a Series X, 2026-11-28). prepare: RAV1G_PREPARE_ALL (0), or
+    // RAV1G_PREPARE_ONLY with the bits of the title about to play (a 10-bit PQ prepare is 56 states in
+    // 5.8 s); a decoder creation compiles what its stream needs beyond that (Rav1gSettings::stream).
+    // The first caller decides; the device is created once per process. Prewarming
+    // (bale_rav1g_prewarm, bale_rav1g_prewarm_prepare) asks for 6 threads; a first stream without
+    // it uses 2 and every state.
+    static const BaleRav1gDevice& Get(uint32_t pipelineThreads = 2, uint32_t prepare = RAV1G_PREPARE_ALL)
     {
-        static const BaleRav1gDevice shared = [pipelineThreads]
+        static const BaleRav1gDevice shared = [pipelineThreads, prepare]
         {
             BaleRav1gDevice result;
             const auto& api = BaleRav1gExports::Get();
@@ -165,7 +180,11 @@ struct BaleRav1gDevice
             // The decoder's first creation waits for whatever compile work is left. With a null device
             // rav1g uses the first hardware adapter, the only one (and MF's) on Xbox; every stream
             // still compares the adapter with MF's.
-            result.device = api.deviceCreate(nullptr, nullptr, pipelineThreads);
+            Rav1gDeviceSettings deviceSettings{};
+            deviceSettings.pipeline_threads = pipelineThreads;
+            deviceSettings.prepare = prepare;
+            result.prepare = prepare;
+            result.device = api.deviceCreateWithSettings(nullptr, nullptr, &deviceSettings);
             if (!result.device)
             {
                 av_log(nullptr, AV_LOG_WARNING, "Bale rav1g: device creation failed\n");
@@ -464,6 +483,9 @@ public:
         settings.width = info.width;
         settings.height = info.height;
         settings.bit_depth = info.bit_depth == 8 ? 8 : 10;
+        // The key frame unit's stream: the creation compiles (and waits for) only what this stream
+        // needs and the device did not prepare.
+        settings.stream = info;
         settings.memory_available = &MemoryAvailable;
         settings.memory_available_context = this;
         settings.output_kind = RAV1G_OUTPUT_SEMI_PLANAR;
@@ -589,6 +611,14 @@ public:
     {
         if (!decoder) return S_OK;
         auto status = BaleRav1gExports::Get().decoderDrain(decoder);
+        KeepError(status);
+        return status == RAV1G_STATUS_OK ? S_OK : StatusError(status);
+    }
+
+    HRESULT Flush() override
+    {
+        if (!decoder) return S_OK;
+        auto status = BaleRav1gExports::Get().decoderFlush(decoder);
         KeepError(status);
         return status == RAV1G_STATUS_OK ? S_OK : StatusError(status);
     }

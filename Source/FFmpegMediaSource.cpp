@@ -3722,21 +3722,29 @@ namespace winrt::FFmpegInteropX::implementation
     }
 }
 
-// Bale: plain C export (no WinRT API change) so the app can create rav1g's process-wide device and
-// compile its pipeline states before the first AV1 stream opens. Returns at once; idempotent.
-// 0: started now, 1: already started earlier. The adapter is rav1g's choice (the first hardware
-// adapter, the only one on Xbox); a stream whose MF device is on another adapter fails as before.
-extern "C" __declspec(dllexport) int bale_rav1g_prewarm(void)
+// Bale: plain C exports (no WinRT API change) so the app can create rav1g's process-wide device and
+// compile its pipeline states before the first AV1 stream opens. They return at once and start the
+// device once per process, whichever comes first: 0 = started now, 1 = already started earlier, -1 =
+// no thread could start (or, for _prepare, a bit that is not RAV1G_PREPARE_*). The adapter is rav1g's
+// choice (the first hardware adapter, the only one on Xbox); a stream whose MF device is on another
+// adapter fails as before.
+//
+// bale_rav1g_prewarm: every pipeline state (RAV1G_PREPARE_ALL), for when the title is not known.
+// bale_rav1g_prewarm_prepare: rav1g's RAV1G_PREPARE_ONLY with the RAV1G_PREPARE_* bits of the title
+// (passed through unchanged): its bit depth, the display pass of its transfer when the pass will run
+// (none on an HDR display), film grain and super-resolution when its sequence header has them. A
+// stream that needs more compiles the rest at its decoder creation.
+static int BaleRav1gPrewarm(uint32_t prepare)
 {
     static std::atomic<bool> started{ false };
     if (started.exchange(true)) return 1;
     try
     {
-        std::thread([]
+        std::thread([prepare]
         {
             auto start = std::chrono::steady_clock::now();
-            av_log(nullptr, AV_LOG_INFO, "Bale rav1g: prewarm started\n");
-            const auto& device = BaleRav1gDevice::Get(6);
+            av_log(nullptr, AV_LOG_INFO, "Bale rav1g: prewarm started (prepare=0x%X)\n", prepare);
+            const auto& device = BaleRav1gDevice::Get(6, prepare);
             auto elapsed = [start]
             {
                 return static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
@@ -3744,13 +3752,15 @@ extern "C" __declspec(dllexport) int bale_rav1g_prewarm(void)
             auto ms = elapsed();
             if (SUCCEEDED(device.status))
             {
-                // Device creation returns while the pipeline states still compile; ready is when they
-                // all exist (rav1g_device_wait_pipelines; the first decoder creation would wait too).
+                // Device creation returns while the prepared pipeline states still compile; ready is
+                // when they all exist (rav1g_device_wait_pipelines; the first decoder creation would
+                // wait too). A stream that opened first decides the device: its prepare is logged.
                 const auto& api = BaleRav1gExports::Get();
                 auto deviceMs = ms;
                 int pipelines = api.deviceWaitPipelines ? static_cast<int>(api.deviceWaitPipelines(device.device)) : -1;
                 ms = elapsed();
-                av_log(nullptr, AV_LOG_INFO, "Bale rav1g: prewarm ready ms=%lld (device ms=%lld pipelines=%d)\n", ms, deviceMs, pipelines);
+                av_log(nullptr, AV_LOG_INFO, "Bale rav1g: prewarm ready ms=%lld (device ms=%lld pipelines=%d prepare=0x%X)\n", ms,
+                    deviceMs, pipelines, device.prepare);
             }
             else
             {
@@ -3765,4 +3775,16 @@ extern "C" __declspec(dllexport) int bale_rav1g_prewarm(void)
         return -1;
     }
     return 0;
+}
+
+extern "C" __declspec(dllexport) int bale_rav1g_prewarm(void)
+{
+    return BaleRav1gPrewarm(RAV1G_PREPARE_ALL);
+}
+
+extern "C" __declspec(dllexport) int bale_rav1g_prewarm_prepare(uint32_t prepare)
+{
+    if (prepare & ~BaleRav1gDevice::PrepareBits) return -1;
+    // Without RAV1G_PREPARE_ONLY rav1g prepares every state anyway.
+    return BaleRav1gPrewarm(prepare);
 }

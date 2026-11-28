@@ -102,6 +102,11 @@ public:
     virtual HRESULT Decode(const uint8_t* data, size_t size, uint64_t userData) = 0;
     // Hands every frame in flight to the host. The decoder stays usable.
     virtual HRESULT Drain() = 0;
+    // For a seek, after Drain and before the first access unit from the new place: drops what the
+    // decoder still holds and forgets its reference frames, so that it decodes as a decoder created
+    // at the next random access point. Images of dropped frames come back through ImageUnused, also
+    // from the decoder's own threads. S_FALSE: the decoder has no such call (Drain alone stands).
+    virtual HRESULT Flush() { return S_FALSE; }
     virtual void Destroy() = 0;
     // GPU memory the decoder allocated for its own work (not the output images); 0 if unknown.
     virtual uint64_t DeviceBytes() const { return 0; }

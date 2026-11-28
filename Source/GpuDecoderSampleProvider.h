@@ -1233,7 +1233,8 @@ private:
 
     // Hands every frame in flight back (they are never sent) and leaves the decoder ready for a key
     // frame. Errors of frames still in parse are part of this, not stream failures: drain until clean.
-    // The feeder is paused or idle.
+    // Then the decoder's flush (GpuVideoDecoder::Flush) forgets its references, so the frames from the
+    // new place never name a reference of before. The feeder is paused or idle.
     void DrainDecoder()
     {
         if (gpuDecoder->IsCreated())
@@ -1241,6 +1242,11 @@ private:
             pool->SetFlushing(true);
             for (int i = 0; i < 8 && gpuDecoder->Drain() != S_OK; i++)
             {
+            }
+            auto flushHr = gpuDecoder->Flush();
+            if (FAILED(flushHr))
+            {
+                av_log(nullptr, AV_LOG_WARNING, "%s: flush failed (hr=0x%08X)\n", logName, static_cast<unsigned>(flushHr));
             }
             pool->SetFlushing(false);
         }
